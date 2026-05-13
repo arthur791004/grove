@@ -3,6 +3,7 @@ import { createPortal, flushSync } from 'react-dom';
 import { Box, HStack, Text } from '@chakra-ui/react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { SerializeAddon } from '@xterm/addon-serialize';
 import '@xterm/xterm/css/xterm.css';
 import { useTabContext, setTabContext, type TabContext } from './useTabContext';
 import { useStore } from './store';
@@ -242,10 +243,44 @@ export function TerminalView({ tabId, active }: Props) {
   const xtermHostRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const serializeRef = useRef<SerializeAddon | null>(null);
   const altCarryRef = useRef<string>('');
   const pendingOutputRef = useRef<Map<number, string>>(new Map());
   const pendingBlockRef = useRef<Block | null>(null);
   const flushRafRef = useRef<number | null>(null);
+
+  // Snapshot the currently-active xterm buffer as plain text. Used when raw
+  // mode exits so the resulting block keeps a record of what the user saw —
+  // matches Warp's "collapsed block per TUI run" behavior. Must be called
+  // BEFORE writing the sequence that ends raw mode (?1049l switches xterm
+  // back to the normal buffer, discarding the alt-screen contents).
+  function snapshotXtermBuffer(): string {
+    const term = xtermRef.current;
+    const ser = serializeRef.current;
+    if (!term || !ser) return '';
+    // Serialize only the visible viewport rows — that's what the user actually
+    // saw. Including scrollback would prepend stale shell history for normal-
+    // buffer apps (claude, ssh prompts) that don't switch to the alt screen.
+    const text = ser.serialize({ scrollback: 0 });
+    const lines = text.split('\n');
+    while (lines.length && lines[lines.length - 1].replace(/\x1b\[[^m]*m/g, '') === '') lines.pop();
+    return lines.join('\n');
+  }
+  function applySnapshotToInteractiveBlock(text: string) {
+    if (!text) return;
+    const cur = currentBlockRef.current;
+    setBlocks((bs) => {
+      if (cur !== null) {
+        return bs.map((b) => b.id === cur ? { ...b, output: capOutput(text) } : b);
+      }
+      for (let i = bs.length - 1; i >= 0; i--) {
+        if (bs[i].interactive) {
+          return bs.map((b, idx) => idx === i ? { ...b, output: capOutput(text) } : b);
+        }
+      }
+      return bs;
+    });
+  }
 
   function flushPendingOutput() {
     flushRafRef.current = null;
@@ -334,9 +369,22 @@ export function TerminalView({ tabId, active }: Props) {
             const result = detectRawScan(scan);
             const willEnterRaw =
               ((result.alt === true) || (result.cursor === true)) && !rawModeRef.current;
+            // Compute whether this scan ends raw mode. forcedRaw is handled at
+            // block-end, not here, so it's excluded from the projection.
+            const nextAlt = result.alt !== null ? result.alt : altScreen;
+            const nextCur = result.cursor !== null ? result.cursor : cursorHide;
+            const willExitRaw = rawModeRef.current && !nextAlt && !nextCur && !forcedRaw;
+
+            // Capture the alt buffer BEFORE xterm processes ?1049l, otherwise
+            // we'd snapshot the restored normal buffer (shell scrollback)
+            // instead of what the TUI actually showed.
+            let snapshot: string | null = null;
+            if (willExitRaw) snapshot = snapshotXtermBuffer();
 
             if (willEnterRaw) xtermRef.current?.reset();
             xtermRef.current?.write(msg.data);
+
+            if (snapshot) applySnapshotToInteractiveBlock(snapshot);
 
             if (result.alt !== null) setAltScreen(result.alt);
             if (result.cursor !== null) setCursorHide(result.cursor);
@@ -406,6 +454,11 @@ export function TerminalView({ tabId, active }: Props) {
           } else if (msg.type === 'ctx') {
             setTabContext(tabId, msg.ctx);
           } else if (msg.type === 'block-end') {
+            // Snapshot xterm before the shell's redraw pollutes it. Covers
+            // both forcedRaw exits (commands like `claude` that never emit
+            // ?1049h) and any straggler where raw toggles weren't observed
+            // before the block ended.
+            const snapshot = rawModeRef.current ? snapshotXtermBuffer() : null;
             const cur = currentBlockRef.current;
             const pending = pendingBlockRef.current;
             if (pending && pending.id === cur) {
@@ -417,6 +470,7 @@ export function TerminalView({ tabId, active }: Props) {
                 b.id === cur ? { ...b, exit: msg.exit, durationMs: msg.durationMs } : b,
               ));
             }
+            if (snapshot) applySnapshotToInteractiveBlock(snapshot);
             currentBlockRef.current = null;
             inPromptRef.current = true;
             setForcedRaw(false);
@@ -472,10 +526,13 @@ export function TerminalView({ tabId, active }: Props) {
       allowProposedApi: true,
     });
     const fit = new FitAddon();
+    const serialize = new SerializeAddon();
     term.loadAddon(fit);
+    term.loadAddon(serialize);
     term.open(xtermHostRef.current);
     xtermRef.current = term;
     fitRef.current = fit;
+    serializeRef.current = serialize;
 
     term.onData((data) => {
       // Only forward to PTY in raw mode. Otherwise xterm's auto-responses to
@@ -522,6 +579,7 @@ export function TerminalView({ tabId, active }: Props) {
       ro.disconnect();
       term.dispose();
       xtermRef.current = null;
+      serializeRef.current = null;
     };
   }, [tabId]);
 
@@ -796,18 +854,18 @@ export function TerminalView({ tabId, active }: Props) {
 
   return (
     <Box display="flex" flexDirection="column" w="100%" h="100%" bg="#010409" overflow="hidden" position="relative">
-      {/* xterm overlay — visible only in raw mode. A 2px buffer on all sides
-          keeps xterm cells (cursor, selection, bottom-line glyphs) from
-          touching the window chrome in alt-screen apps (vim, htop, less) and
-          inline cursor-hide apps (claude, gum, ssh prompts). */}
+      {/* xterm overlay — visible only in raw mode. Horizontal padding matches
+          BlockCard's px="4" (16px) so ssh / claude / gum prompts line up with
+          the surrounding block content. Vertical buffer stays small — just
+          enough to keep the cursor + bottom-line glyphs off the chrome. */}
       <Box
         position="absolute"
         inset="0"
         bg="#010409"
         zIndex={rawMode ? 5 : -1}
         visibility={rawMode ? 'visible' : 'hidden'}
-        px="2px"
-        py="2px"
+        px="16px"
+        py="4px"
       >
         <Box ref={xtermHostRef} w="100%" h="100%" />
       </Box>
@@ -1090,16 +1148,19 @@ function BlockCard({ block, ctxNode, cmdHeld, onDelete, onRerun }: { block: Bloc
           {block.cmd}
         </Text>
       )}
-      {!block.interactive && block.output && (
+      {block.output && (
         <Box
           className={cmdHeld ? 'grove-output grove-cmd-held' : 'grove-output'}
           color="#c9d1d9"
           fontFamily="var(--grove-mono)"
           fontSize="13px"
           lineHeight="1"
+          overflowX={block.interactive ? 'auto' : undefined}
           style={{
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
+            // Interactive snapshots are alt-screen frames padded to terminal
+            // width — wrapping them shatters box-drawing layout. Scroll instead.
+            whiteSpace: block.interactive ? 'pre' : 'pre-wrap',
+            wordBreak: block.interactive ? 'normal' : 'break-word',
             letterSpacing: 0,
             fontKerning: 'none',
             fontFeatureSettings: '"liga" 0, "calt" 0, "kern" 0',

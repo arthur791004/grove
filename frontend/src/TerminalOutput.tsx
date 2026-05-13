@@ -60,8 +60,12 @@ function parseSegments(raw: string): Seg[] {
   while (i < raw.length) {
     const ch = raw[i];
     if (ch === '\x1b' && raw[i + 1] === '[') {
+      // CSI: ESC [ params final. Consume params (digits, ;, ?, <, >, =, !, ", ', $, *)
+      // plus the final byte. Only `m` produces a visible effect (SGR); everything
+      // else (cursor moves, mode toggles) is silently skipped.
       let j = i + 2;
-      while (j < raw.length && /[0-9;?]/.test(raw[j])) j++;
+      while (j < raw.length && /[\x30-\x3f]/.test(raw[j])) j++;
+      while (j < raw.length && /[\x20-\x2f]/.test(raw[j])) j++;
       const final = raw[j];
       if (final === 'm') {
         flush();
@@ -84,6 +88,28 @@ function parseSegments(raw: string): Seg[] {
       flush();
       url = nextUrl || null;
       i = end + termLen;
+    } else if (ch === '\x1b' && raw[i + 1] === ']') {
+      // Other OSC sequences (title, hyperlinks we don't handle, etc.) — skip
+      // through ST (ESC \) or BEL.
+      const stIdx = raw.indexOf('\x1b\\', i + 2);
+      const belIdx = raw.indexOf('\x07', i + 2);
+      let end = -1; let termLen = 0;
+      if (stIdx !== -1 && (belIdx === -1 || stIdx < belIdx)) { end = stIdx; termLen = 2; }
+      else if (belIdx !== -1) { end = belIdx; termLen = 1; }
+      if (end === -1) { i++; } else { i = end + termLen; }
+    } else if (ch === '\x1b' && raw[i + 1] === 'P') {
+      // DCS (Device Control String) — terminated by ST.
+      const stIdx = raw.indexOf('\x1b\\', i + 2);
+      i = stIdx === -1 ? raw.length : stIdx + 2;
+    } else if (ch === '\x1b' && raw.length > i + 1) {
+      // Two-byte ESC sequences: charset selects (ESC ( B), keypad modes
+      // (ESC =, ESC >), cursor save/restore (ESC 7, ESC 8), etc. We don't
+      // need to act on them; just skip both bytes so the second byte doesn't
+      // leak into the visible output.
+      const next = raw[i + 1];
+      // Charset designators take an extra byte: ESC ( B, ESC ) 0, etc.
+      if ('()*+-./'.includes(next)) i += 3;
+      else i += 2;
     } else {
       buf += ch;
       i++;
