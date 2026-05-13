@@ -1,8 +1,8 @@
 import * as pty from 'node-pty';
 import os from 'node:os';
-import { isTmuxAvailable, ensureSession, attachArgs, killSession } from './tmux.js';
 import { ensureShellInitDir } from './shellInit.js';
 import { findRepoRoot, safeRun, shortPath } from './gitUtil.js';
+import { loadBlocks, saveBlocks, deleteBlocks, BlockRecord } from './blockStore.js';
 
 type WSLike = { send(data: string): void; close(): void };
 
@@ -18,7 +18,12 @@ interface Session {
   rawBuffer: string;
   parseBuffer: string;
   parsedOutputBuffer: string;
+  blocks: BlockRecord[];
+  currentBlock: BlockRecord | null;
 }
+
+const MAX_BLOCKS = 200;
+const MAX_BLOCK_OUTPUT = 200_000;
 
 const sessions = new Map<string, Session>();
 const MAX_BUFFER = 200_000;
@@ -116,6 +121,12 @@ function emitWithClearDetect(session: Session, text: string) {
     if (session.parsedOutputBuffer.length > MAX_BUFFER) {
       session.parsedOutputBuffer = session.parsedOutputBuffer.slice(-MAX_BUFFER);
     }
+    if (session.currentBlock) {
+      session.currentBlock.output += s;
+      if (session.currentBlock.output.length > MAX_BLOCK_OUTPUT) {
+        session.currentBlock.output = session.currentBlock.output.slice(-MAX_BLOCK_OUTPUT);
+      }
+    }
     broadcast(session, { type: 'output', data: s });
   }
   if (text.indexOf('\x1b') === -1) { pushOutput(text); return; }
@@ -125,6 +136,16 @@ function emitWithClearDetect(session: Session, text: string) {
     if (!m) break;
     pushOutput(sanitize(rest.slice(0, m.index)));
     session.parsedOutputBuffer = '';
+    // Mirror the frontend's clear semantics: drop completed blocks but keep
+    // the in-flight one (just empty its output) so the replay after a refresh
+    // matches what the user saw before the refresh.
+    if (session.currentBlock) {
+      session.currentBlock.output = '';
+      session.blocks = [session.currentBlock];
+    } else {
+      session.blocks = [];
+    }
+    saveBlocks(session.tabId, session.blocks);
     broadcast(session, { type: 'clear' });
     rest = rest.slice(m.index + m[0].length);
   }
@@ -260,8 +281,18 @@ function processChunk(session: Session, chunk: string) {
     const event = decodeMarker(found[1] as 'pre' | 'post', found[2]);
     if (event) {
       if (event.kind === 'pre') {
+        const rec: BlockRecord = { cmd: event.cmd, cwd: event.cwd, output: '', exit: null, durationMs: null };
+        session.blocks.push(rec);
+        if (session.blocks.length > MAX_BLOCKS) session.blocks.shift();
+        session.currentBlock = rec;
         broadcast(session, { type: 'block-start', cmd: event.cmd, cwd: event.cwd });
       } else {
+        if (session.currentBlock) {
+          session.currentBlock.exit = event.exit;
+          session.currentBlock.durationMs = event.durationMs;
+          session.currentBlock = null;
+          saveBlocks(session.tabId, session.blocks);
+        }
         broadcast(session, { type: 'block-end', exit: event.exit, durationMs: event.durationMs });
         pushCtx(session);
       }
@@ -276,26 +307,10 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
 
   const userShell = process.env.SHELL ?? '/bin/zsh';
   const isZsh = userShell.endsWith('zsh');
-  let command: string;
-  let args: string[];
   const env: Record<string, string> = { ...(process.env as Record<string, string>) };
+  if (isZsh) env.ZDOTDIR = ensureShellInitDir();
 
-  if (isZsh) {
-    env.ZDOTDIR = ensureShellInitDir();
-  }
-
-  if (isTmuxAvailable()) {
-    const overrides: Record<string, string> = {};
-    if (env.ZDOTDIR) overrides.ZDOTDIR = env.ZDOTDIR;
-    ensureSession(tabId, cwd, overrides);
-    command = 'tmux';
-    args = attachArgs(tabId);
-  } else {
-    command = userShell;
-    args = [];
-  }
-
-  const term = pty.spawn(command, args, {
+  const term = pty.spawn(userShell, [], {
     name: 'xterm-256color',
     cols: 200,
     rows: 50,
@@ -315,6 +330,8 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
     rawBuffer: '',
     parseBuffer: '',
     parsedOutputBuffer: '',
+    blocks: loadBlocks(tabId),
+    currentBlock: null,
   };
 
   term.onData((data) => {
@@ -339,7 +356,7 @@ export function destroySession(tabId: string): void {
     try { s.pty.kill(); } catch {}
     sessions.delete(tabId);
   }
-  if (isTmuxAvailable()) killSession(tabId);
+  deleteBlocks(tabId);
 }
 
 export function writeInput(tabId: string, data: string): void {
@@ -355,7 +372,13 @@ export function resizeSession(tabId: string, cols: number, rows: number): void {
 export function subscribe(tabId: string, ws: WSLike, cwd?: string): () => void {
   const s = getOrCreateSession(tabId, cwd);
   s.subscribers.add(ws);
-  if (s.parsedOutputBuffer) send(ws, { type: 'output', data: s.parsedOutputBuffer });
+  // Replay recorded blocks as native block-start/output/block-end triples so
+  // a frontend refresh rebuilds the exact same block list it had before.
+  for (const b of s.blocks) {
+    send(ws, { type: 'block-start', cmd: b.cmd, cwd: b.cwd });
+    if (b.output) send(ws, { type: 'output', data: b.output });
+    if (b.exit !== null) send(ws, { type: 'block-end', exit: b.exit, durationMs: b.durationMs ?? 0 });
+  }
   if (s.rawBuffer) send(ws, { type: 'raw', data: s.rawBuffer });
   // Send the current ctx (if any) so the new subscriber's chips populate
   // immediately instead of waiting for the next OSC 7 / env / block-end tick.

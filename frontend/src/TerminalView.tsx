@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, KeyboardEvent } from 'react';
+import { createPortal, flushSync } from 'react-dom';
 import { Box, HStack, Text } from '@chakra-ui/react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -219,18 +220,32 @@ export function TerminalView({ tabId, active }: Props) {
   const fitRef = useRef<FitAddon | null>(null);
   const altCarryRef = useRef<string>('');
   const pendingOutputRef = useRef<Map<number, string>>(new Map());
+  const pendingBlockRef = useRef<Block | null>(null);
   const flushRafRef = useRef<number | null>(null);
 
   function flushPendingOutput() {
     flushRafRef.current = null;
     const snapshot = pendingOutputRef.current;
-    if (snapshot.size === 0) return;
+    if (snapshot.size === 0 && !pendingBlockRef.current) return;
     pendingOutputRef.current = new Map();
-    setBlocks((bs) => bs.map((b) => {
-      const chunk = snapshot.get(b.id);
-      if (!chunk) return b;
-      return { ...b, output: capOutput(applyCarriageReturns(b.output, chunk)) };
-    }));
+    // Commit the deferred block-start in the same render as its first output
+    // so the user never sees an empty block flash on screen.
+    const pending = pendingBlockRef.current;
+    pendingBlockRef.current = null;
+    setBlocks((bs) => {
+      let next = bs;
+      if (pending) {
+        const firstChunk = snapshot.get(pending.id) ?? '';
+        next = [...bs.slice(-200), { ...pending, output: capOutput(firstChunk) }];
+        snapshot.delete(pending.id);
+      }
+      if (snapshot.size === 0) return next;
+      return next.map((b) => {
+        const chunk = snapshot.get(b.id);
+        if (!chunk) return b;
+        return { ...b, output: capOutput(applyCarriageReturns(b.output, chunk)) };
+      });
+    });
   }
   function scheduleFlush() {
     if (flushRafRef.current !== null) return;
@@ -267,6 +282,12 @@ export function TerminalView({ tabId, active }: Props) {
       };
       ws.onerror = () => { /* handled in onclose */ };
       ws.onmessage = (ev) => {
+        // Drop events from a stale socket. React 18 StrictMode runs the effect
+        // twice in dev: the first WS subscribes and the backend immediately
+        // sends a block replay, which would land in shared component state
+        // (refs/setBlocks) and double everything. Cleanup flips `closed=true`
+        // so the doomed socket's events get discarded.
+        if (closed || ws !== wsRef.current) return;
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === 'raw') {
@@ -297,6 +318,7 @@ export function TerminalView({ tabId, active }: Props) {
             // block keeps its header until the command finishes naturally).
             const cur = currentBlockRef.current;
             pendingOutputRef.current.clear();
+            if (pendingBlockRef.current) pendingBlockRef.current = { ...pendingBlockRef.current, output: '' };
             setBlocks((bs) => cur !== null ? bs.filter((b) => b.id === cur).map((b) => ({ ...b, output: '' })) : []);
             return;
           }
@@ -316,7 +338,11 @@ export function TerminalView({ tabId, active }: Props) {
             const id = ++blockCounter;
             currentBlockRef.current = id;
             const interactive = isInteractiveCmd(msg.cmd ?? '');
-            setBlocks((bs) => [...bs.slice(-200), {
+            // Don't render an empty block for one frame before output arrives —
+            // park it in a ref and commit only on first output or block-end.
+            // Interactive commands (vim, top) commit immediately because their
+            // output goes to xterm, not the block list.
+            const pending: Block = {
               id,
               cmd: msg.cmd,
               cwd: msg.cwd,
@@ -325,23 +351,32 @@ export function TerminalView({ tabId, active }: Props) {
               durationMs: null,
               startedAt: Date.now(),
               interactive: interactive || undefined,
-            }]);
+            };
             if (interactive) {
+              setBlocks((bs) => [...bs.slice(-200), pending]);
+              pendingBlockRef.current = null;
               xtermRef.current?.reset();
               setForcedRaw(true);
               rawModeRef.current = true;
+            } else {
+              pendingBlockRef.current = pending;
             }
             useStore.getState().setRunningCmd(tabId, msg.cmd || '');
           } else if (msg.type === 'ctx') {
             setTabContext(tabId, msg.ctx);
           } else if (msg.type === 'block-end') {
             const cur = currentBlockRef.current;
-            if (cur !== null) {
+            const pending = pendingBlockRef.current;
+            if (pending && pending.id === cur) {
+              // Block had no output at all — commit a finalized empty one.
+              setBlocks((bs) => [...bs.slice(-200), { ...pending, exit: msg.exit, durationMs: msg.durationMs }]);
+              pendingBlockRef.current = null;
+            } else if (cur !== null) {
               setBlocks((bs) => bs.map((b) =>
                 b.id === cur ? { ...b, exit: msg.exit, durationMs: msg.durationMs } : b,
               ));
-              currentBlockRef.current = null;
             }
+            currentBlockRef.current = null;
             inPromptRef.current = true;
             setForcedRaw(false);
             useStore.getState().setRunningCmd(tabId, null);
@@ -362,9 +397,19 @@ export function TerminalView({ tabId, active }: Props) {
     };
   }, [tabId]);
 
-  useEffect(() => {
+  // Sticky-bottom: track whether the user is pinned to the bottom, and only
+  // snap there when they are. While unpinned (the user scrolled up to read
+  // history), output streams in without yanking the viewport. With this in
+  // place, manual scroll + auto-follow coexist smoothly.
+  const isPinnedRef = useRef(true);
+  const onScroll = () => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    isPinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+  };
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el && isPinnedRef.current) el.scrollTop = el.scrollHeight;
   }, [blocks]);
 
   useEffect(() => {
@@ -439,10 +484,10 @@ export function TerminalView({ tabId, active }: Props) {
         }
         t.focus();
       });
-    } else if (active) {
+    } else if (active && !isRunning) {
       inputRef.current?.focus();
     }
-  }, [rawMode, active]);
+  }, [rawMode, active, isRunning]);
 
   useEffect(() => {
     const c = document.createElement('canvas');
@@ -505,6 +550,17 @@ export function TerminalView({ tabId, active }: Props) {
 
   const lastBlock = blocks.length > 0 ? blocks[blocks.length - 1] : null;
   const runningBlock = lastBlock && lastBlock.exit === null && !rawMode ? lastBlock : null;
+
+  // 250ms grace period before showing the running badge so fast commands
+  // (even chatty ones like `ls`) never flash a spinner that immediately
+  // disappears. Long-running commands cross the threshold and get visible
+  // feedback as expected.
+  const [showRunning, setShowRunning] = useState(false);
+  useEffect(() => {
+    if (!runningBlock) { setShowRunning(false); return; }
+    const t = setTimeout(() => setShowRunning(true), 250);
+    return () => clearTimeout(t);
+  }, [runningBlock?.id]);
 
   const suggestion = useMemo(() => {
     if (!input) return '';
@@ -628,6 +684,7 @@ export function TerminalView({ tabId, active }: Props) {
 
       <Box
         ref={scrollRef}
+        onScroll={onScroll}
         flex="1"
         overflowY="auto"
         fontFamily="var(--grove-mono)"
@@ -639,7 +696,13 @@ export function TerminalView({ tabId, active }: Props) {
       >
         <Box flex="1" />
         {blocks.map((b) => (
-          <BlockCard key={b.id} block={b} ctxNode={ctx?.node ?? null} cmdHeld={cmdHeld} />
+          <BlockCard
+            key={b.id}
+            block={b}
+            ctxNode={ctx?.node ?? null}
+            cmdHeld={cmdHeld}
+            onDelete={() => setBlocks((bs) => bs.filter((x) => x.id !== b.id))}
+          />
         ))}
       </Box>
 
@@ -658,7 +721,7 @@ export function TerminalView({ tabId, active }: Props) {
       <ChipStrip ctx={ctx} tabId={tabId} />
 
       <Box bg="#010409" px="4" pt="1" pb="4" display="flex" alignItems="center" gap="2" position="relative">
-        {runningBlock && <RunningBadge cmd={runningBlock.cmd} onStop={() => send('\x03')} />}
+        {runningBlock && showRunning && <RunningBadge cmd={runningBlock.cmd} onStop={() => send('\x03')} />}
         <Box flex="1" position="relative" h="22px">
           {suggestion && !runningBlock && (
             <Box position="absolute" inset="0" pointerEvents="none"
@@ -708,9 +771,9 @@ export function TerminalView({ tabId, active }: Props) {
           <input
             ref={inputRef}
             value={input}
-            disabled={!!runningBlock}
+            readOnly={!!runningBlock}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => { onKeyDown(e); requestAnimationFrame(updateCaret); }}
+            onKeyDown={(e) => { if (runningBlock) return; onKeyDown(e); requestAnimationFrame(updateCaret); }}
             onKeyUp={updateCaret}
             onClick={updateCaret}
             onSelect={updateCaret}
@@ -778,7 +841,7 @@ function DiffLabel({ added, removed }: { added: number; removed: number }) {
   );
 }
 
-function BlockCard({ block, ctxNode, cmdHeld }: { block: Block; ctxNode: string | null; cmdHeld: boolean }) {
+function BlockCard({ block, ctxNode, cmdHeld, onDelete }: { block: Block; ctxNode: string | null; cmdHeld: boolean; onDelete: () => void }) {
   const running = block.exit === null;
   const failed = block.exit !== null && block.exit !== 0;
   const durStr = formatDuration(block.durationMs, running);
@@ -800,8 +863,8 @@ function BlockCard({ block, ctxNode, cmdHeld }: { block: Block; ctxNode: string 
         align="center"
         lineHeight="1.4"
       >
-        {ctxNode && <Text color="#7ee787">{ctxNode}</Text>}
         {block.cwd && <Text color="#79c0ff">{shortPath(block.cwd)}</Text>}
+        {ctxNode && <Text color="#7ee787">{ctxNode}</Text>}
         {block.exit !== null && block.exit !== 0 && (
           <Text color="#f85149">✗ {block.exit}</Text>
         )}
@@ -825,24 +888,18 @@ function BlockCard({ block, ctxNode, cmdHeld }: { block: Block; ctxNode: string 
           </Text>
         )}
         <Box flex="1" />
-        <HStack
+        <Box
           className="block-actions"
-          gap="2"
           opacity="0"
           transition="opacity 0.12s"
           color="#7d8590"
         >
-          <BlockActionIcon title="Filter">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <path d="M2 3h12l-4.5 6v4l-3 1.5V9L2 3z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
-            </svg>
-          </BlockActionIcon>
-          <BlockActionIcon title="More">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-              <circle cx="8" cy="3.5" r="1.2" /><circle cx="8" cy="8" r="1.2" /><circle cx="8" cy="12.5" r="1.2" />
-            </svg>
-          </BlockActionIcon>
-        </HStack>
+          <BlockMenu
+            onCopyCmd={() => navigator.clipboard.writeText(block.cmd || '').catch(() => {})}
+            onCopyOutput={() => navigator.clipboard.writeText(block.output || '').catch(() => {})}
+            onDelete={onDelete}
+          />
+        </Box>
       </HStack>
       {block.cmd && (
         <Text
@@ -881,10 +938,116 @@ function BlockCard({ block, ctxNode, cmdHeld }: { block: Block; ctxNode: string 
   );
 }
 
-function BlockActionIcon({ title, children }: { title: string; children: React.ReactNode }) {
+function BlockMenu({ onCopyCmd, onCopyOutput, onDelete }: { onCopyCmd: () => void; onCopyOutput: () => void; onDelete: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: globalThis.MouseEvent) => {
+      const t = e.target as Node;
+      if (btnRef.current?.contains(t) || menuRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    const onScroll = () => setOpen(false);
+    document.addEventListener('mousedown', onDocClick);
+    window.addEventListener('scroll', onScroll, true);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      window.removeEventListener('scroll', onScroll, true);
+    };
+  }, [open]);
+  const openMenu = () => {
+    const rect = btnRef.current?.getBoundingClientRect();
+    if (rect) {
+      const MENU_H = 108; // ~3 items * ~32px + padding/border; close enough for flip
+      const right = window.innerWidth - rect.right;
+      const spaceBelow = window.innerHeight - rect.bottom;
+      if (spaceBelow < MENU_H + 8 && rect.top > MENU_H + 8) {
+        setPos({ bottom: window.innerHeight - rect.top + 4, right });
+      } else {
+        setPos({ top: rect.bottom + 4, right });
+      }
+    }
+    setOpen((v) => !v);
+  };
+  const item = (label: string, onClick: () => void, danger = false) => (
+    <Box
+      as="button"
+      onMouseDown={(e: globalThis.MouseEvent) => e.preventDefault()}
+      onClick={() => {
+        // Close the portal synchronously so it's committed to the DOM before
+        // the action (which may unmount this component) runs. Without flushSync
+        // the close gets batched with downstream state changes and the portal
+        // can be left visually stuck.
+        flushSync(() => setOpen(false));
+        onClick();
+      }}
+      display="block"
+      w="100%"
+      textAlign="left"
+      px="3"
+      py="1.5"
+      fontSize="12px"
+      color={danger ? '#ff7b72' : '#c9d1d9'}
+      bg="transparent"
+      border="none"
+      cursor="pointer"
+      _hover={{ bg: danger ? '#3a1a1a' : '#21262d' }}
+    >
+      {label}
+    </Box>
+  );
+  return (
+    <>
+      <button
+        ref={btnRef}
+        title="More"
+        onClick={openMenu}
+        style={{
+          background: 'transparent', border: 'none', cursor: 'pointer',
+          color: 'inherit', padding: 2, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          borderRadius: 3,
+        }}
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+          <circle cx="3.5" cy="8" r="1.2" />
+          <circle cx="8" cy="8" r="1.2" />
+          <circle cx="12.5" cy="8" r="1.2" />
+        </svg>
+      </button>
+      {open && pos && createPortal(
+        <Box
+          ref={menuRef}
+          position="fixed"
+          top={pos.top !== undefined ? `${pos.top}px` : undefined}
+          bottom={pos.bottom !== undefined ? `${pos.bottom}px` : undefined}
+          right={`${pos.right}px`}
+          minW="160px"
+          bg="#161b22"
+          border="1px solid #30363d"
+          borderRadius="6px"
+          py="1"
+          zIndex={1000}
+          boxShadow="0 8px 24px rgba(0,0,0,0.4)"
+        >
+          {item('Copy command', onCopyCmd)}
+          {item('Copy output', onCopyOutput)}
+          <Box my="1" h="1px" bg="#30363d" />
+          {item('Delete', onDelete, true)}
+        </Box>,
+        document.body,
+      )}
+    </>
+  );
+}
+
+function BlockActionIcon({ title, onClick, children }: { title: string; onClick?: () => void; children: React.ReactNode }) {
   return (
     <button
       title={title}
+      onClick={onClick}
       style={{
         background: 'transparent', border: 'none', cursor: 'pointer',
         color: 'inherit', padding: 2, display: 'flex', alignItems: 'center', justifyContent: 'center',
