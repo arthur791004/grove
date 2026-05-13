@@ -796,17 +796,18 @@ export function TerminalView({ tabId, active }: Props) {
 
   return (
     <Box display="flex" flexDirection="column" w="100%" h="100%" bg="#010409" overflow="hidden" position="relative">
-      {/* xterm overlay — visible only in raw mode.
-          Alt-screen apps (vim, htop, less) get edge-to-edge.
-          Inline cursor-hide apps (claude, gum) keep block-style padding. */}
+      {/* xterm overlay — visible only in raw mode. A 2px buffer on all sides
+          keeps xterm cells (cursor, selection, bottom-line glyphs) from
+          touching the window chrome in alt-screen apps (vim, htop, less) and
+          inline cursor-hide apps (claude, gum, ssh prompts). */}
       <Box
         position="absolute"
         inset="0"
         bg="#010409"
         zIndex={rawMode ? 5 : -1}
         visibility={rawMode ? 'visible' : 'hidden'}
-        px={rawKind === 'alt' ? '0' : '2'}
-        py={rawKind === 'alt' ? '0' : '2'}
+        px="2px"
+        py="2px"
       >
         <Box ref={xtermHostRef} w="100%" h="100%" />
       </Box>
