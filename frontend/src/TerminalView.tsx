@@ -83,8 +83,9 @@ interface CompletionItem { value: string; label: string; kind: 'dir' | 'file' | 
 let serverCompletionsCache: string[] = [];
 let shellHistoryCache: string[] = [];
 let serverCompletionsFetchedAt = 0;
-async function fetchServerCompletions(): Promise<{ completions: string[]; history: string[] }> {
-  if (Date.now() - serverCompletionsFetchedAt < 30_000 && serverCompletionsCache.length) {
+const completionsListeners = new Set<(h: string[]) => void>();
+async function fetchServerCompletions(force = false): Promise<{ completions: string[]; history: string[] }> {
+  if (!force && Date.now() - serverCompletionsFetchedAt < 30_000 && serverCompletionsCache.length) {
     return { completions: serverCompletionsCache, history: shellHistoryCache };
   }
   try {
@@ -93,8 +94,24 @@ async function fetchServerCompletions(): Promise<{ completions: string[]; histor
     serverCompletionsCache = Array.isArray(data.completions) ? data.completions : [];
     shellHistoryCache = Array.isArray(data.history) ? data.history : [];
     serverCompletionsFetchedAt = Date.now();
+    for (const fn of completionsListeners) fn(shellHistoryCache);
   } catch {}
   return { completions: serverCompletionsCache, history: shellHistoryCache };
+}
+
+async function appendShellHistory(cmd: string) {
+  const trimmed = cmd.trim();
+  if (!trimmed) return;
+  try {
+    await fetch(API_BASE + '/history', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cmd: trimmed }),
+    });
+    // Force-refresh so other tabs (and ArrowUp in this tab) immediately see
+    // the just-submitted command in shell history.
+    fetchServerCompletions(true);
+  } catch {}
 }
 
 const MAX_BLOCK_OUTPUT = 200_000;
@@ -200,6 +217,9 @@ export function TerminalView({ tabId, active }: Props) {
   const [input, setInput] = useState('');
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+  // The text the user had typed when they started walking history. Restored on
+  // ArrowDown past the newest match so it feels like fish/zsh substring-search.
+  const [historyPrefix, setHistoryPrefix] = useState<string>('');
   const isRunning = useStore((s) => !!s.runningCmds[tabId]);
   const cmdHeld = useCmdHeld();
   const ctx = useTabContext(tabId, 0, 0, active || isRunning);
@@ -550,6 +570,31 @@ export function TerminalView({ tabId, active }: Props) {
 
   useEffect(() => { updateCaret(); }, [input]);
 
+  // Keep the prompt input focused while this tab is active so the user can
+  // just start typing without ever clicking. Triggered on a real "typing" key,
+  // and skipped when the user is interacting with another input/textarea,
+  // when modifiers are held (so ⌘C / ⌘V / shortcuts still work), or while a
+  // running block has the rawMode listener swallowing keys.
+  useEffect(() => {
+    if (!active) return;
+    function onKey(e: globalThis.KeyboardEvent) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t === inputRef.current) return;
+      if (t && t.closest('input, textarea, select, [contenteditable="true"]')) return;
+      // Filter to keys that would actually produce input — printables, space,
+      // backspace, enter, etc. Skip pure navigation/function keys so arrows on
+      // a focused panel don't yank focus away.
+      const k = e.key;
+      const isPrintable = k.length === 1;
+      const isEditing = k === 'Backspace' || k === 'Enter' || k === 'Tab';
+      if (!isPrintable && !isEditing) return;
+      inputRef.current?.focus();
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [active]);
+
   function send(data: string) {
     const ws = wsRef.current;
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data }));
@@ -567,7 +612,10 @@ export function TerminalView({ tabId, active }: Props) {
       setServerCompletions(completions);
       setShellHistory(history);
     });
-    return () => { cancelled = true; };
+    // Subscribe so a command submitted in any tab refreshes this tab's history.
+    const onUpdate = (h: string[]) => { if (!cancelled) setShellHistory(h); };
+    completionsListeners.add(onUpdate);
+    return () => { cancelled = true; completionsListeners.delete(onUpdate); };
   }, []);
 
   useEffect(() => {
@@ -670,31 +718,59 @@ export function TerminalView({ tabId, active }: Props) {
       }
     }
     if (e.key === 'ArrowUp') {
+      e.preventDefault();
       if (showDropdown) {
-        e.preventDefault();
         setDropdownIndex((i) => Math.max(0, i - 1));
         return;
       }
-      // Combine persisted shell history (oldest-first) with in-session history
-      // so ArrowUp walks back through both.
+      // Combined history: persisted shell history (newest-first → reverse to
+      // oldest-first) followed by in-session entries. Filter by the prefix the
+      // user originally typed so ArrowUp walks matches, not all of history.
       const combined = [...shellHistory].reverse().concat(history);
-      if (combined.length === 0) return;
-      e.preventDefault();
-      const idx = historyIndex === null ? combined.length - 1 : Math.max(0, historyIndex - 1);
-      setHistoryIndex(idx); setInput(combined[idx]); return;
+      const prefix = historyIndex === null ? input : historyPrefix;
+      const matches: number[] = [];
+      for (let i = 0; i < combined.length; i++) {
+        if (!prefix || combined[i].startsWith(prefix)) matches.push(i);
+      }
+      if (matches.length === 0) return;
+      // Walking position within `matches`. Translate the previous absolute
+      // index to the closest match position so the next step is one older.
+      let pos: number;
+      if (historyIndex === null) {
+        setHistoryPrefix(prefix);
+        pos = matches.length - 1;
+      } else {
+        const cur = matches.indexOf(historyIndex);
+        pos = cur === -1 ? matches.length - 1 : Math.max(0, cur - 1);
+      }
+      const idx = matches[pos];
+      setHistoryIndex(idx);
+      setInput(combined[idx]);
+      return;
     }
     if (e.key === 'ArrowDown') {
+      e.preventDefault();
       if (showDropdown) {
-        e.preventDefault();
         setDropdownIndex((i) => Math.min(contextual.length - 1, i + 1));
         return;
       }
       if (historyIndex === null) return;
-      e.preventDefault();
       const combined = [...shellHistory].reverse().concat(history);
-      const idx = historyIndex + 1;
-      if (idx >= combined.length) { setHistoryIndex(null); setInput(''); }
-      else { setHistoryIndex(idx); setInput(combined[idx]); }
+      const prefix = historyPrefix;
+      const matches: number[] = [];
+      for (let i = 0; i < combined.length; i++) {
+        if (!prefix || combined[i].startsWith(prefix)) matches.push(i);
+      }
+      const cur = matches.indexOf(historyIndex);
+      if (cur === -1 || cur + 1 >= matches.length) {
+        // Off the newest match — restore the originally-typed prefix.
+        setHistoryIndex(null);
+        setInput(prefix);
+        return;
+      }
+      const idx = matches[cur + 1];
+      setHistoryIndex(idx);
+      setInput(combined[idx]);
       return;
     }
     if (e.key === 'Enter') {
@@ -709,7 +785,10 @@ export function TerminalView({ tabId, active }: Props) {
       setDropdownOpen(false);
       const text = input;
       send(text + '\n');
-      if (text.trim()) setHistory((h) => [...h.slice(-200), text]);
+      if (text.trim()) {
+        setHistory((h) => [...h.slice(-200), text]);
+        appendShellHistory(text);
+      }
       setHistoryIndex(null);
       setInput('');
     }
@@ -786,7 +865,19 @@ export function TerminalView({ tabId, active }: Props) {
         )}
       </Box>
 
-      <Box position="relative">
+      <Box
+        position="relative"
+        onMouseDown={(e) => {
+          // Focus the input when the user clicks anywhere in the footer (chip
+          // strip, padding, prompt row), unless they clicked an interactive
+          // element. Hoisted up from the input row so a click on a chip or the
+          // chip strip's empty space also focuses the input.
+          const target = e.target as HTMLElement;
+          if (target.closest('button, a, input, textarea, select, [role="button"], [data-clickable]')) return;
+          e.preventDefault();
+          inputRef.current?.focus();
+        }}
+      >
         {showDropdown && (
           <Box position="absolute" bottom="100%" left="0" right="0" zIndex={20} pointerEvents="auto">
             <CompletionDropdown
@@ -802,14 +893,6 @@ export function TerminalView({ tabId, active }: Props) {
 
       <Box
         bg="#010409" px="4" pt="1" pb="4" display="flex" alignItems="center" gap="2" position="relative"
-        onMouseDown={(e) => {
-          // Focus the input when the user clicks anywhere in the footer, unless
-          // they clicked an interactive element (button, link, the input itself, etc.).
-          const target = e.target as HTMLElement;
-          if (target.closest('button, a, input, textarea, select, [role="button"], [data-clickable]')) return;
-          e.preventDefault();
-          inputRef.current?.focus();
-        }}
       >
         {runningBlock && showRunning && <RunningBadge cmd={runningBlock.cmd} onStop={() => send('\x03')} />}
         <Box flex="1" position="relative" h="22px">
@@ -862,7 +945,7 @@ export function TerminalView({ tabId, active }: Props) {
             ref={inputRef}
             value={input}
             readOnly={!!runningBlock}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => { setInput(e.target.value); setHistoryIndex(null); }}
             onKeyDown={(e) => { if (runningBlock) return; onKeyDown(e); requestAnimationFrame(updateCaret); }}
             onKeyUp={updateCaret}
             onClick={updateCaret}
@@ -1201,7 +1284,12 @@ function ChipStrip({ ctx, tabId }: { ctx: ReturnType<typeof useTabContext>; tabI
     const tab = s.tabs.find((t) => t.id === tabId);
     return tab ? s.groups.find((g) => g.id === tab.groupId)?.cwd : undefined;
   });
-  const cwd = ctx?.shortCwd || groupCwd;
+  // Only trust ctx.shortCwd once the backend confirms the pty session has
+  // initialized (cwdReady). Otherwise the HTTP /context fetch on first mount
+  // — which fires before the WS-spawned session exists — returns shortCwd "~"
+  // (os.homedir() fallback) and the chip flickers cwd → ~ → cwd as the WS
+  // catches up. groupCwd is the workspace folder, the right pre-ready value.
+  const cwd = (ctx?.cwdReady && ctx.shortCwd) || (groupCwd ? shortPath(groupCwd) : '');
   const cwdLoading = !cwd;
   return (
     <HStack px="4" pt="4" pb="0" gap="2" bg="#010409" flexWrap="wrap">

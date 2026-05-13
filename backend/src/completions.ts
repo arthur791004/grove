@@ -56,6 +56,26 @@ function readZshHistory(): string[] {
   }
 }
 
+function appendZshHistory(cmd: string) {
+  const trimmed = cmd.trim();
+  if (!trimmed) return;
+  // zsh extended history format: ": <epoch>:<elapsed>;<command>". Newlines in
+  // the command must be escaped as "\\\n" so multi-line commands are read back
+  // as a single history entry.
+  const ts = Math.floor(Date.now() / 1000);
+  const escaped = trimmed.replace(/\\/g, '\\\\').replace(/\n/g, '\\\n');
+  const line = `: ${ts}:0;${escaped}\n`;
+  const file = path.join(os.homedir(), '.zsh_history');
+  try {
+    fs.appendFileSync(file, line, { encoding: 'utf8', mode: 0o600 });
+    // Invalidate the in-memory cache so the next /completions request reflects
+    // the new entry — otherwise the renderer's history would lag by up to 10s.
+    cache = null;
+  } catch (err) {
+    console.error('[grove] failed to append to ~/.zsh_history:', err);
+  }
+}
+
 export function registerCompletionRoutes(app: FastifyInstance) {
   app.get('/completions', async () => {
     const now = Date.now();
@@ -69,5 +89,11 @@ export function registerCompletionRoutes(app: FastifyInstance) {
       cache = { ts: now, list: merged, history };
     }
     return { completions: cache.list, history: cache.history };
+  });
+
+  app.post<{ Body: { cmd?: string } }>('/history', async (req, reply) => {
+    const cmd = typeof req.body?.cmd === 'string' ? req.body.cmd : '';
+    appendZshHistory(cmd);
+    return reply.send({ ok: true });
   });
 }

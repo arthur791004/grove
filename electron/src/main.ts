@@ -1,7 +1,18 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, protocol, session, shell } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+// Custom scheme used to serve the built renderer in packaged builds. Loading
+// the bundle from file:// breaks dynamic import() of code-split chunks because
+// Chromium treats their fetch as a CORS request against a null origin. Serving
+// from a registered standard scheme gives the renderer a normal origin so
+// React.lazy chunks load.
+const APP_SCHEME = 'grove';
+protocol.registerSchemesAsPrivileged([
+  { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+]);
 
 app.setName('Grove');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -68,7 +79,7 @@ function createWindow() {
   if (devUrl) {
     win.loadURL(devUrl);
   } else {
-    win.loadFile(path.resolve(__dirname, '../../frontend/dist/index.html'));
+    win.loadURL(`${APP_SCHEME}://app/index.html`);
   }
 
   // DevTools no longer auto-open in dev; toggle with View → Toggle Developer
@@ -187,11 +198,31 @@ function stripFramingHeadersForLocalhost() {
   });
 }
 
+function registerAppProtocol() {
+  // Resolve any request under grove://app/<relative> to the corresponding file
+  // inside frontend/dist. Anchored to __dirname so it works the same in dev
+  // (electron/dist/main.js → ../../frontend/dist) and packaged (inside asar).
+  const distRoot = path.resolve(__dirname, '../../frontend/dist');
+  protocol.handle(APP_SCHEME, (req) => {
+    const url = new URL(req.url);
+    // Strip leading slash and normalize. Reject any path that would escape
+    // distRoot (e.g. via "..") so the scheme can't be coaxed into reading
+    // arbitrary files.
+    const rel = decodeURIComponent(url.pathname.replace(/^\/+/, '')) || 'index.html';
+    const resolved = path.resolve(distRoot, rel);
+    if (!resolved.startsWith(distRoot + path.sep) && resolved !== distRoot) {
+      return new Response('Forbidden', { status: 403 });
+    }
+    return fetch(pathToFileURL(resolved).toString());
+  });
+}
+
 app.whenReady().then(async () => {
   if (!process.env.GROVE_DEV_URL) {
     startBackend();
     await waitForBackend();
   }
+  registerAppProtocol();
   stripFramingHeadersForLocalhost();
   createWindow();
   app.on('activate', () => {
