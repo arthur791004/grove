@@ -81,18 +81,20 @@ function isInteractiveCmd(cmd: string): boolean {
 interface CompletionItem { value: string; label: string; kind: 'dir' | 'file' | 'branch' | 'script' }
 
 let serverCompletionsCache: string[] = [];
+let shellHistoryCache: string[] = [];
 let serverCompletionsFetchedAt = 0;
-async function fetchServerCompletions(): Promise<string[]> {
+async function fetchServerCompletions(): Promise<{ completions: string[]; history: string[] }> {
   if (Date.now() - serverCompletionsFetchedAt < 30_000 && serverCompletionsCache.length) {
-    return serverCompletionsCache;
+    return { completions: serverCompletionsCache, history: shellHistoryCache };
   }
   try {
     const res = await fetch(API_BASE + '/completions');
     const data = await res.json();
     serverCompletionsCache = Array.isArray(data.completions) ? data.completions : [];
+    shellHistoryCache = Array.isArray(data.history) ? data.history : [];
     serverCompletionsFetchedAt = Date.now();
   } catch {}
-  return serverCompletionsCache;
+  return { completions: serverCompletionsCache, history: shellHistoryCache };
 }
 
 const MAX_BLOCK_OUTPUT = 200_000;
@@ -214,6 +216,8 @@ export function TerminalView({ tabId, active }: Props) {
   const rawMode = altScreen || cursorHide || forcedRaw;
   const rawKind: RawKind = altScreen || forcedRaw ? 'alt' : 'cursor';
   const rawModeRef = useRef(false);
+  const activeRef = useRef(active);
+  useEffect(() => { activeRef.current = active; }, [active]);
   const inPromptRef = useRef(true);
   const xtermHostRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
@@ -464,6 +468,13 @@ export function TerminalView({ tabId, active }: Props) {
     });
 
     function doFitAndResize() {
+      // Skip while the tab is inactive — Workspace hides it via display:none,
+      // which collapses the xterm host to 0×0. fit.fit() would then clamp the
+      // PTY down to ~2 cols × 1 row, wrecking any running raw-mode app's
+      // alt-screen buffer before the user switches back.
+      if (!activeRef.current) return;
+      const host = xtermHostRef.current;
+      if (!host || host.clientWidth === 0 || host.clientHeight === 0) return;
       try { fit.fit(); } catch {}
       const ws = wsRef.current;
       if (ws?.readyState === WebSocket.OPEN) {
@@ -497,20 +508,25 @@ export function TerminalView({ tabId, active }: Props) {
   useEffect(() => { rawModeRef.current = rawMode; }, [rawMode]);
 
   useEffect(() => {
-    if (rawMode && active) {
+    if (active) {
+      // Re-sync PTY size whenever the tab becomes active. While hidden via
+      // display:none, the xterm host is 0×0 and ResizeObserver fires no useful
+      // updates — so if the window was resized while inactive, the PTY is
+      // still at the old dimensions until we fit here.
       requestAnimationFrame(() => {
         const t = xtermRef.current;
         const f = fitRef.current;
         const ws = wsRef.current;
-        if (!t || !f) return;
-        try { f.fit(); } catch {}
-        if (ws?.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
+        const host = xtermHostRef.current;
+        if (t && f && host && host.clientWidth > 0 && host.clientHeight > 0) {
+          try { f.fit(); } catch {}
+          if (ws?.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
+          }
         }
-        t.focus();
+        if (rawMode) t?.focus();
+        else if (!isRunning) inputRef.current?.focus();
       });
-    } else if (active && !isRunning) {
-      inputRef.current?.focus();
     }
   }, [rawMode, active, isRunning]);
 
@@ -540,12 +556,17 @@ export function TerminalView({ tabId, active }: Props) {
   }
 
   const [serverCompletions, setServerCompletions] = useState<string[]>(serverCompletionsCache);
+  const [shellHistory, setShellHistory] = useState<string[]>(shellHistoryCache);
   const [contextual, setContextual] = useState<CompletionItem[]>([]);
   const [dropdownIndex, setDropdownIndex] = useState(0);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    fetchServerCompletions().then((list) => { if (!cancelled) setServerCompletions(list); });
+    fetchServerCompletions().then(({ completions, history }) => {
+      if (cancelled) return;
+      setServerCompletions(completions);
+      setShellHistory(history);
+    });
     return () => { cancelled = true; };
   }, []);
 
@@ -654,10 +675,13 @@ export function TerminalView({ tabId, active }: Props) {
         setDropdownIndex((i) => Math.max(0, i - 1));
         return;
       }
-      if (history.length === 0) return;
+      // Combine persisted shell history (oldest-first) with in-session history
+      // so ArrowUp walks back through both.
+      const combined = [...shellHistory].reverse().concat(history);
+      if (combined.length === 0) return;
       e.preventDefault();
-      const idx = historyIndex === null ? history.length - 1 : Math.max(0, historyIndex - 1);
-      setHistoryIndex(idx); setInput(history[idx]); return;
+      const idx = historyIndex === null ? combined.length - 1 : Math.max(0, historyIndex - 1);
+      setHistoryIndex(idx); setInput(combined[idx]); return;
     }
     if (e.key === 'ArrowDown') {
       if (showDropdown) {
@@ -667,9 +691,10 @@ export function TerminalView({ tabId, active }: Props) {
       }
       if (historyIndex === null) return;
       e.preventDefault();
+      const combined = [...shellHistory].reverse().concat(history);
       const idx = historyIndex + 1;
-      if (idx >= history.length) { setHistoryIndex(null); setInput(''); }
-      else { setHistoryIndex(idx); setInput(history[idx]); }
+      if (idx >= combined.length) { setHistoryIndex(null); setInput(''); }
+      else { setHistoryIndex(idx); setInput(combined[idx]); }
       return;
     }
     if (e.key === 'Enter') {
@@ -775,7 +800,17 @@ export function TerminalView({ tabId, active }: Props) {
 
       <ChipStrip ctx={ctx} tabId={tabId} />
 
-      <Box bg="#010409" px="4" pt="1" pb="4" display="flex" alignItems="center" gap="2" position="relative">
+      <Box
+        bg="#010409" px="4" pt="1" pb="4" display="flex" alignItems="center" gap="2" position="relative"
+        onMouseDown={(e) => {
+          // Focus the input when the user clicks anywhere in the footer, unless
+          // they clicked an interactive element (button, link, the input itself, etc.).
+          const target = e.target as HTMLElement;
+          if (target.closest('button, a, input, textarea, select, [role="button"], [data-clickable]')) return;
+          e.preventDefault();
+          inputRef.current?.focus();
+        }}
+      >
         {runningBlock && showRunning && <RunningBadge cmd={runningBlock.cmd} onStop={() => send('\x03')} />}
         <Box flex="1" position="relative" h="22px">
           {suggestion && !runningBlock && (
@@ -1166,10 +1201,16 @@ function ChipStrip({ ctx, tabId }: { ctx: ReturnType<typeof useTabContext>; tabI
     const tab = s.tabs.find((t) => t.id === tabId);
     return tab ? s.groups.find((g) => g.id === tab.groupId)?.cwd : undefined;
   });
-  const cwd = ctx?.shortCwd || groupCwd || '~';
+  const cwd = ctx?.shortCwd || groupCwd;
+  const cwdLoading = !cwd;
   return (
     <HStack px="4" pt="4" pb="0" gap="2" bg="#010409" flexWrap="wrap">
-      <Chip icon={<FolderIcon />} label={cwd} />
+      <Chip
+        icon={<FolderIcon />}
+        label={cwdLoading
+          ? <Text as="span" color="#484f58" style={{ filter: 'blur(5px)', opacity: 0.5, userSelect: 'none' }}>loading…</Text>
+          : cwd}
+      />
       {ctx?.node && (
         <Chip icon={<NodeIcon />} label={ctx.node} labelColor="#7ee787" />
       )}

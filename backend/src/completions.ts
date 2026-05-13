@@ -26,7 +26,7 @@ const DEFAULTS = [
   'curl ', 'ssh ', 'code .', 'open .',
 ];
 
-interface CacheEntry { ts: number; list: string[] }
+interface CacheEntry { ts: number; list: string[]; history: string[] }
 const CACHE_TTL = 10_000;
 let cache: CacheEntry | null = null;
 
@@ -56,22 +56,18 @@ function readZshHistory(): string[] {
   }
 }
 
-function buildList(): string[] {
-  const history = readZshHistory();
-  const seen = new Set<string>(history);
-  const merged = [...history];
-  for (const cmd of DEFAULTS) {
-    if (!seen.has(cmd)) { merged.push(cmd); seen.add(cmd); }
-  }
-  return merged;
-}
-
 export function registerCompletionRoutes(app: FastifyInstance) {
   app.get('/completions', async () => {
     const now = Date.now();
     if (!cache || now - cache.ts > CACHE_TTL) {
-      cache = { ts: now, list: buildList() };
+      const history = readZshHistory();
+      const seen = new Set<string>(history);
+      const merged = [...history];
+      for (const cmd of DEFAULTS) {
+        if (!seen.has(cmd)) { merged.push(cmd); seen.add(cmd); }
+      }
+      cache = { ts: now, list: merged, history };
     }
-    return { completions: cache.list };
+    return { completions: cache.list, history: cache.history };
   });
 }
