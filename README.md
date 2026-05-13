@@ -3,6 +3,8 @@
 A terminal app with grouped vertical tabs, Warp-style command blocks, an
 embedded browser, and a built-in file/diff explorer. macOS only.
 
+<img width="1511" height="886" alt="image" src="https://github.com/user-attachments/assets/f067b7ee-0e80-4f06-ac32-390aaff4e58c" />
+
 ## Highlights
 
 - **Grouped vertical tabs** — drag tabs between named workspaces; each
