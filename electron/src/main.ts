@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, session, shell } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 
 app.setName('Grove');
@@ -9,9 +10,16 @@ const windowStateKeeper = require('electron-window-state');
 let backend: ChildProcess | null = null;
 
 function startBackend() {
-  const backendEntry = path.resolve(__dirname, '../../backend/dist/index.js');
+  // In a packaged build the backend lives at
+  // app.asar.unpacked/backend/dist (see electron-builder asarUnpack). Replace
+  // the asar segment so spawn can find the real filesystem path. In dev the
+  // path doesn't contain "app.asar" and the replace is a no-op.
+  const raw = path.resolve(__dirname, '../../backend/dist/index.js');
+  const backendEntry = raw.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
   backend = spawn(process.execPath, [backendEntry], {
-    env: { ...process.env, GROVE_BACKEND_PORT: '4317' },
+    // ELECTRON_RUN_AS_NODE makes the spawned Electron binary behave as a
+    // plain Node runtime (skips the GUI / main script lookup).
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', GROVE_BACKEND_PORT: '4317' },
     stdio: 'inherit',
   });
 }
@@ -81,6 +89,29 @@ function createWindow() {
     win.webContents.send('grove:frame-loaded');
   });
 }
+
+// Persisted UI state — origin-independent (tabs, panels, recents).
+// localStorage is keyed by origin, which differs between dev (http://) and
+// packaged (file://) renderers, so state would otherwise be siloed. The
+// file lives next to the other userData, atomically rewritten via tmp+rename.
+const STATE_FILE = path.join(app.getPath('userData'), 'grove-state.json');
+
+ipcMain.handle('grove:state-get', async () => {
+  try { return fs.readFileSync(STATE_FILE, 'utf8'); }
+  catch { return null; }
+});
+
+ipcMain.handle('grove:state-set', async (_e, content: string) => {
+  if (typeof content !== 'string') return;
+  try {
+    fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+    const tmp = STATE_FILE + '.tmp';
+    fs.writeFileSync(tmp, content, 'utf8');
+    fs.renameSync(tmp, STATE_FILE);
+  } catch (err) {
+    console.error('[grove] state-set failed', err);
+  }
+});
 
 ipcMain.handle('grove:open-external', async (_event, url: string) => {
   if (typeof url !== 'string') return;

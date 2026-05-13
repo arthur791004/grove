@@ -1,0 +1,59 @@
+{
+  // Bundle identifier and display name used by macOS.
+  appId: 'com.arthur.grove',
+  productName: 'Grove',
+
+  // Tell electron-builder which compiled file to launch — overrides the root
+  // package.json's missing `main` field.
+  extraMetadata: {
+    main: 'electron/dist/main.js',
+  },
+
+  // Pack everything into asar except node-pty (native binary needs to live
+  // on disk so dlopen can load it).
+  asar: true,
+  asarUnpack: [
+    // node-pty is native — its prebuilt binary must live on disk so dlopen
+    // can load it. Backend code is unpacked too because main spawns it as a
+    // child node process, which can't read from inside an asar archive.
+    '**/node_modules/node-pty/**',
+    'backend/**',
+  ],
+
+  directories: {
+    output: 'release',
+    buildResources: 'electron/assets',
+  },
+
+  // Compiled output from all three workspaces plus the hoisted node_modules.
+  // Excludes source TS, tests, and the toolchain we don't need at runtime.
+  files: [
+    'electron/dist/**',
+    'electron/assets/**',
+    'electron/package.json',
+    'backend/dist/**',
+    'backend/package.json',
+    'frontend/dist/**',
+    'frontend/package.json',
+    'package.json',
+    'node_modules/**',
+    '!node_modules/electron/**',
+    '!node_modules/electron-builder/**',
+    '!node_modules/app-builder-bin/**',
+    '!**/node_modules/**/test/**',
+    '!**/node_modules/**/__tests__/**',
+    '!**/*.{ts,tsx,map}',
+  ],
+
+  mac: {
+    target: [
+      { target: 'dir', arch: ['arm64'] },
+    ],
+    icon: 'electron/assets/icon.icns',
+    category: 'public.app-category.developer-tools',
+    // Skip code-signing for local builds. Distributing this app to other
+    // machines would need a real Developer ID identity here.
+    identity: null,
+    hardenedRuntime: false,
+  },
+}

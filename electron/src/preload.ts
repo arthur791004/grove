@@ -21,6 +21,8 @@ ipcRenderer.on('grove:frame-nav', (_e, url: string) => {
 contextBridge.exposeInMainWorld('grove', {
   pickFolder: (): Promise<string | null> => ipcRenderer.invoke('grove:pick-folder'),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('grove:open-external', url),
+  stateGet: (): Promise<string | null> => ipcRenderer.invoke('grove:state-get'),
+  stateSet: (content: string): Promise<void> => ipcRenderer.invoke('grove:state-set', content),
   onFrameNav: (cb: (url: string) => void): (() => void) => {
     navSubs.add(cb);
     return () => { navSubs.delete(cb); };

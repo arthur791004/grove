@@ -1,6 +1,39 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import { API_BASE } from './api';
+
+// Persist via Electron IPC → ~/Library/Application Support/Grove/grove-state.json.
+// Origin-independent so dev (http://127.0.0.1:5173) and packaged (file://)
+// renderers share the same state. Falls back to localStorage in non-Electron
+// contexts (e.g. running Vite in a browser tab) and migrates legacy
+// localStorage data into the file on first read.
+const groveStorage = createJSONStorage(() => ({
+  getItem: async (name: string) => {
+    if (!window.grove?.stateGet) return localStorage.getItem(name);
+    const fromFile = await window.grove.stateGet();
+    if (fromFile != null) return fromFile;
+    const legacy = localStorage.getItem(name);
+    if (legacy) {
+      try { await window.grove.stateSet(legacy); } catch {}
+      return legacy;
+    }
+    return null;
+  },
+  setItem: async (name: string, value: string) => {
+    if (!window.grove?.stateSet) {
+      localStorage.setItem(name, value);
+      return;
+    }
+    await window.grove.stateSet(value);
+  },
+  removeItem: async (name: string) => {
+    if (!window.grove?.stateSet) {
+      localStorage.removeItem(name);
+      return;
+    }
+    await window.grove.stateSet('');
+  },
+}));
 
 export type TabColor = 'default' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan';
 
@@ -327,6 +360,7 @@ export const useStore = create<State & Actions>()(
     }),
     {
       name: 'grove-state',
+      storage: groveStorage,
       partialize: (s) => ({
         groups: s.groups,
         tabs: s.tabs,

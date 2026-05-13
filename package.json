@@ -2,13 +2,19 @@
   "name": "grove",
   "private": true,
   "version": "0.0.1",
-  "workspaces": ["backend", "frontend", "electron"],
+  "workspaces": [
+    "backend",
+    "frontend",
+    "electron"
+  ],
   "scripts": {
     "dev": "npm run kill-ports && npm-run-all -p dev:backend dev:frontend",
     "kill-ports": "lsof -ti :4317 :5173 2>/dev/null | while read pid; do kill -9 \"$pid\" 2>/dev/null; done; exit 0",
     "dev:backend": "npm --workspace backend run dev",
     "dev:frontend": "npm --workspace frontend run dev",
     "build": "npm --workspace backend run build && npm --workspace frontend run build",
+    "build:all": "npm run build && npm --workspace grove-app run build",
+    "dist": "npm run build:all && electron-builder",
     "electron:build": "npm --workspace grove-app run build",
     "electron:dev": "npm run build && npm --workspace grove-app run build && npm --workspace grove-app run start",
     "dev:all": "npm run kill-ports && npm --workspace grove-app run build && npm-run-all -p dev:backend dev:frontend dev:electron",
@@ -16,7 +22,15 @@
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true"
   },
   "devDependencies": {
+    "electron-builder": "^26.8.1",
     "npm-run-all": "^4.1.5",
     "wait-on": "^7.2.0"
+  },
+  "dependencies": {
+    "@fastify/cors": "^9.0.1",
+    "@fastify/websocket": "^10.0.1",
+    "electron-window-state": "^5.0.3",
+    "fastify": "^4.28.1",
+    "node-pty": "^1.0.0"
   }
 }
