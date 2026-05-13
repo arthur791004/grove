@@ -1,5 +1,13 @@
 import type { FastifyInstance } from 'fastify';
+import os from 'node:os';
+import path from 'node:path';
 import { subscribe, writeInput, resizeSession, destroySession } from './sessions.js';
+
+function expandHome(p: string): string {
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
 
 interface WSLike {
   send(data: string): void;
@@ -14,12 +22,13 @@ type ClientMsg =
   | { type: 'resize'; cols: number; rows: number };
 
 export function registerTerminalRoutes(app: FastifyInstance) {
-  app.get<{ Params: { tabId: string } }>(
+  app.get<{ Params: { tabId: string }; Querystring: { cwd?: string } }>(
     '/pty/:tabId',
     { websocket: true },
     (socket: WSLike, req) => {
       const tabId = req.params.tabId;
-      const unsubscribe = subscribe(tabId, socket);
+      const cwd = req.query.cwd ? expandHome(req.query.cwd) : undefined;
+      const unsubscribe = subscribe(tabId, socket, cwd);
 
       socket.on('message', (raw: Buffer) => {
         let msg: ClientMsg;
@@ -37,4 +46,12 @@ export function registerTerminalRoutes(app: FastifyInstance) {
     destroySession(req.params.tabId);
     return { ok: true };
   });
+
+  app.post<{ Params: { tabId: string }; Body: { data: string } }>(
+    '/session/:tabId/input',
+    async (req) => {
+      writeInput(req.params.tabId, req.body?.data ?? '');
+      return { ok: true };
+    },
+  );
 }

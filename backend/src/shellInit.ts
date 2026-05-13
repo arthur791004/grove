@@ -17,6 +17,19 @@ unset POWERLEVEL10K_DISABLE_GITSTATUS 2>/dev/null
 [ -f "$HOME/.zprofile" ] && source "$HOME/.zprofile"
 [ -f "$HOME/.zshrc"    ] && source "$HOME/.zshrc"
 
+# Force-load nvm (in case the user's setup lazy-defines it as a stub function).
+# When loaded, \`node\` becomes a real binary in PATH so subshells and forks see
+# the same version the user sees.
+if [ -z "$NVM_DIR" ] && [ -d "$HOME/.nvm" ]; then
+  export NVM_DIR="$HOME/.nvm"
+fi
+if [ -n "$NVM_DIR" ] && [ -s "$NVM_DIR/nvm.sh" ]; then
+  source "$NVM_DIR/nvm.sh" --no-use 2>/dev/null
+  if command -v nvm >/dev/null 2>&1; then
+    nvm use default >/dev/null 2>&1 || nvm use --silent default 2>/dev/null
+  fi
+fi
+
 zmodload zsh/datetime 2>/dev/null
 autoload -U add-zsh-hook
 
@@ -40,6 +53,42 @@ _grove_preexec() {
   printf '\\e]1337;grove-pre;%s;%s\\a' "$b64" "$PWD"
 }
 
+_grove_emit_env() {
+  local _gv_node _gv_branch _gv_venv _gv_conda _gv_aws _gv_tmp
+  _gv_node=""
+  _gv_branch=""
+  _gv_venv=""
+  _gv_conda=""
+  _gv_aws=""
+  _gv_tmp="/tmp/grove-env-$$"
+  # Make sure nvm's bin is at the front of PATH so direct \`node\` calls and
+  # forked processes (yarn, npm) all use the active nvm version.
+  if [ -n "$NVM_BIN" ] && [[ "$PATH" != "$NVM_BIN:"* ]]; then
+    PATH="$NVM_BIN:$PATH"
+    export PATH
+  fi
+  if [ -n "$NVM_BIN" ] && [ -x "$NVM_BIN/node" ]; then
+    "$NVM_BIN/node" -v >|"$_gv_tmp" 2>/dev/null
+    read -r _gv_node <"$_gv_tmp" 2>/dev/null
+  elif command -v node >/dev/null 2>&1; then
+    node -v >|"$_gv_tmp" 2>/dev/null
+    read -r _gv_node <"$_gv_tmp" 2>/dev/null
+  fi
+  git symbolic-ref --short HEAD >|"$_gv_tmp" 2>/dev/null
+  read -r _gv_branch <"$_gv_tmp" 2>/dev/null
+  rm -f "$_gv_tmp"
+  if [ -n "$VIRTUAL_ENV" ]; then
+    _gv_venv="\${VIRTUAL_ENV##*/}"
+  fi
+  if [ -n "$CONDA_DEFAULT_ENV" ]; then
+    _gv_conda="$CONDA_DEFAULT_ENV"
+  fi
+  if [ -n "$AWS_PROFILE" ]; then
+    _gv_aws="$AWS_PROFILE"
+  fi
+  printf '\\e]1337;grove-env;node=%s|branch=%s|venv=%s|conda=%s|aws=%s\\a' "$_gv_node" "$_gv_branch" "$_gv_venv" "$_gv_conda" "$_gv_aws"
+}
+
 _grove_precmd() {
   local exit=$?
   local dur=0
@@ -50,6 +99,7 @@ _grove_precmd() {
   printf '\\e]133;D;%s\\a' "$exit"
   printf '\\e]1337;grove-post;%s;%s\\a' "$exit" "$dur"
   _grove_osc7
+  _grove_emit_env
 }
 
 _grove_force_prompt() {

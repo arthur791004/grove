@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Box, HStack, Text } from '@chakra-ui/react';
 import { useStore } from './store';
+import { API_BASE } from './api';
 
 interface Context {
   shortCwd: string;
@@ -19,10 +20,10 @@ export function StatusBar() {
 
     async function refresh() {
       try {
-        const cwdRes = await fetch(`http://127.0.0.1:4317/session/${activeTabId}/cwd`);
+        const cwdRes = await fetch(`${API_BASE}/session/${activeTabId}/cwd`);
         const { cwd } = await cwdRes.json();
         const params = cwd ? `?cwd=${encodeURIComponent(cwd)}` : '';
-        const ctxRes = await fetch(`http://127.0.0.1:4317/context${params}`);
+        const ctxRes = await fetch(`${API_BASE}/context${params}`);
         const data = await ctxRes.json();
         if (!cancelled) setCtx(data);
       } catch {
@@ -80,9 +81,9 @@ function Chip({
       border="1px solid #21262d"
       borderRadius="5px"
     >
-      {icon && <Text color={iconColor} fontSize="11px" lineHeight="1">{icon}</Text>}
-      {prefix && <Text color="#7d8590" fontSize="11px" lineHeight="1">{prefix}</Text>}
-      <Text fontSize="11px" color={labelColor ?? '#c9d1d9'} lineHeight="1" fontFamily="Menlo, monospace" fontWeight="500">
+      {icon && <Text color={iconColor} fontSize="12px" lineHeight="1">{icon}</Text>}
+      {prefix && <Text color="#7d8590" fontSize="12px" lineHeight="1">{prefix}</Text>}
+      <Text fontSize="12px" color={labelColor ?? '#c9d1d9'} lineHeight="1" fontFamily="Menlo, monospace" fontWeight="500">
         {label}
       </Text>
     </HStack>

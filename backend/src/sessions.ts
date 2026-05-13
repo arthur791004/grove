@@ -11,6 +11,8 @@ interface Session {
   cols: number;
   rows: number;
   cwd: string;
+  nodeVersion: string | null;
+  env: Record<string, string>;
   subscribers: Set<WSLike>;
   rawBuffer: string;
   parseBuffer: string;
@@ -22,10 +24,17 @@ const MAX_BUFFER = 200_000;
 
 const MARKER_REGEX = /\x1b\]1337;grove-(pre|post);([^\x07\x1b]*)\x07/;
 const OSC7_REGEX = /\x1b\]7;file:\/\/[^/]*([^\x07\x1b]+)(?:\x07|\x1b\\)/g;
+const ENV_REGEX = /\x1b\]1337;grove-env;([^\x07\x1b]*)\x07/g;
 // All other OSC sequences (terminated by BEL or ST)
 const OSC_ANY = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
-// All CSI sequences EXCEPT SGR (\x1b[...m which sets colors/styles)
-const CSI_NON_SGR = /\x1b\[[0-9;?]*[A-LN-Za-ln-z]/g;
+// All CSI sequences EXCEPT a small whitelist the block view interprets:
+//   m  → SGR (colors/styles)
+//   K  → EL (erase-in-line)
+//   J  → ED (erase-in-display)
+//   A  → CUU (cursor up — for redrawing multi-line progress bars)
+//   F  → CPL (cursor previous line)
+// Excludes uppercase {A, F, J, K, M} and lowercase {m}.
+const CSI_NON_SGR = /\x1b\[[0-9;?]*[B-EG-ILN-Za-ln-z]/g;
 // Two-byte ESC sequences: keypad/cursor/reset, e.g. \x1b=, \x1b>, \x1b7, \x1bM, etc.
 const TWO_BYTE_ESC = /\x1b[=>78DEHMNZ()*+\-./<>~\\]/g;
 // Any remaining lone ESC that ISN'T the start of an SGR sequence (\x1b[).
@@ -139,12 +148,30 @@ function decodeMarker(kind: 'pre' | 'post', body: string): BlockEvent | null {
 function processChunk(session: Session, chunk: string) {
   session.parseBuffer += chunk;
 
-  if (chunk.indexOf('\x1b]7;') !== -1) {
-    for (const m of chunk.matchAll(OSC7_REGEX)) {
+  if (session.parseBuffer.indexOf('\x1b]7;') !== -1) {
+    for (const m of session.parseBuffer.matchAll(OSC7_REGEX)) {
       try {
         const decoded = decodeURIComponent(m[1]);
         if (decoded && decoded !== session.cwd) session.cwd = decoded;
       } catch {}
+    }
+  }
+  if (session.parseBuffer.indexOf('\x1b]1337;grove-env;') !== -1) {
+    ENV_REGEX.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = ENV_REGEX.exec(session.parseBuffer)) !== null) {
+      const next: Record<string, string> = {};
+      for (const pair of m[1].split('|')) {
+        const eq = pair.indexOf('=');
+        if (eq <= 0) continue;
+        const k = pair.slice(0, eq);
+        const v = pair.slice(eq + 1);
+        if (v) next[k] = v;
+      }
+      session.env = next;
+      session.nodeVersion = next.node || null;
+      console.log('[grove] env updated:', next);
+      broadcast(session, { type: 'env', env: next });
     }
   }
 
@@ -214,6 +241,8 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
     cols: 200,
     rows: 50,
     cwd,
+    nodeVersion: null,
+    env: {},
     subscribers: new Set(),
     rawBuffer: '',
     parseBuffer: '',
@@ -255,8 +284,8 @@ export function resizeSession(tabId: string, cols: number, rows: number): void {
   try { s.pty.resize(cols, rows); s.cols = cols; s.rows = rows; } catch {}
 }
 
-export function subscribe(tabId: string, ws: WSLike): () => void {
-  const s = getOrCreateSession(tabId);
+export function subscribe(tabId: string, ws: WSLike, cwd?: string): () => void {
+  const s = getOrCreateSession(tabId, cwd);
   s.subscribers.add(ws);
   if (s.parsedOutputBuffer) send(ws, { type: 'output', data: s.parsedOutputBuffer });
   if (s.rawBuffer) send(ws, { type: 'raw', data: s.rawBuffer });
@@ -265,4 +294,12 @@ export function subscribe(tabId: string, ws: WSLike): () => void {
 
 export function sessionCwd(tabId: string): string | null {
   return sessions.get(tabId)?.cwd ?? null;
+}
+
+export function sessionNodeVersion(tabId: string): string | null {
+  return sessions.get(tabId)?.nodeVersion ?? null;
+}
+
+export function sessionEnv(tabId: string): Record<string, string> {
+  return sessions.get(tabId)?.env ?? {};
 }

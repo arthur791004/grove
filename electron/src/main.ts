@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -24,7 +24,11 @@ function createWindow() {
     height: state.height,
     backgroundColor: '#0d1117',
     titleBarStyle: 'hiddenInset',
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.resolve(__dirname, 'preload.js'),
+    },
   });
   state.manage(win);
 
@@ -39,6 +43,16 @@ function createWindow() {
     win.webContents.openDevTools({ mode: 'detach' });
   }
 }
+
+ipcMain.handle('grove:pick-folder', async () => {
+  const win = BrowserWindow.getFocusedWindow();
+  const result = await dialog.showOpenDialog(win!, {
+    properties: ['openDirectory', 'createDirectory'],
+    title: 'Choose workspace folder',
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  return result.filePaths[0];
+});
 
 app.whenReady().then(() => {
   if (!process.env.GROVE_DEV_URL) startBackend();

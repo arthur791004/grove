@@ -5,6 +5,8 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { useTabContext } from './useTabContext';
+import { useStore } from './store';
+import { API_BASE, WS_BASE } from './api';
 
 const ALT_ON   = /\x1b\[\?(?:1049|47|1047)h/g;
 const ALT_OFF  = /\x1b\[\?(?:1049|47|1047)l/g;
@@ -41,7 +43,8 @@ function detectRawScan(text: string): RawScan {
 
 interface Props { tabId: string; active: boolean }
 
-const BACKEND_WS = (tabId: string) => `ws://127.0.0.1:4317/pty/${tabId}`;
+const BACKEND_WS = (tabId: string, cwd?: string) =>
+  `${WS_BASE}/pty/${tabId}${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`;
 
 interface Block {
   id: number;
@@ -56,6 +59,24 @@ interface Block {
 
 let blockCounter = 0;
 
+// Commands that need a full terminal — block view can't represent their UI.
+// Matches when one of these appears as a command token (start of string, or
+// after a pipe/semicolon/&&/&), so `git log | less` or `cd x && vim` work.
+//
+// Edge case: this is a heuristic, not real termios watching. We miss TUIs
+// invoked via aliases/wrapper scripts whose names aren't in this list AND
+// that don't emit alt-screen (?1049h) or cursor-hide (?25l). Warp solves
+// this by watching PTY termios for ICANON/ECHO flips — node-pty doesn't
+// expose termios, so the proper fix would be either an `ffi-napi` binding
+// (`tcgetattr` via libc) or backend polling of the shell's foreground
+// child process (pgrep + ps). Both are deferred; revisit if a real TUI
+// trips through unnoticed.
+const INTERACTIVE_CMD_RE =
+  /(?:^|[|;&]\s*)(?:sudo\s+|env\s+\w+=\S+\s+)*(ssh|mosh|telnet|tmux|screen|nano|vim?|nvim|emacs|less|more|man|top|htop|btop|nload|iftop|python\d*|ipython|node|deno|bun|psql|mysql|mongosh?|redis-cli|sqlite3|gh|gum|claude|fzf|lazygit|tig|k9s)\b/;
+function isInteractiveCmd(cmd: string): boolean {
+  return INTERACTIVE_CMD_RE.test(cmd.trim());
+}
+
 interface CompletionItem { value: string; label: string; kind: 'dir' | 'file' | 'branch' | 'script' }
 
 let serverCompletionsCache: string[] = [];
@@ -65,7 +86,7 @@ async function fetchServerCompletions(): Promise<string[]> {
     return serverCompletionsCache;
   }
   try {
-    const res = await fetch('http://127.0.0.1:4317/completions');
+    const res = await fetch(API_BASE + '/completions');
     const data = await res.json();
     serverCompletionsCache = Array.isArray(data.completions) ? data.completions : [];
     serverCompletionsFetchedAt = Date.now();
@@ -77,20 +98,76 @@ const MAX_BLOCK_OUTPUT = 200_000;
 const capOutput = (s: string): string => s.length > MAX_BLOCK_OUTPUT ? s.slice(-MAX_BLOCK_OUTPUT) : s;
 
 function applyCarriageReturns(prev: string, incoming: string): string {
-  const merged = prev + incoming;
-  if (!incoming.includes('\r')) return merged;
-  const lines: string[] = [];
-  let buf = '';
-  for (let i = 0; i < merged.length; i++) {
-    const ch = merged[i];
-    if (ch === '\n') { lines.push(buf); buf = ''; }
-    else if (ch === '\r') {
-      if (merged[i + 1] === '\n') { lines.push(buf); buf = ''; i++; }
-      else buf = '';
-    } else buf += ch;
+  if (
+    incoming.indexOf('\r') === -1 &&
+    incoming.indexOf('\n') === -1 &&
+    incoming.indexOf('\x1b[') === -1
+  ) {
+    return prev + incoming;
   }
-  lines.push(buf);
-  return lines.join('\n');
+
+  let result = prev;
+  let pending = '';
+  const flush = () => { if (pending) { result += pending; pending = ''; } };
+  const killCurrentLine = () => {
+    flush();
+    const nl = result.lastIndexOf('\n');
+    result = nl === -1 ? '' : result.slice(0, nl + 1);
+  };
+  const popLines = (n: number) => {
+    flush();
+    for (let k = 0; k < n; k++) {
+      // If the cursor is mid-line (no trailing \n), first drop that partial line.
+      if (!result.endsWith('\n')) {
+        const nl = result.lastIndexOf('\n');
+        result = nl === -1 ? '' : result.slice(0, nl + 1);
+      }
+      if (result === '') break;
+      // Real-terminal cursor-up + overwrite is approximated by dropping the
+      // previous line entirely so subsequent writes append fresh content.
+      result = result.slice(0, -1); // drop trailing \n
+      const nl = result.lastIndexOf('\n');
+      result = nl === -1 ? '' : result.slice(0, nl + 1);
+    }
+  };
+
+  let i = 0;
+  while (i < incoming.length) {
+    const ch = incoming[i];
+    if (ch === '\r') {
+      if (incoming[i + 1] === '\n') { flush(); result += '\n'; i += 2; }
+      else { killCurrentLine(); i++; }
+    } else if (ch === '\n') {
+      flush(); result += '\n'; i++;
+    } else if (ch === '\x1b' && incoming[i + 1] === '[') {
+      let j = i + 2;
+      while (j < incoming.length && /[0-9;?]/.test(incoming[j])) j++;
+      if (j >= incoming.length) { pending += ch; i++; continue; }
+      const param = incoming.slice(i + 2, j);
+      const fin = incoming[j];
+      const seq = incoming.slice(i, j + 1);
+      i = j + 1;
+      if (fin === 'A' || fin === 'F') {
+        const n = param === '' ? 1 : parseInt(param, 10) || 1;
+        popLines(n);
+        if (fin === 'F') killCurrentLine();
+      } else if (fin === 'K') {
+        const mode = param === '' ? 0 : parseInt(param, 10);
+        if (mode === 0 || mode === 2) killCurrentLine();
+      } else if (fin === 'J') {
+        const mode = param === '' ? 0 : parseInt(param, 10);
+        if (mode === 0 || mode === 2) killCurrentLine();
+      } else {
+        // SGR or other zero-width — pass through to preserve colors.
+        pending += seq;
+      }
+    } else {
+      pending += ch;
+      i++;
+    }
+  }
+  flush();
+  return result;
 }
 
 export function TerminalView({ tabId, active }: Props) {
@@ -109,14 +186,33 @@ export function TerminalView({ tabId, active }: Props) {
   const charWidthRef = useRef<number>(7.8);
   const [altScreen, setAltScreen] = useState(false);
   const [cursorHide, setCursorHide] = useState(false);
-  const rawMode = altScreen || cursorHide;
-  const rawKind: RawKind = altScreen ? 'alt' : 'cursor';
+  const [forcedRaw, setForcedRaw] = useState(false);
+  const rawMode = altScreen || cursorHide || forcedRaw;
+  const rawKind: RawKind = altScreen || forcedRaw ? 'alt' : 'cursor';
   const rawModeRef = useRef(false);
   const inPromptRef = useRef(true);
   const xtermHostRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const altCarryRef = useRef<string>('');
+  const pendingOutputRef = useRef<Map<number, string>>(new Map());
+  const flushRafRef = useRef<number | null>(null);
+
+  function flushPendingOutput() {
+    flushRafRef.current = null;
+    const snapshot = pendingOutputRef.current;
+    if (snapshot.size === 0) return;
+    pendingOutputRef.current = new Map();
+    setBlocks((bs) => bs.map((b) => {
+      const chunk = snapshot.get(b.id);
+      if (!chunk) return b;
+      return { ...b, output: capOutput(applyCarriageReturns(b.output, chunk)) };
+    }));
+  }
+  function scheduleFlush() {
+    if (flushRafRef.current !== null) return;
+    flushRafRef.current = requestAnimationFrame(flushPendingOutput);
+  }
 
   useEffect(() => {
     let closed = false;
@@ -125,7 +221,10 @@ export function TerminalView({ tabId, active }: Props) {
 
     function connect() {
       if (closed) return;
-      const ws = new WebSocket(BACKEND_WS(tabId));
+      const st = useStore.getState();
+      const tab = st.tabs.find((t) => t.id === tabId);
+      const group = tab ? st.groups.find((g) => g.id === tab.groupId) : null;
+      const ws = new WebSocket(BACKEND_WS(tabId, group?.cwd));
       wsRef.current = ws;
       ws.onopen = () => {
         attempt = 0;
@@ -174,6 +273,7 @@ export function TerminalView({ tabId, active }: Props) {
             // Wipe everything EXCEPT the in-progress block (so the `clear`
             // block keeps its header until the command finishes naturally).
             const cur = currentBlockRef.current;
+            pendingOutputRef.current.clear();
             setBlocks((bs) => cur !== null ? bs.filter((b) => b.id === cur).map((b) => ({ ...b, output: '' })) : []);
             return;
           }
@@ -183,13 +283,16 @@ export function TerminalView({ tabId, active }: Props) {
             if (rawModeRef.current || inPromptRef.current) return;
             const cur = currentBlockRef.current;
             if (cur === null) return;
-            setBlocks((bs) => bs.map((b) =>
-              b.id === cur ? { ...b, output: capOutput(applyCarriageReturns(b.output, msg.data)) } : b,
-            ));
+            // Coalesce output per rAF so spinner-heavy commands (yarn, npm)
+            // don't trigger a React render on every emitted frame.
+            const pending = pendingOutputRef.current;
+            pending.set(cur, (pending.get(cur) ?? '') + msg.data);
+            scheduleFlush();
           } else if (msg.type === 'block-start') {
             inPromptRef.current = false;
             const id = ++blockCounter;
             currentBlockRef.current = id;
+            const interactive = isInteractiveCmd(msg.cmd ?? '');
             setBlocks((bs) => [...bs.slice(-200), {
               id,
               cmd: msg.cmd,
@@ -198,7 +301,16 @@ export function TerminalView({ tabId, active }: Props) {
               exit: null,
               durationMs: null,
               startedAt: Date.now(),
+              interactive: interactive || undefined,
             }]);
+            if (interactive) {
+              xtermRef.current?.reset();
+              setForcedRaw(true);
+              rawModeRef.current = true;
+            }
+            useStore.getState().setRunningCmd(tabId, msg.cmd || '');
+          } else if (msg.type === 'env') {
+            setCtxRefreshKey((k) => k + 1);
           } else if (msg.type === 'block-end') {
             const cur = currentBlockRef.current;
             if (cur !== null) {
@@ -208,6 +320,8 @@ export function TerminalView({ tabId, active }: Props) {
               currentBlockRef.current = null;
             }
             inPromptRef.current = true;
+            setForcedRaw(false);
+            useStore.getState().setRunningCmd(tabId, null);
             // Force context refresh so the cwd chip updates right after any
             // command (esp. `cd`) finishes.
             setCtxRefreshKey((k) => k + 1);
@@ -220,6 +334,10 @@ export function TerminalView({ tabId, active }: Props) {
     return () => {
       closed = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (flushRafRef.current !== null) {
+        cancelAnimationFrame(flushRafRef.current);
+        flushRafRef.current = null;
+      }
       wsRef.current?.close();
     };
   }, [tabId]);
@@ -346,9 +464,9 @@ export function TerminalView({ tabId, active }: Props) {
     let cancelled = false;
     const timer = setTimeout(async () => {
       try {
-        const cwdRes = await fetch(`http://127.0.0.1:4317/session/${tabId}/cwd`);
+        const cwdRes = await fetch(`${API_BASE}/session/${tabId}/cwd`);
         const { cwd } = await cwdRes.json();
-        const url = `http://127.0.0.1:4317/complete?cwd=${encodeURIComponent(cwd ?? '')}&input=${encodeURIComponent(input)}`;
+        const url = `${API_BASE}/complete?cwd=${encodeURIComponent(cwd ?? '')}&input=${encodeURIComponent(input)}`;
         const res = await fetch(url);
         const data = await res.json();
         if (!cancelled) {
@@ -364,6 +482,9 @@ export function TerminalView({ tabId, active }: Props) {
   }, [input, tabId]);
 
   const showDropdown = dropdownOpen && contextual.length > 0 && input.trim().length > 0;
+
+  const lastBlock = blocks.length > 0 ? blocks[blocks.length - 1] : null;
+  const runningBlock = lastBlock && lastBlock.exit === null && !rawMode ? lastBlock : null;
 
   const suggestion = useMemo(() => {
     if (!input) return '';
@@ -514,11 +635,12 @@ export function TerminalView({ tabId, active }: Props) {
           </Box>
         )}
 
-      <ChipStrip ctx={ctx} />
+      <ChipStrip ctx={ctx} tabId={tabId} />
 
       <Box bg="#010409" px="4" pt="1" pb="4" display="flex" alignItems="center" gap="2" position="relative">
+        {runningBlock && <RunningBadge cmd={runningBlock.cmd} onStop={() => send('\x03')} />}
         <Box flex="1" position="relative" h="22px">
-          {suggestion && (
+          {suggestion && !runningBlock && (
             <Box position="absolute" inset="0" pointerEvents="none"
               fontFamily="var(--grove-mono)" fontSize="13px" lineHeight="22px" color="#484f58"
               style={{
@@ -551,7 +673,7 @@ export function TerminalView({ tabId, active }: Props) {
                   bg="#161b22"
                   color="#7d8590"
                   verticalAlign="middle"
-                  fontSize="9px"
+                  fontSize="12px"
                   fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
                   fontWeight="600"
                   letterSpacing="0.06em"
@@ -566,6 +688,7 @@ export function TerminalView({ tabId, active }: Props) {
           <input
             ref={inputRef}
             value={input}
+            disabled={!!runningBlock}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { onKeyDown(e); requestAnimationFrame(updateCaret); }}
             onKeyUp={updateCaret}
@@ -593,7 +716,7 @@ export function TerminalView({ tabId, active }: Props) {
               textRendering: 'geometricPrecision',
             }}
           />
-          {caretVisible && (
+          {caretVisible && !runningBlock && (
             <Box
               className="grove-caret"
               position="absolute"
@@ -622,12 +745,17 @@ function formatDuration(ms: number | null, running: boolean): string {
   return ms < 1000 ? `${ms.toFixed(0)}ms` : `${(ms / 1000).toFixed(2)}s`;
 }
 
-function formatDiff(d: { added: number; removed: number }): string {
-  if (d.added === 0 && d.removed === 0) return '0';
-  const parts: string[] = [];
-  if (d.added) parts.push(`+${d.added}`);
-  if (d.removed) parts.push(`-${d.removed}`);
-  return parts.join(' ');
+function DiffLabel({ added, removed }: { added: number; removed: number }) {
+  if (added === 0 && removed === 0) {
+    return <Text as="span" fontSize="12px" color="#7d8590" fontFamily="var(--grove-mono)">0</Text>;
+  }
+  return (
+    <Text as="span" fontSize="12px" fontFamily="var(--grove-mono)" lineHeight="1">
+      {added > 0 && <Text as="span" color="#7ee787">+{added}</Text>}
+      {added > 0 && removed > 0 && <Text as="span" color="#7d8590">{' '}</Text>}
+      {removed > 0 && <Text as="span" color="#ff7b72">-{removed}</Text>}
+    </Text>
+  );
 }
 
 function BlockCard({ block, ctxNode }: { block: Block; ctxNode: string | null }) {
@@ -647,7 +775,7 @@ function BlockCard({ block, ctxNode }: { block: Block; ctxNode: string | null })
     >
       <HStack
         gap="3"
-        fontSize="11px"
+        fontSize="12px"
         fontFamily="var(--grove-mono)"
         align="center"
         lineHeight="1.4"
@@ -663,7 +791,7 @@ function BlockCard({ block, ctxNode }: { block: Block; ctxNode: string | null })
             px="1.5"
             py="0.5"
             ml="1"
-            fontSize="9px"
+            fontSize="12px"
             color="#83C2D7"
             border="1px solid #30363d"
             borderRadius="3px"
@@ -746,26 +874,85 @@ function BlockActionIcon({ title, children }: { title: string; children: React.R
   );
 }
 
-function ChipStrip({ ctx }: { ctx: ReturnType<typeof useTabContext> }) {
-  if (!ctx) return null;
+function RunningBadge({ cmd, onStop }: { cmd: string; onStop: () => void }) {
+  const truncated = cmd.length > 60 ? cmd.slice(0, 60) + '…' : cmd;
   return (
-    <HStack px="4" pt="4" pb="0" gap="2" bg="#010409">
-      {ctx.node && (
+    <Box
+      display="inline-flex"
+      alignItems="center"
+      gap="2"
+      h="22px"
+      lineHeight="22px"
+      fontFamily="var(--grove-mono)"
+      fontSize="13px"
+      color="#484f58"
+      flexShrink="0"
+      minW="0"
+    >
+      <Box className="grove-sq-loader" aria-label="running">
+        <span /><span /><span /><span />
+      </Box>
+      <Box as="span" truncate maxW="360px">{truncated}</Box>
+      <Box
+        as="button"
+        onClick={onStop}
+        display="inline-flex"
+        alignItems="center"
+        px="1.5"
+        h="16px"
+        border="1px solid #30363d"
+        borderTopColor="#3d444d"
+        borderBottomColor="#22272e"
+        borderRadius="4px"
+        bg="#161b22"
+        color="#7d8590"
+        fontSize="12px"
+        fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+        fontWeight="600"
+        letterSpacing="0.06em"
+        textTransform="uppercase"
+        cursor="pointer"
+        title="Send SIGINT to the running process"
+        style={{ boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.35)' }}
+        _hover={{ borderColor: '#f85149', color: '#f85149' }}
+      >
+        ^C stop
+      </Box>
+    </Box>
+  );
+}
+
+function ChipStrip({ ctx, tabId }: { ctx: ReturnType<typeof useTabContext>; tabId: string }) {
+  const groupCwd = useStore((s) => {
+    const tab = s.tabs.find((t) => t.id === tabId);
+    return tab ? s.groups.find((g) => g.id === tab.groupId)?.cwd : undefined;
+  });
+  const cwd = ctx?.shortCwd || groupCwd || '~';
+  return (
+    <HStack px="4" pt="4" pb="0" gap="2" bg="#010409" flexWrap="wrap">
+      <Chip icon={<FolderIcon />} label={cwd} />
+      {ctx?.node && (
         <Chip icon={<NodeIcon />} label={ctx.node} labelColor="#7ee787" />
       )}
-      <Chip icon={<FolderIcon />} label={ctx.shortCwd} />
-      {ctx.branch && (
+      {ctx?.branch && (
         <Chip icon={<BranchIcon />} label={ctx.branch} labelColor="#7ee787" />
       )}
-      {ctx.diff && ctx.diff.files > 0 && (
-        <Chip icon={<DiffIcon />} label={formatDiff(ctx.diff)} />
+      {ctx?.diff && ctx.diff.files > 0 && (
+        <Chip
+          icon={<DiffIcon />}
+          label={<DiffLabel added={ctx.diff.added} removed={ctx.diff.removed} />}
+        />
       )}
+      {ctx?.env?.venv && <Chip prefix="venv" label={ctx.env.venv} labelColor="#79c0ff" />}
+      {ctx?.env?.conda && <Chip prefix="conda" label={ctx.env.conda} labelColor="#d2a8ff" />}
+      {ctx?.env?.aws && <Chip prefix="aws" label={ctx.env.aws} labelColor="#f59e0b" />}
+      {ctx?.env?.k8s && <Chip prefix="k8s" label={ctx.env.k8s} labelColor="#56d4dd" />}
     </HStack>
   );
 }
 
-function Chip({ icon, label, labelColor }: {
-  icon?: React.ReactNode; label: React.ReactNode; labelColor?: string;
+function Chip({ icon, prefix, label, labelColor }: {
+  icon?: React.ReactNode; prefix?: string; label: React.ReactNode; labelColor?: string;
 }) {
   return (
     <HStack
@@ -780,7 +967,7 @@ function Chip({ icon, label, labelColor }: {
     >
       {icon && (
         <Box
-          color="#7d8590"
+          color={labelColor ?? '#7d8590'}
           display="flex"
           alignItems="center"
           justifyContent="center"
@@ -790,7 +977,12 @@ function Chip({ icon, label, labelColor }: {
           {icon}
         </Box>
       )}
-      <Text fontSize="11px" color={labelColor ?? '#c9d1d9'} fontFamily="var(--grove-mono)" fontWeight="500" lineHeight="1">
+      {prefix && (
+        <Text fontSize="12px" color="#7d8590" fontFamily="var(--grove-mono)" fontWeight="600" lineHeight="1" textTransform="lowercase">
+          {prefix}
+        </Text>
+      )}
+      <Text fontSize="12px" color={labelColor ?? '#c9d1d9'} fontFamily="var(--grove-mono)" fontWeight="500" lineHeight="1">
         {label}
       </Text>
     </HStack>
@@ -846,7 +1038,7 @@ function CompletionDropdown({
             <Text fontFamily="var(--grove-mono)" fontSize="13px" fontWeight={isSel ? '600' : '500'} flex="1" truncate>
               {item.label}
             </Text>
-            <Text fontFamily="var(--grove-mono)" fontSize="11px" color={isSel ? '#cce0ff' : '#7d8590'}>
+            <Text fontFamily="var(--grove-mono)" fontSize="12px" color={isSel ? '#cce0ff' : '#7d8590'}>
               {kindLabel[item.kind]}
             </Text>
           </Box>
@@ -892,18 +1084,25 @@ function FolderIcon() {
 function BranchIcon() {
   return (
     <svg width="10" height="12" viewBox="0 0 10 12" fill="none">
-      <circle cx="2" cy="2.5" r="1.2" stroke="#7ee787" strokeWidth="1" />
-      <circle cx="2" cy="9.5" r="1.2" stroke="#7ee787" strokeWidth="1" />
-      <circle cx="8" cy="2.5" r="1.2" stroke="#7ee787" strokeWidth="1" />
-      <path d="M2 3.7v4.6M2 6c0-1.7 1.4-3.5 6-3.5" stroke="#7ee787" strokeWidth="1" strokeLinecap="round" />
+      <circle cx="2" cy="2.5" r="1.2" stroke="currentColor" strokeWidth="1" />
+      <circle cx="2" cy="9.5" r="1.2" stroke="currentColor" strokeWidth="1" />
+      <circle cx="8" cy="2.5" r="1.2" stroke="currentColor" strokeWidth="1" />
+      <path d="M2 3.7v4.6M2 6c0-1.7 1.4-3.5 6-3.5" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
     </svg>
   );
 }
 
 function DiffIcon() {
   return (
-    <svg width="12" height="10" viewBox="0 0 12 10" fill="none">
-      <path d="M2 2.5h8M2 5h8M2 7.5h8" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
+    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor">
+      <path
+        d="M3 1h5l3 3v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z"
+        strokeWidth="1"
+        strokeLinejoin="round"
+      />
+      <path d="M8 1v3h3" strokeWidth="1" />
+      <path d="M5 7.5h4M7 5.5v4" strokeWidth="1.1" strokeLinecap="round" />
+      <path d="M5 11h4" strokeWidth="1.1" strokeLinecap="round" />
     </svg>
   );
 }

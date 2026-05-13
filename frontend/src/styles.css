@@ -54,18 +54,21 @@ html, body, #root {
   height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: #010409;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: #21262d;
   border-radius: 5px;
-  border: 2px solid #010409;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #30363d;
+  background-clip: padding-box;
+  border: 2px solid transparent;
 }
 ::-webkit-scrollbar-corner {
-  background: #010409;
+  background: transparent;
 }
 
 /* Hide xterm's viewport scrollbar so it doesn't reserve width on the right.
@@ -99,3 +102,69 @@ html, body, #root {
 }
 .ansi-italic            { font-style: italic; }
 .ansi-underline         { text-decoration: underline; }
+
+/* Horizontal scrollbar inside per-file diff blocks: track matches the diff
+   panel's surrounding background so it visually merges with the panel. */
+.grove-diff-scroll::-webkit-scrollbar-track {
+  background: #0d1117;
+}
+.grove-diff-scroll {
+  scrollbar-color: #21262d #0d1117;
+}
+
+.grove-gap-row:hover:not(:disabled) {
+  background: #161b22 !important;
+  color: #c9d1d9 !important;
+}
+
+.grove-gap-spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid #30363d;
+  border-top-color: #79c0ff;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+@keyframes grove-spin {
+  to { transform: rotate(360deg); }
+}
+.grove-spinner {
+  animation: grove-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes grove-sq-pulse {
+  0%, 100% { opacity: 0.2; }
+  50%      { opacity: 1; }
+}
+.grove-sq-loader {
+  display: inline-grid;
+  grid-template-columns: 4px 4px;
+  grid-template-rows: 4px 4px;
+  gap: 1.5px;
+  flex-shrink: 0;
+}
+.grove-sq-loader > span {
+  background: #83C2D7;
+  border-radius: 1px;
+  animation: grove-sq-pulse 0.9s ease-in-out infinite;
+}
+.grove-sq-loader > span:nth-child(1) { animation-delay: 0s; }
+.grove-sq-loader > span:nth-child(2) { animation-delay: 0.22s; }
+.grove-sq-loader > span:nth-child(3) { animation-delay: 0.67s; }
+.grove-sq-loader > span:nth-child(4) { animation-delay: 0.45s; }
+
+@keyframes grove-sq-icon-pulse {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 1; }
+}
+.grove-sq-icon rect {
+  animation: grove-sq-icon-pulse 4.8s ease-in-out infinite;
+}
+.grove-sq-icon rect:nth-child(1) { animation-delay: 0s; }
+.grove-sq-icon rect:nth-child(2) { animation-delay: 1.2s; }
+.grove-sq-icon rect:nth-child(3) { animation-delay: 2.4s; }
+.grove-sq-icon rect:nth-child(4) { animation-delay: 3.6s; }
+

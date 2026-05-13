@@ -5,6 +5,7 @@ import { registerTerminalRoutes } from './terminal.js';
 import { registerContextRoutes } from './context.js';
 import { registerCompletionRoutes } from './completions.js';
 import { registerCompleteRoutes } from './complete.js';
+import { registerDiffRoutes } from './diff.js';
 import { sessionCwd } from './sessions.js';
 
 const PORT = Number(process.env.GROVE_BACKEND_PORT ?? 4317);
@@ -17,6 +18,7 @@ async function main() {
   registerContextRoutes(app);
   registerCompletionRoutes(app);
   registerCompleteRoutes(app);
+  registerDiffRoutes(app);
 
   app.get<{ Params: { tabId: string } }>('/session/:tabId/cwd', async (req) => {
     return { cwd: sessionCwd(req.params.tabId) };

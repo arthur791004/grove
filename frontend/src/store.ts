@@ -1,7 +1,12 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { API_BASE } from './api';
 
 export type TabColor = 'default' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan';
+
+const RANDOM_TAB_COLORS: TabColor[] = ['red', 'green', 'yellow', 'blue', 'magenta', 'cyan'];
+const pickRandomColor = (): TabColor =>
+  RANDOM_TAB_COLORS[Math.floor(Math.random() * RANDOM_TAB_COLORS.length)];
 
 export interface Tab {
   id: string;
@@ -13,6 +18,7 @@ export interface Tab {
 export interface Group {
   id: string;
   name: string;
+  cwd: string;
   collapsed: boolean;
 }
 
@@ -23,11 +29,17 @@ interface State {
   tabOrderByGroup: Record<string, string[]>;
   activeTabId: string | null;
   sidebarOpen: boolean;
+  diffPanelOpen: boolean;
+  diffPanelFullscreen: boolean;
+  diffFileListOpen: boolean;
+  autoEditCwdGroupId: string | null;
+  runningCmds: Record<string, string>;
 }
 
 interface Actions {
-  newGroup(name?: string): string;
+  newGroup(name?: string | undefined, cwd?: string): string;
   renameGroup(id: string, name: string): void;
+  setGroupCwd(id: string, cwd: string): void;
   removeGroup(id: string): void;
   toggleGroup(id: string): void;
   newTab(groupId?: string, title?: string): string;
@@ -38,33 +50,62 @@ interface Actions {
   moveTab(tabId: string, targetGroupId: string, targetIndex: number): void;
   reorderGroups(newOrder: string[]): void;
   toggleSidebar(): void;
+  toggleDiffPanel(): void;
+  toggleDiffPanelFullscreen(): void;
+  toggleDiffFileList(): void;
+  setAutoEditCwdGroupId(id: string | null): void;
+  setRunningCmd(tabId: string, cmd: string | null): void;
 }
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
+export function defaultGroupName(cwd: string): string {
+  const trimmed = cwd.replace(/\/$/, '');
+  if (trimmed === '~' || trimmed === '' || trimmed === '/') return 'Home';
+  const base = trimmed.split('/').filter(Boolean).pop();
+  return base || 'Home';
+}
+
 export const useStore = create<State & Actions>()(
   persist(
     (set, get) => ({
-      groups: [{ id: 'default', name: 'default', collapsed: false }],
+      groups: [{ id: 'default', name: 'Home', cwd: '~', collapsed: false }],
       tabs: [],
       groupOrder: ['default'],
       tabOrderByGroup: { default: [] },
       activeTabId: null,
       sidebarOpen: true,
+      diffPanelOpen: false,
+      diffPanelFullscreen: false,
+      diffFileListOpen: true,
+      autoEditCwdGroupId: null,
+      runningCmds: {},
 
-      newGroup(name = 'group') {
+      newGroup(name, cwd = '~') {
         const id = uid();
+        const resolvedName = name && name !== 'workspace' && name !== 'group' ? name : defaultGroupName(cwd);
         set((s) => ({
-          groups: [...s.groups, { id, name, collapsed: false }],
+          groups: [...s.groups, { id, name: resolvedName, cwd, collapsed: false }],
           groupOrder: [...s.groupOrder, id],
           tabOrderByGroup: { ...s.tabOrderByGroup, [id]: [] },
         }));
+        get().newTab(id);
         return id;
       },
 
       renameGroup(id, name) {
         set((s) => ({
           groups: s.groups.map((g) => (g.id === id ? { ...g, name } : g)),
+        }));
+      },
+
+      setGroupCwd(id, cwd) {
+        set((s) => ({
+          groups: s.groups.map((g) => {
+            if (g.id !== id) return g;
+            const looksAuto = g.name === defaultGroupName(g.cwd);
+            return { ...g, cwd, name: looksAuto ? defaultGroupName(cwd) : g.name };
+          }),
         }));
       },
 
@@ -94,7 +135,7 @@ export const useStore = create<State & Actions>()(
           ? s.tabs.find((t) => t.id === s.activeTabId)?.groupId
           : s.groupOrder[0]))?.id ?? s.groupOrder[0];
         const id = uid();
-        const tab: Tab = { id, title: title ?? 'shell', color: 'default', groupId: gid };
+        const tab: Tab = { id, title: title ?? 'shell', color: pickRandomColor(), groupId: gid };
         set((st) => ({
           tabs: [...st.tabs, tab],
           tabOrderByGroup: {
@@ -107,7 +148,7 @@ export const useStore = create<State & Actions>()(
       },
 
       closeTab(id) {
-        fetch(`http://127.0.0.1:4317/session/${id}`, { method: 'DELETE' }).catch(() => {});
+        fetch(`${API_BASE}/session/${id}`, { method: 'DELETE' }).catch(() => {});
         set((s) => {
           const tab = s.tabs.find((t) => t.id === id);
           if (!tab) return s;
@@ -118,10 +159,13 @@ export const useStore = create<State & Actions>()(
           if (s.activeTabId === id) {
             nextActive = orderForGroup[0] ?? remaining[0]?.id ?? null;
           }
+          const runningCmds = { ...s.runningCmds };
+          delete runningCmds[id];
           return {
             tabs: remaining,
             tabOrderByGroup: newOrder,
             activeTabId: nextActive,
+            runningCmds,
           };
         });
       },
@@ -164,6 +208,28 @@ export const useStore = create<State & Actions>()(
       reorderGroups(newOrder) { set({ groupOrder: newOrder }); },
 
       toggleSidebar() { set((s) => ({ sidebarOpen: !s.sidebarOpen })); },
+
+      toggleDiffPanel() { set((s) => ({ diffPanelOpen: !s.diffPanelOpen })); },
+
+      toggleDiffPanelFullscreen() { set((s) => ({ diffPanelFullscreen: !s.diffPanelFullscreen })); },
+
+      toggleDiffFileList() { set((s) => ({ diffFileListOpen: !s.diffFileListOpen })); },
+
+      setAutoEditCwdGroupId(id) { set({ autoEditCwdGroupId: id }); },
+
+      setRunningCmd(tabId, cmd) {
+        set((s) => {
+          const cur = s.runningCmds[tabId];
+          if (cmd === null) {
+            if (cur === undefined) return s;
+            const next = { ...s.runningCmds };
+            delete next[tabId];
+            return { runningCmds: next };
+          }
+          if (cur === cmd) return s;
+          return { runningCmds: { ...s.runningCmds, [tabId]: cmd } };
+        });
+      },
     }),
     {
       name: 'grove-state',
@@ -174,6 +240,9 @@ export const useStore = create<State & Actions>()(
         tabOrderByGroup: s.tabOrderByGroup,
         activeTabId: s.activeTabId,
         sidebarOpen: s.sidebarOpen,
+        diffPanelOpen: s.diffPanelOpen,
+        diffPanelFullscreen: s.diffPanelFullscreen,
+        diffFileListOpen: s.diffFileListOpen,
       }),
     },
   ),
