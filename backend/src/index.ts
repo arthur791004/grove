@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import websocket from '@fastify/websocket';
 import cors from '@fastify/cors';
+import os from 'node:os';
 import { registerTerminalRoutes } from './terminal.js';
 import { registerContextRoutes } from './context.js';
 import { registerCompletionRoutes } from './completions.js';
@@ -29,6 +30,7 @@ async function main() {
   });
 
   app.get('/health', async () => ({ ok: true }));
+  app.get('/env/home', async () => ({ home: os.homedir() }));
 
   await app.listen({ port: PORT, host: '127.0.0.1' });
 }

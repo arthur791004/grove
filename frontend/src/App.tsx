@@ -1,13 +1,18 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Box, Flex, Text } from '@chakra-ui/react';
 import { Sidebar } from './Sidebar';
 import { Workspace } from './Workspace';
 import { CommandPalette } from './CommandPalette';
-import { DiffPanel } from './DiffPanel';
-import { FileBrowserPanel } from './FileBrowserPanel';
-import { BrowserPanel } from './BrowserPanel';
 import { useShortcuts } from './useShortcuts';
 import { useStore } from './store';
+
+// Lazy-load the right-side panels: only one is ever open and they're each
+// a chunk of code (DiffPanel pulls react-diff-view; FileBrowserPanel pulls
+// prism-react-renderer + the icon set; BrowserPanel hosts the iframe).
+// First open pays the import cost, then they're cached.
+const DiffPanel = lazy(() => import('./DiffPanel').then((m) => ({ default: m.DiffPanel })));
+const FileBrowserPanel = lazy(() => import('./FileBrowserPanel').then((m) => ({ default: m.FileBrowserPanel })));
+const BrowserPanel = lazy(() => import('./BrowserPanel').then((m) => ({ default: m.BrowserPanel })));
 
 const SIDEBAR_WIDTH = 220;
 // Default right-side panel takes 40% of the content area, with a minimum
@@ -135,24 +140,36 @@ export function App() {
             }}
           >
             <Box w="100%" h="100%">
-              {diffPanelOpen && <DiffPanel forcedFullscreen={forcedFullscreen} />}
-              {fileBrowserOpen && (
-                <FileBrowserPanel
-                  forcedFullscreen={forcedFullscreen}
-                  panelWidth={effectiveFullscreen ? contentW : activePanelBaseW}
-                />
-              )}
-              {browserPanelOpen && (
-                <BrowserPanel
-                  forcedFullscreen={forcedFullscreen}
-                  panelWidth={effectiveFullscreen ? contentW : activePanelBaseW}
-                />
-              )}
+              <Suspense fallback={<PanelLoading />}>
+                {diffPanelOpen && <DiffPanel forcedFullscreen={forcedFullscreen} />}
+                {fileBrowserOpen && (
+                  <FileBrowserPanel
+                    forcedFullscreen={forcedFullscreen}
+                    panelWidth={effectiveFullscreen ? contentW : activePanelBaseW}
+                  />
+                )}
+                {browserPanelOpen && (
+                  <BrowserPanel
+                    forcedFullscreen={forcedFullscreen}
+                    panelWidth={effectiveFullscreen ? contentW : activePanelBaseW}
+                  />
+                )}
+              </Suspense>
             </Box>
           </Box>
         </Box>
       </Flex>
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+    </Flex>
+  );
+}
+
+function PanelLoading() {
+  return (
+    <Flex h="100%" w="100%" align="center" justify="center" bg="#010409" borderLeft="1px solid #21262d">
+      <span className="grove-sq-loader">
+        <span /><span /><span /><span />
+      </span>
     </Flex>
   );
 }

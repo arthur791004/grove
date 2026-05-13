@@ -1,7 +1,27 @@
 import { Box, Flex, Text } from '@chakra-ui/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso } from 'react-virtuoso';
+import { Highlight, themes, type Language } from 'prism-react-renderer';
+import { Icon, addCollection } from '@iconify/react';
+import materialIcons from '@iconify-json/material-icon-theme/icons.json';
 import { useStore } from './store';
+
+// Register the Material Icon Theme set once at module load. Iconify keeps it
+// in memory so all <Icon icon="material-icon-theme:..."/> calls render
+// without a network fetch.
+addCollection(materialIcons as Parameters<typeof addCollection>[0]);
+
+// Module-level home-dir cache. Filled by the first /env/home call; lets the
+// frontend resolve `~/foo` paths to absolute without a per-render fetch.
+let cachedHome: string | null = null;
+fetch(`${API_BASE}/env/home`).then((r) => r.json()).then((j) => { cachedHome = j.home ?? null; }).catch(() => {});
+
+function resolveTilde(p: string): string {
+  if (!cachedHome) return p;
+  if (p === '~') return cachedHome;
+  if (p.startsWith('~/')) return cachedHome + p.slice(1);
+  return p;
+}
 import { useTabContext } from './useTabContext';
 import { API_BASE } from './api';
 
@@ -180,12 +200,24 @@ export function FileBrowserPanel({
     return () => { cancelled = true; };
   }, [activeTabId, selectedFile]);
 
+  const workspaceCwd = useStore((s) => {
+    const tab = s.tabs.find((t) => t.id === activeTabId);
+    return tab ? s.groups.find((g) => g.id === tab.groupId)?.cwd ?? null : null;
+  });
   const rows: ListRow[] = useMemo(() => {
     const out: ListRow[] = [];
-    if (dir?.parent) out.push({ kind: 'parent', entry: { name: '..', path: dir.parent, isDir: true, size: null, mtimeMs: 0 } });
+    // Hide ".." once we're at the workspace root so navigation can't escape
+    // above the tab's anchor. Compare resolved-absolute paths (the backend
+    // already returns dir.cwd absolute; expand tilde on the workspaceCwd
+    // via the home dir we cached at startup).
+    const wsResolved = workspaceCwd ? resolveTilde(workspaceCwd) : null;
+    const atWorkspaceRoot = wsResolved != null && dir?.cwd === wsResolved;
+    if (dir?.parent && !atWorkspaceRoot) {
+      out.push({ kind: 'parent', entry: { name: '..', path: dir.parent, isDir: true, size: null, mtimeMs: 0 } });
+    }
     if (dir) for (const e of dir.entries) out.push({ kind: 'entry', entry: e });
     return out;
-  }, [dir]);
+  }, [dir, workspaceCwd]);
 
   // In narrow mode, only one pane is visible; in wide mode both are visible
   // when listOpen is true, otherwise just the preview takes over.
@@ -501,8 +533,8 @@ function SearchResults({
             _hover={{ bg: selectedFile === r.abs ? '#1f6feb44' : '#161b22' }}
             onClick={() => onPick(r.abs)}
           >
-            <Box w="14px" h="14px" flexShrink={0} display="inline-flex" alignItems="center" justifyContent="center" color="#7d8590">
-              <FileGlyph />
+            <Box w="14px" h="14px" flexShrink={0} display="inline-flex" alignItems="center" justifyContent="center">
+              <Icon icon={iconNameForFile(r.path.split('/').pop() || r.path)} width="14" height="14" style={{ display: 'block' }} />
             </Box>
             <Box flex="1" minW="0">
               <Text fontFamily="var(--grove-mono)" fontSize="12px" color="#c9d1d9" truncate title={r.path}>
@@ -545,6 +577,8 @@ function FilePreview({ file, content, loading }: { file: string | null; content:
       </Flex>
     );
   }
+  const text = content?.content ?? '';
+  const language = detectLanguage(file);
   return (
     <Box
       h="100%"
@@ -554,14 +588,114 @@ function FilePreview({ file, content, loading }: { file: string | null; content:
       fontFamily="var(--grove-mono)"
       fontSize="12px"
       lineHeight="1.5"
-      px="3"
-      py="2"
       color="#c9d1d9"
-      style={{ whiteSpace: 'pre' }}
     >
-      {content?.content ?? ''}
+      <Highlight code={text} language={language} theme={themes.vsDark}>
+        {({ tokens, getLineProps, getTokenProps }) => (
+          <Box as="pre" m="0" p="0" style={{ whiteSpace: 'pre', background: 'transparent' }}>
+            {tokens.map((line, i) => {
+              const lineProps = getLineProps({ line });
+              return (
+                <Box
+                  key={i}
+                  display="flex"
+                  px="0"
+                  style={lineProps.style}
+                  className={lineProps.className}
+                >
+                  <Box
+                    flexShrink={0}
+                    w="44px"
+                    textAlign="right"
+                    pr="3"
+                    color="#484f58"
+                    userSelect="none"
+                    style={{ whiteSpace: 'pre' }}
+                  >
+                    {i + 1}
+                  </Box>
+                  <Box flex="1" minW="0" style={{ whiteSpace: 'pre' }}>
+                    {line.map((token, j) => {
+                      const tp = getTokenProps({ token });
+                      // Render whitespace as visible glyphs so the user can
+                      // tell tabs from spaces. We only mark token content,
+                      // not the syntactic spacing between tokens — that's
+                      // already correctly rendered by the browser.
+                      const rendered = renderWithWhitespace(token.content);
+                      return (
+                        <span key={j} className={tp.className} style={tp.style}>
+                          {rendered}
+                        </span>
+                      );
+                    })}
+                  </Box>
+                </Box>
+              );
+            })}
+          </Box>
+        )}
+      </Highlight>
     </Box>
   );
+}
+
+// Visible glyphs for tab and space. Rendered as muted overlay chars so the
+// code stays readable but indentation is unambiguous.
+function renderWithWhitespace(s: string): React.ReactNode {
+  if (!s) return s;
+  if (s.indexOf('\t') === -1 && s.indexOf(' ') === -1) return s;
+  const parts: React.ReactNode[] = [];
+  let buf = '';
+  const flush = () => { if (buf) { parts.push(buf); buf = ''; } };
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\t') {
+      flush();
+      parts.push(
+        <span key={`t${i}`} style={{ color: '#30363d' }}>→{'\t'}</span>,
+      );
+    } else if (c === ' ') {
+      flush();
+      parts.push(<span key={`s${i}`} style={{ color: '#21262d' }}>·</span>);
+    } else {
+      buf += c;
+    }
+  }
+  flush();
+  return parts;
+}
+
+// Map filename to a Prism language id. prism-react-renderer ships ~20 langs
+// out of the box; falls back to plain rendering for unknown extensions.
+function detectLanguage(file: string | null): Language {
+  if (!file) return 'tsx';
+  const lower = file.toLowerCase();
+  if (lower.endsWith('.tsx')) return 'tsx';
+  if (lower.endsWith('.ts')) return 'typescript';
+  if (lower.endsWith('.jsx')) return 'jsx';
+  if (lower.endsWith('.js') || lower.endsWith('.mjs') || lower.endsWith('.cjs')) return 'javascript';
+  if (lower.endsWith('.json')) return 'json';
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown';
+  if (lower.endsWith('.py')) return 'python';
+  if (lower.endsWith('.rb')) return 'ruby';
+  if (lower.endsWith('.go')) return 'go';
+  if (lower.endsWith('.rs')) return 'rust';
+  if (lower.endsWith('.java')) return 'java';
+  if (lower.endsWith('.kt')) return 'kotlin';
+  if (lower.endsWith('.swift')) return 'swift';
+  if (lower.endsWith('.c') || lower.endsWith('.h')) return 'c';
+  if (lower.endsWith('.cpp') || lower.endsWith('.cc') || lower.endsWith('.hpp')) return 'cpp';
+  if (lower.endsWith('.css')) return 'css';
+  if (lower.endsWith('.scss') || lower.endsWith('.sass')) return 'scss';
+  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'markup';
+  if (lower.endsWith('.xml') || lower.endsWith('.svg')) return 'markup';
+  if (lower.endsWith('.yml') || lower.endsWith('.yaml')) return 'yaml';
+  if (lower.endsWith('.toml')) return 'toml';
+  if (lower.endsWith('.sh') || lower.endsWith('.bash') || lower.endsWith('.zsh')) return 'bash';
+  if (lower.endsWith('dockerfile') || lower.endsWith('.dockerfile')) return 'docker';
+  if (lower.endsWith('.sql')) return 'sql';
+  if (lower.endsWith('.graphql') || lower.endsWith('.gql')) return 'graphql';
+  return 'tsx';
 }
 
 function FileRow({
@@ -583,8 +717,10 @@ function FileRow({
       _hover={onClick ? { bg: selected ? '#1f6feb44' : '#161b22' } : undefined}
       onClick={onClick}
     >
-      <Box w="14px" h="14px" flexShrink={0} display="inline-flex" alignItems="center" justifyContent="center" color={entry.isDir ? '#79c0ff' : '#7d8590'}>
-        {entry.isDir ? <FolderGlyph /> : <FileGlyph />}
+      <Box w="14px" h="14px" flexShrink={0} display="inline-flex" alignItems="center" justifyContent="center">
+        {entry.isDir
+          ? <FolderIcon />
+          : <Icon icon={iconNameForFile(entry.name)} width="14" height="14" style={{ display: 'block' }} />}
       </Box>
       <Text
         flex="1"
@@ -592,13 +728,14 @@ function FileRow({
         truncate
         fontFamily="var(--grove-mono)"
         fontSize="12px"
-        color={entry.isDir ? '#c9d1d9' : '#a9b1b9'}
+        color={entry.isDir ? '#c9d1d9' : '#c9d1d9'}
       >
         {entry.name}
       </Text>
     </Flex>
   );
 }
+
 
 function HeaderIconButton({
   children, title, onClick, active,
@@ -632,19 +769,107 @@ function HeaderIconButton({
   );
 }
 
-function FolderGlyph() {
+function FolderIcon() {
   return (
-    <svg width="14" height="12" viewBox="0 0 14 12" fill="none" stroke="currentColor">
+    <svg width="14" height="12" viewBox="0 0 14 12" fill="none" stroke="#79c0ff" style={{ display: 'block' }}>
       <path d="M1 2.5a1 1 0 0 1 1-1h3.5l1.5 1.5h5a1 1 0 0 1 1 1V10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2.5z" strokeWidth="1.1" strokeLinejoin="round" />
     </svg>
   );
 }
 
-function FileGlyph() {
-  return (
-    <svg width="11" height="12" viewBox="0 0 11 13" fill="none" stroke="currentColor">
-      <path d="M2 0.5h4.5l3 3v8a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V1.5a1 1 0 0 1 1-1z" strokeWidth="1" strokeLinejoin="round" />
-      <path d="M6.5 0.5v3h3" strokeWidth="1" />
-    </svg>
-  );
+// Map a filename to a Material Icon Theme icon key. Iconify renders these
+// via the bundled material-icon-theme collection. Unknown files fall back
+// to the generic "document" icon — still a real file glyph, just neutral.
+function iconNameForFile(name: string): string {
+  const lower = name.toLowerCase();
+  // Whole-filename specials beat extension rules.
+  const fullMap: Record<string, string> = {
+    'package.json': 'nodejs',
+    'package-lock.json': 'nodejs',
+    'yarn.lock': 'yarn',
+    'pnpm-lock.yaml': 'pnpm',
+    'tsconfig.json': 'tsconfig',
+    'tsconfig.base.json': 'tsconfig',
+    'vite.config.ts': 'vite',
+    'vite.config.js': 'vite',
+    'webpack.config.js': 'webpack',
+    'rollup.config.js': 'rollup',
+    'esbuild.config.js': 'esbuild',
+    'babel.config.js': 'babel',
+    '.babelrc': 'babel',
+    '.eslintrc': 'eslint',
+    '.eslintrc.js': 'eslint',
+    '.eslintrc.json': 'eslint',
+    '.prettierrc': 'prettier',
+    '.prettierrc.json': 'prettier',
+    'dockerfile': 'docker',
+    '.dockerignore': 'docker',
+    'docker-compose.yml': 'docker',
+    'docker-compose.yaml': 'docker',
+    'makefile': 'makefile',
+    '.gitignore': 'git',
+    '.gitattributes': 'git',
+    '.gitmodules': 'git',
+    '.editorconfig': 'editorconfig',
+    '.npmrc': 'npm',
+    '.nvmrc': 'nodejs',
+    'readme.md': 'readme',
+    'license': 'certificate',
+    'license.md': 'certificate',
+    'cargo.toml': 'rust',
+    'cargo.lock': 'rust',
+    'go.mod': 'go',
+    'go.sum': 'go',
+    'gemfile': 'ruby',
+    'gemfile.lock': 'ruby',
+    'pyproject.toml': 'python',
+    'requirements.txt': 'python',
+    'pipfile': 'python',
+    'pipfile.lock': 'python',
+  };
+  if (fullMap[lower]) return `material-icon-theme:${fullMap[lower]}`;
+
+  // Match `.env`, `.env.local`, `.env.production`, etc.
+  if (lower === '.env' || lower.startsWith('.env.')) return 'material-icon-theme:tune';
+
+  const ext = lower.includes('.') ? lower.slice(lower.lastIndexOf('.') + 1) : '';
+  const extMap: Record<string, string> = {
+    ts: 'typescript', tsx: 'react-ts',
+    js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'react',
+    json: 'json', jsonl: 'json', json5: 'json',  // jsonl/json5 fall back to json
+    yaml: 'yaml', yml: 'yaml', toml: 'settings', ini: 'settings',
+    md: 'markdown', markdown: 'markdown', mdx: 'mdx',
+    py: 'python', pyc: 'python', pyi: 'python', ipynb: 'jupyter',
+    rb: 'ruby', erb: 'ruby',
+    go: 'go',
+    rs: 'rust',
+    java: 'java', kt: 'kotlin', kts: 'kotlin', scala: 'scala',
+    swift: 'swift',
+    cs: 'csharp', fs: 'fsharp', fsi: 'fsharp',
+    c: 'c', h: 'h',
+    cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'hpp',
+    php: 'php', blade: 'php',
+    lua: 'lua',
+    dart: 'dart',
+    vue: 'vue', svelte: 'svelte', elm: 'elm',
+    ex: 'elixir', exs: 'elixir',
+    erl: 'erlang', hrl: 'erlang',
+    r: 'r',
+    sql: 'database',
+    graphql: 'graphql', gql: 'graphql',
+    html: 'html', htm: 'html', xml: 'xml', svg: 'svg',
+    css: 'css', scss: 'sass', sass: 'sass', less: 'less', postcss: 'postcss',
+    sh: 'console', bash: 'console', zsh: 'console', fish: 'console',
+    ps1: 'powershell',
+    csv: 'table', tsv: 'table', xlsx: 'table', xls: 'table',
+    png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', webp: 'image', ico: 'image', avif: 'image', bmp: 'image',
+    mp3: 'audio', wav: 'audio', flac: 'audio', ogg: 'audio',
+    mp4: 'video', mov: 'video', webm: 'video', mkv: 'video',
+    pdf: 'pdf',
+    zip: 'zip', tar: 'zip', gz: 'zip', bz2: 'zip', '7z': 'zip', rar: 'zip', dmg: 'zip',
+    woff: 'font', woff2: 'font', ttf: 'font', otf: 'font', eot: 'font',
+    txt: 'document', log: 'log',
+  };
+  if (extMap[ext]) return `material-icon-theme:${extMap[ext]}`;
+  return 'material-icon-theme:document';
 }

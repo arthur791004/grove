@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { API_BASE } from './api';
 
 export interface TabContext {
+  cwd: string;
   shortCwd: string;
   branch: string | null;
   node: string | null;
@@ -36,6 +37,7 @@ function sameCtx(a: TabContext, b: TabContext): boolean {
 
 function toCtx(data: Partial<TabContext> & Record<string, unknown>): TabContext {
   return {
+    cwd: typeof data.cwd === 'string' ? data.cwd : '',
     shortCwd: typeof data.shortCwd === 'string' ? data.shortCwd : '',
     branch: typeof data.branch === 'string' ? data.branch : null,
     node: typeof data.node === 'string' ? data.node : null,
