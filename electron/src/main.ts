@@ -1,6 +1,8 @@
-import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, session, shell } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
+
+app.setName('Grove');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const windowStateKeeper = require('electron-window-state');
 
@@ -17,6 +19,7 @@ function startBackend() {
 function createWindow() {
   const state = windowStateKeeper({ defaultWidth: 1280, defaultHeight: 800 });
 
+  const iconPath = path.resolve(__dirname, '../assets/icon.png');
   const win = new BrowserWindow({
     x: state.x,
     y: state.y,
@@ -24,6 +27,7 @@ function createWindow() {
     height: state.height,
     backgroundColor: '#0d1117',
     titleBarStyle: 'hiddenInset',
+    icon: iconPath,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -31,6 +35,10 @@ function createWindow() {
       preload: path.resolve(__dirname, 'preload.js'),
     },
   });
+  // Replace the default Electron dock icon with our app icon in dev too.
+  if (app.dock && nativeImage) {
+    try { app.dock.setIcon(nativeImage.createFromPath(iconPath)); } catch {}
+  }
   state.manage(win);
 
   const devUrl = process.env.GROVE_DEV_URL;
@@ -40,9 +48,8 @@ function createWindow() {
     win.loadFile(path.resolve(__dirname, '../../frontend/dist/index.html'));
   }
 
-  if (process.env.GROVE_DEV_URL) {
-    win.webContents.openDevTools({ mode: 'detach' });
-  }
+  // DevTools no longer auto-open in dev; toggle with View → Toggle Developer
+  // Tools (⌥⌘I) when you need them.
 
   // Forward sub-frame navigations (e.g. the BrowserPanel iframe) to the
   // renderer so its address bar can reflect the real URL after links inside

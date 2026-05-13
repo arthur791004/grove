@@ -4,14 +4,15 @@
   "version": "0.0.1",
   "workspaces": ["backend", "frontend", "electron"],
   "scripts": {
-    "dev": "npm-run-all -p --continue-on-error dev:backend dev:frontend",
+    "dev": "npm run kill-ports && npm-run-all -p dev:backend dev:frontend",
+    "kill-ports": "lsof -ti :4317 :5173 2>/dev/null | while read pid; do kill -9 \"$pid\" 2>/dev/null; done; exit 0",
     "dev:backend": "npm --workspace backend run dev",
     "dev:frontend": "npm --workspace frontend run dev",
     "build": "npm --workspace backend run build && npm --workspace frontend run build",
-    "electron:build": "npm --workspace electron-app run build",
-    "electron:dev": "npm run build && npm --workspace electron-app run build && npm --workspace electron-app run start",
-    "dev:all": "npm --workspace electron-app run build && npm-run-all -p --continue-on-error dev:backend dev:frontend dev:electron",
-    "dev:electron": "wait-on http://127.0.0.1:5173 && GROVE_DEV_URL=http://127.0.0.1:5173 npm --workspace electron-app run start",
+    "electron:build": "npm --workspace grove-app run build",
+    "electron:dev": "npm run build && npm --workspace grove-app run build && npm --workspace grove-app run start",
+    "dev:all": "npm run kill-ports && npm --workspace grove-app run build && npm-run-all -p dev:backend dev:frontend dev:electron",
+    "dev:electron": "wait-on http://127.0.0.1:5173 && GROVE_DEV_URL=http://127.0.0.1:5173 npm --workspace grove-app run start",
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true"
   },
   "devDependencies": {

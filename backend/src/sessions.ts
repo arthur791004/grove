@@ -136,15 +136,11 @@ function emitWithClearDetect(session: Session, text: string) {
     if (!m) break;
     pushOutput(sanitize(rest.slice(0, m.index)));
     session.parsedOutputBuffer = '';
-    // Mirror the frontend's clear semantics: drop completed blocks but keep
-    // the in-flight one (just empty its output) so the replay after a refresh
-    // matches what the user saw before the refresh.
-    if (session.currentBlock) {
-      session.currentBlock.output = '';
-      session.blocks = [session.currentBlock];
-    } else {
-      session.blocks = [];
-    }
+    // Full wipe — drop completed blocks AND the in-flight one (the `clear`
+    // command itself). The subsequent grove-post marker will arrive with no
+    // currentBlock and process as a no-op.
+    session.blocks = [];
+    session.currentBlock = null;
     saveBlocks(session.tabId, session.blocks);
     broadcast(session, { type: 'clear' });
     rest = rest.slice(m.index + m[0].length);

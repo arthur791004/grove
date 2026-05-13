@@ -314,12 +314,14 @@ export function TerminalView({ tabId, active }: Props) {
             return;
           }
           if (msg.type === 'clear') {
-            // Wipe everything EXCEPT the in-progress block (so the `clear`
-            // block keeps its header until the command finishes naturally).
-            const cur = currentBlockRef.current;
+            // Full wipe including the in-progress block (the `clear` command
+            // itself). The shell's subsequent grove-post arrives with no
+            // current block on the frontend — block-end's null-cur branch
+            // handles it as a no-op cleanup.
             pendingOutputRef.current.clear();
-            if (pendingBlockRef.current) pendingBlockRef.current = { ...pendingBlockRef.current, output: '' };
-            setBlocks((bs) => cur !== null ? bs.filter((b) => b.id === cur).map((b) => ({ ...b, output: '' })) : []);
+            pendingBlockRef.current = null;
+            currentBlockRef.current = null;
+            setBlocks(() => []);
             return;
           }
           if (msg.type === 'output') {
@@ -711,6 +713,7 @@ export function TerminalView({ tabId, active }: Props) {
               ctxNode={ctx?.node ?? null}
               cmdHeld={cmdHeld}
               onDelete={() => setBlocks((bs) => bs.filter((x) => x.id !== b.id))}
+              onRerun={() => { if (b.cmd) send(b.cmd + '\r'); }}
             />
           ))}
         </Box>
@@ -878,7 +881,7 @@ function DiffLabel({ added, removed }: { added: number; removed: number }) {
   );
 }
 
-function BlockCard({ block, ctxNode, cmdHeld, onDelete }: { block: Block; ctxNode: string | null; cmdHeld: boolean; onDelete: () => void }) {
+function BlockCard({ block, ctxNode, cmdHeld, onDelete, onRerun }: { block: Block; ctxNode: string | null; cmdHeld: boolean; onDelete: () => void; onRerun: () => void }) {
   const running = block.exit === null;
   const failed = block.exit !== null && block.exit !== 0;
   const durStr = formatDuration(block.durationMs, running);
@@ -932,6 +935,7 @@ function BlockCard({ block, ctxNode, cmdHeld, onDelete }: { block: Block; ctxNod
           color="#7d8590"
         >
           <BlockMenu
+            onRerun={block.cmd ? onRerun : undefined}
             onCopyCmd={() => navigator.clipboard.writeText(block.cmd || '').catch(() => {})}
             onCopyOutput={() => navigator.clipboard.writeText(block.output || '').catch(() => {})}
             onDelete={onDelete}
@@ -975,7 +979,7 @@ function BlockCard({ block, ctxNode, cmdHeld, onDelete }: { block: Block; ctxNod
   );
 }
 
-function BlockMenu({ onCopyCmd, onCopyOutput, onDelete }: { onCopyCmd: () => void; onCopyOutput: () => void; onDelete: () => void }) {
+function BlockMenu({ onRerun, onCopyCmd, onCopyOutput, onDelete }: { onRerun?: () => void; onCopyCmd: () => void; onCopyOutput: () => void; onDelete: () => void }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -1069,6 +1073,7 @@ function BlockMenu({ onCopyCmd, onCopyOutput, onDelete }: { onCopyCmd: () => voi
           zIndex={1000}
           boxShadow="0 8px 24px rgba(0,0,0,0.4)"
         >
+          {onRerun && item('Rerun command', onRerun)}
           {item('Copy command', onCopyCmd)}
           {item('Copy output', onCopyOutput)}
           <Box my="1" h="1px" bg="#30363d" />

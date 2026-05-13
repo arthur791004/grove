@@ -1,5 +1,6 @@
 {
-  "name": "electron-app",
+  "name": "grove-app",
+  "productName": "Grove",
   "version": "0.0.1",
   "private": true,
   "main": "dist/main.js",
