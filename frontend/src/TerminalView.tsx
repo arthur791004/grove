@@ -266,13 +266,19 @@ export function TerminalView({ tabId, active }: Props) {
       const group = tab ? st.groups.find((g) => g.id === tab.groupId) : null;
       const ws = new WebSocket(BACKEND_WS(tabId, group?.cwd));
       wsRef.current = ws;
+      // Don't reset `attempt` until the socket has stayed up long enough to
+      // suggest it's actually healthy. Resetting in onopen lets the server
+      // (e.g., session-limit reject) loop us forever: open → close → open →
+      // close, with attempt back to 0 every cycle.
+      let stableTimer: ReturnType<typeof setTimeout> | null = null;
       ws.onopen = () => {
-        attempt = 0;
         ws.send(JSON.stringify({ type: 'resize', cols: 200, rows: 50 }));
         // Clear any stale readline buffer pollution (Ctrl-U = kill-whole-line)
         ws.send(JSON.stringify({ type: 'input', data: '\x15' }));
+        stableTimer = setTimeout(() => { attempt = 0; stableTimer = null; }, 3000);
       };
       ws.onclose = () => {
+        if (stableTimer) { clearTimeout(stableTimer); stableTimer = null; }
         if (closed) return;
         attempt += 1;
         const delay = Math.min(2000, 200 * 2 ** Math.min(attempt - 1, 4));
@@ -292,6 +298,13 @@ export function TerminalView({ tabId, active }: Props) {
         if (closed || ws !== wsRef.current) return;
         try {
           const msg = JSON.parse(ev.data);
+          if (msg.type === 'fatal') {
+            // Backend rejected the subscription (e.g., session-limit). Don't
+            // reconnect — that just loops forever hitting the same reject.
+            console.error('[grove] backend fatal:', msg.reason, msg.message);
+            closed = true;
+            return;
+          }
           if (msg.type === 'raw') {
             const scan = altCarryRef.current + msg.data;
             const result = detectRawScan(scan);

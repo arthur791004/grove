@@ -306,9 +306,33 @@ function processChunk(session: Session, chunk: string) {
   }
 }
 
+// Cap concurrent pty sessions to stay well under macOS's kern.tty.ptmx_max
+// (default ~127). Hitting forkpty(3) at the OS limit produces the cryptic
+// "Could not create a new process and open a pseudo-tty" error and can wedge
+// the system shell when other apps need ptys too.
+const DEFAULT_MAX_SESSIONS = 64;
+export const MAX_SESSIONS = Math.max(
+  1,
+  Number(process.env.GROVE_MAX_PTY_SESSIONS) || DEFAULT_MAX_SESSIONS,
+);
+
+export class SessionLimitError extends Error {
+  readonly limit: number;
+  constructor(limit: number) {
+    super(`pty session limit reached (${limit}); close existing tabs before opening more`);
+    this.name = 'SessionLimitError';
+    this.limit = limit;
+  }
+}
+
+export function sessionCount(): number {
+  return sessions.size;
+}
+
 export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): Session {
   const existing = sessions.get(tabId);
   if (existing) return existing;
+  if (sessions.size >= MAX_SESSIONS) throw new SessionLimitError(MAX_SESSIONS);
 
   const userShell = process.env.SHELL ?? '/bin/zsh';
   const isZsh = userShell.endsWith('zsh');
@@ -355,12 +379,30 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
   return session;
 }
 
+// Window before we escalate from SIGHUP → SIGKILL. The shell normally dies
+// on HUP within a few ms; the timeout only matters when a foreground child
+// (claude, vim, node, ssh) traps or ignores HUP — without escalation the pty
+// master fd stays allocated and we eventually exhaust kern.tty.ptmx_max.
+const KILL_ESCALATE_MS = 500;
+
 export function destroySession(tabId: string): void {
   const s = sessions.get(tabId);
-  if (s) {
-    try { s.pty.kill(); } catch {}
-    sessions.delete(tabId);
-  }
+  if (!s) { deleteBlocks(tabId); return; }
+  // Remove from the map first so the onExit handler we wired in
+  // getOrCreateSession can't race with us and try to clean up twice.
+  sessions.delete(tabId);
+  for (const sub of s.subscribers) { try { sub.close(); } catch {} }
+  s.subscribers.clear();
+  try { s.pty.kill('SIGHUP'); } catch {}
+  setTimeout(() => {
+    try {
+      // kill -0 throws ESRCH if the process is already gone — in that case
+      // there's nothing to escalate to and node-pty has already closed the
+      // master fd via its own onExit.
+      process.kill(s.pty.pid, 0);
+      try { s.pty.kill('SIGKILL'); } catch {}
+    } catch {}
+  }, KILL_ESCALATE_MS).unref();
   deleteBlocks(tabId);
 }
 
@@ -375,7 +417,17 @@ export function resizeSession(tabId: string, cols: number, rows: number): void {
 }
 
 export function subscribe(tabId: string, ws: WSLike, cwd?: string): () => void {
-  const s = getOrCreateSession(tabId, cwd);
+  let s: Session;
+  try {
+    s = getOrCreateSession(tabId, cwd);
+  } catch (err) {
+    if (err instanceof SessionLimitError) {
+      send(ws, { type: 'fatal', reason: 'session-limit', message: err.message, limit: err.limit });
+      try { ws.close(); } catch {}
+      return () => {};
+    }
+    throw err;
+  }
   s.subscribers.add(ws);
   // Replay recorded blocks as native block-start/output/block-end triples so
   // a frontend refresh rebuilds the exact same block list it had before.

@@ -24,6 +24,21 @@ function startBackend() {
   });
 }
 
+// Poll /health until fastify is listening so the renderer never observes the
+// "ECONNREFUSED → 8 retries → give up" race. ~10s budget is generous; a healthy
+// backend comes up in under a second.
+async function waitForBackend(timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch('http://127.0.0.1:4317/health');
+      if (res.ok) return;
+    } catch { /* not listening yet */ }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  console.error('[grove] backend /health never responded within', timeoutMs, 'ms');
+}
+
 function createWindow() {
   const state = windowStateKeeper({ defaultWidth: 1280, defaultHeight: 800 });
 
@@ -172,8 +187,11 @@ function stripFramingHeadersForLocalhost() {
   });
 }
 
-app.whenReady().then(() => {
-  if (!process.env.GROVE_DEV_URL) startBackend();
+app.whenReady().then(async () => {
+  if (!process.env.GROVE_DEV_URL) {
+    startBackend();
+    await waitForBackend();
+  }
   stripFramingHeadersForLocalhost();
   createWindow();
   app.on('activate', () => {

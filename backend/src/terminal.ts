@@ -28,7 +28,14 @@ export function registerTerminalRoutes(app: FastifyInstance) {
     (socket: WSLike, req) => {
       const tabId = req.params.tabId;
       const cwd = req.query.cwd ? expandHome(req.query.cwd) : undefined;
-      const unsubscribe = subscribe(tabId, socket, cwd);
+      let unsubscribe: () => void;
+      try {
+        unsubscribe = subscribe(tabId, socket, cwd);
+      } catch (err) {
+        console.error('[grove] subscribe failed for', tabId, err);
+        try { socket.close(); } catch {}
+        return;
+      }
 
       socket.on('message', (raw: Buffer) => {
         let msg: ClientMsg;

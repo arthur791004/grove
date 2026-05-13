@@ -13,6 +13,16 @@ import { sessionCwd } from './sessions.js';
 
 const PORT = Number(process.env.GROVE_BACKEND_PORT ?? 4317);
 
+// Exit if the Electron main process disappears (e.g., crash, SIGKILL). Without
+// this the backend lingers as an orphan holding port 4317 + every spawned pty.
+const parentPid = process.ppid;
+if (parentPid && parentPid !== 1) {
+  setInterval(() => {
+    try { process.kill(parentPid, 0); }
+    catch { process.exit(0); }
+  }, 2000).unref();
+}
+
 async function main() {
   const app = Fastify({ logger: false });
   await app.register(cors, { origin: true });
