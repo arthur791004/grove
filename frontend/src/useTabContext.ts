@@ -6,6 +6,7 @@ export interface TabContext {
   branch: string | null;
   node: string | null;
   diff: { added: number; removed: number; files: number } | null;
+  pr: { number: number; title: string; state: 'OPEN' | 'CLOSED' | 'MERGED'; draft: boolean; url: string } | null;
   env: Record<string, string>;
   cwdReady: boolean;
 }
@@ -22,6 +23,11 @@ function sameCtx(a: TabContext, b: TabContext): boolean {
     if (!ad || !bd) return false;
     if (ad.added !== bd.added || ad.removed !== bd.removed || ad.files !== bd.files) return false;
   }
+  const ap = a.pr, bp = b.pr;
+  if (ap !== bp) {
+    if (!ap || !bp) return false;
+    if (ap.number !== bp.number || ap.state !== bp.state || ap.draft !== bp.draft) return false;
+  }
   const aks = Object.keys(a.env), bks = Object.keys(b.env);
   if (aks.length !== bks.length) return false;
   for (const k of aks) if (a.env[k] !== b.env[k]) return false;
@@ -34,6 +40,7 @@ function toCtx(data: Partial<TabContext> & Record<string, unknown>): TabContext 
     branch: typeof data.branch === 'string' ? data.branch : null,
     node: typeof data.node === 'string' ? data.node : null,
     diff: (data.diff as TabContext['diff']) ?? null,
+    pr: (data.pr as TabContext['pr']) ?? null,
     env: (data.env as TabContext['env']) ?? {},
     cwdReady: Boolean(data.cwdReady),
   };

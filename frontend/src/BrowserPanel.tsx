@@ -495,22 +495,39 @@ function FrameErrorView({ url, info, onRetry }: { url: string; info: { code: num
       <Text fontSize="12px" color="#6e7681" fontFamily="var(--grove-mono)">
         ERR_CODE {info.code}
       </Text>
-      <Box
-        as="button"
-        onClick={onRetry}
-        mt="2"
-        px="3"
-        py="1.5"
-        bg="#1f6feb"
-        color="#ffffff"
-        fontSize="12px"
-        fontWeight="600"
-        borderRadius="6px"
-        cursor="pointer"
-        _hover={{ bg: '#388bfd' }}
-      >
-        Reload
-      </Box>
+      <Flex mt="2" gap="2">
+        <Box
+          as="button"
+          onClick={onRetry}
+          px="3"
+          py="1.5"
+          bg="#1f6feb"
+          color="#ffffff"
+          fontSize="12px"
+          fontWeight="600"
+          borderRadius="6px"
+          cursor="pointer"
+          _hover={{ bg: '#388bfd' }}
+        >
+          Reload
+        </Box>
+        <Box
+          as="button"
+          onClick={() => window.grove?.openExternal?.(url)}
+          px="3"
+          py="1.5"
+          bg="transparent"
+          color="#c9d1d9"
+          fontSize="12px"
+          fontWeight="600"
+          border="1px solid #30363d"
+          borderRadius="6px"
+          cursor="pointer"
+          _hover={{ bg: '#21262d' }}
+        >
+          Open in system browser
+        </Box>
+      </Flex>
     </Flex>
   );
 }

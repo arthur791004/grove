@@ -3,6 +3,7 @@ import os from 'node:os';
 import { ensureShellInitDir } from './shellInit.js';
 import { findRepoRoot, safeRun, shortPath } from './gitUtil.js';
 import { loadBlocks, saveBlocks, deleteBlocks, BlockRecord } from './blockStore.js';
+import { getPr } from './prLookup.js';
 
 type WSLike = { send(data: string): void; close(): void };
 
@@ -167,6 +168,7 @@ function buildCtx(session: Session) {
   const repoRoot = findRepoRoot(cwd);
   let branch: string | null = session.env.branch ?? null;
   let diff: { added: number; removed: number; files: number } | null = null;
+  let pr: ReturnType<typeof getPr> = null;
   if (repoRoot) {
     if (!branch) branch = safeRun('git', ['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot);
     const shortstat = safeRun('git', ['diff', '--shortstat'], repoRoot, 1500);
@@ -180,6 +182,12 @@ function buildCtx(session: Session) {
         removed: delM ? parseInt(delM[1], 10) : 0,
       };
     }
+    if (branch) {
+      // PR lookup is async — returns whatever's cached now, fires a refresh
+      // in the background, and calls back to re-push ctx when the result
+      // actually changes.
+      pr = getPr(repoRoot, branch, () => pushCtx(session));
+    }
   }
   return {
     cwd,
@@ -187,6 +195,7 @@ function buildCtx(session: Session) {
     repoRoot: repoRoot ? shortPath(repoRoot) : null,
     branch,
     diff,
+    pr,
     node: session.nodeVersion,
     env: session.env,
     cwdReady: true,

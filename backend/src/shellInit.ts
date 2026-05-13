@@ -36,6 +36,16 @@ autoload -U add-zsh-hook
 # Minimal prompt — Grove renders chips/context in its own UI
 PS1='› '
 RPROMPT=''
+# Suppress zsh's "%" marker after commands whose output doesn't end with a
+# newline. Useful in raw terminals; visual noise in our block UI.
+PROMPT_EOL_MARK=''
+
+# Disable git's pager (less) so output streams directly into the block —
+# alt-screen pagers wipe their content on exit, which would leave the block
+# empty. The block list is scrollable, so we don't lose the affordance.
+export GIT_PAGER=cat
+export PAGER=less
+export LESS='-FRX'
 
 typeset -g _grove_t0
 

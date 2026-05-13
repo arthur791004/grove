@@ -4,7 +4,7 @@ import { Box, HStack, Text } from '@chakra-ui/react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { useTabContext, setTabContext } from './useTabContext';
+import { useTabContext, setTabContext, type TabContext } from './useTabContext';
 import { useStore } from './store';
 import { API_BASE, WS_BASE } from './api';
 import { TerminalOutput } from './TerminalOutput';
@@ -228,21 +228,23 @@ export function TerminalView({ tabId, active }: Props) {
     const snapshot = pendingOutputRef.current;
     if (snapshot.size === 0 && !pendingBlockRef.current) return;
     pendingOutputRef.current = new Map();
-    // Commit the deferred block-start in the same render as its first output
-    // so the user never sees an empty block flash on screen.
     const pending = pendingBlockRef.current;
     pendingBlockRef.current = null;
+    // The updater must be pure — React 18 StrictMode double-invokes it in
+    // dev, so we can't mutate `snapshot` (e.g. .delete) here. Instead we
+    // skip the just-committed pending block while mapping so its initial
+    // output isn't re-applied via applyCarriageReturns.
     setBlocks((bs) => {
       let next = bs;
       if (pending) {
         const firstChunk = snapshot.get(pending.id) ?? '';
         next = [...bs.slice(-200), { ...pending, output: capOutput(firstChunk) }];
-        snapshot.delete(pending.id);
       }
       if (snapshot.size === 0) return next;
       return next.map((b) => {
         const chunk = snapshot.get(b.id);
         if (!chunk) return b;
+        if (pending && b.id === pending.id) return b;
         return { ...b, output: capOutput(applyCarriageReturns(b.output, chunk)) };
       });
     });
@@ -1166,6 +1168,7 @@ function ChipStrip({ ctx, tabId }: { ctx: ReturnType<typeof useTabContext>; tabI
           label={<DiffLabel added={ctx.diff.added} removed={ctx.diff.removed} />}
         />
       )}
+      {ctx?.pr && <PrChip pr={ctx.pr} />}
       {ctx?.env?.venv && <Chip prefix="venv" label={ctx.env.venv} labelColor="#79c0ff" />}
       {ctx?.env?.conda && <Chip prefix="conda" label={ctx.env.conda} labelColor="#d2a8ff" />}
       {ctx?.env?.aws && <Chip prefix="aws" label={ctx.env.aws} labelColor="#f59e0b" />}
@@ -1326,6 +1329,48 @@ function DiffIcon() {
       <path d="M8 1v3h3" strokeWidth="1" />
       <path d="M5 7.5h4M7 5.5v4" strokeWidth="1.1" strokeLinecap="round" />
       <path d="M5 11h4" strokeWidth="1.1" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function PrChip({ pr }: { pr: NonNullable<TabContext['pr']> }) {
+  const color = pr.draft
+    ? '#8b949e'
+    : pr.state === 'MERGED' ? '#d2a8ff'
+    : pr.state === 'CLOSED' ? '#f85149'
+    : '#79c0ff';
+  return (
+    <Box
+      as="button"
+      onClick={() => {
+        // GitHub refuses to be iframed (frame-ancestors 'none'), so open the
+        // PR in the system browser where extensions / sessions actually work.
+        if (pr.url) window.grove?.openExternal?.(pr.url);
+      }}
+      cursor="pointer"
+      bg="transparent"
+      border="none"
+      p="0"
+      title={`${pr.draft ? 'Draft ' : ''}${pr.state}: ${pr.title || `#${pr.number}`}`}
+    >
+      <Chip
+        icon={<PrIcon />}
+        label={`#${pr.number}${pr.draft ? ' draft' : ''}`}
+        labelColor={color}
+      />
+    </Box>
+  );
+}
+
+function PrIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="3.5" cy="3" r="1.3" />
+      <circle cx="3.5" cy="11" r="1.3" />
+      <circle cx="10.5" cy="11" r="1.3" />
+      <path d="M3.5 4.3v5.4" />
+      <path d="M10.5 9.7V6a2 2 0 0 0-2-2H7" />
+      <path d="M8.5 2.5L7 4l1.5 1.5" />
     </svg>
   );
 }
