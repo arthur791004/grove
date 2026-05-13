@@ -14,6 +14,17 @@ const ALT_ON   = /\x1b\[\?(?:1049|47|1047)h/g;
 const ALT_OFF  = /\x1b\[\?(?:1049|47|1047)l/g;
 const CURS_OFF = /\x1b\[\?25l/g;
 const CURS_ON  = /\x1b\[\?25h/g;
+const ENTER_RAW = /\x1b\[\?(?:1049|47|1047)h|\x1b\[\?25l/;
+
+// When a single PTY chunk carries both the shell's echo of the command line
+// and the TUI's own ?25l/?1049h, we want xterm to start clean at the moment
+// raw mode is entered — otherwise the echoed `claude` (or whatever the user
+// typed) lives in the buffer behind the TUI and peeks through wherever the
+// TUI doesn't paint.
+function sliceFromRawEnter(data: string): string {
+  const m = ENTER_RAW.exec(data);
+  return m ? data.slice(m.index) : data;
+}
 
 type RawKind = 'alt' | 'cursor';
 interface RawTransition { on: boolean; kind: RawKind }
@@ -381,8 +392,20 @@ export function TerminalView({ tabId, active }: Props) {
             let snapshot: string | null = null;
             if (willExitRaw) snapshot = snapshotXtermBuffer();
 
-            if (willEnterRaw) xtermRef.current?.reset();
-            xtermRef.current?.write(msg.data);
+            if (willEnterRaw) {
+              // reset() rebuilds buffers but the visible canvas may carry the
+              // pre-trigger paint until the next render tick. Stamp an explicit
+              // `\e[2J\e[H` (clear screen + cursor home) so the new write lands
+              // on a guaranteed-blank frame.
+              xtermRef.current?.reset();
+              xtermRef.current?.write('\x1b[2J\x1b[H' + sliceFromRawEnter(msg.data));
+              // Flip the ref synchronously so a block-start arriving in the
+              // next WS message (before React re-renders rawMode → useEffect →
+              // ref) sees raw mode as already active and skips its own reset.
+              rawModeRef.current = true;
+            } else {
+              xtermRef.current?.write(msg.data);
+            }
 
             if (snapshot) applySnapshotToInteractiveBlock(snapshot);
 
@@ -444,7 +467,14 @@ export function TerminalView({ tabId, active }: Props) {
             if (interactive) {
               setBlocks((bs) => [...bs.slice(-200), pending]);
               pendingBlockRef.current = null;
-              xtermRef.current?.reset();
+              // Only reset xterm if we haven't already entered raw mode via
+              // ?25l/?1049h in the raw stream — otherwise we wipe the TUI's
+              // already-drawn first frame and the rest of the run only shows
+              // delta updates (e.g. the leftover "claude" word from its banner).
+              if (!rawModeRef.current) {
+                xtermRef.current?.reset();
+                xtermRef.current?.write('\x1b[2J\x1b[H');
+              }
               setForcedRaw(true);
               rawModeRef.current = true;
             } else {
@@ -471,9 +501,17 @@ export function TerminalView({ tabId, active }: Props) {
               ));
             }
             if (snapshot) applySnapshotToInteractiveBlock(snapshot);
+            // Clear xterm so the next interactive command — including ones
+            // that don't emit ?25l/?1049h on entry — starts on a blank canvas
+            // instead of inheriting the previous TUI's last frame.
+            if (rawModeRef.current) {
+              xtermRef.current?.reset();
+              xtermRef.current?.write('\x1b[2J\x1b[H');
+            }
             currentBlockRef.current = null;
             inPromptRef.current = true;
             setForcedRaw(false);
+            rawModeRef.current = false;
             useStore.getState().setRunningCmd(tabId, null);
           }
         } catch {}
