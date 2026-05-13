@@ -5,12 +5,15 @@ import { Workspace } from './Workspace';
 import { CommandPalette } from './CommandPalette';
 import { DiffPanel } from './DiffPanel';
 import { FileBrowserPanel } from './FileBrowserPanel';
+import { BrowserPanel } from './BrowserPanel';
 import { useShortcuts } from './useShortcuts';
 import { useStore } from './store';
 
 const SIDEBAR_WIDTH = 220;
-const DIFF_PANEL_WIDTH = 420;
-const FILE_BROWSER_WIDTH = 420;
+// Default right-side panel takes 40% of the content area, with a minimum
+// width so it stays usable on small windows.
+const PANEL_RATIO = 0.4;
+const PANEL_MIN = 360;
 // When the workspace would have less than this many pixels next to the diff
 // panel, force the panel into fullscreen instead of splitting the space.
 const MIN_WORKSPACE_WIDTH = 480;
@@ -25,6 +28,9 @@ export function App() {
   const fileBrowserOpen = useStore((s) => s.fileBrowserOpen);
   const toggleFileBrowser = useStore((s) => s.toggleFileBrowser);
   const fileBrowserFullscreen = useStore((s) => s.fileBrowserFullscreen);
+  const browserPanelOpen = useStore((s) => s.browserPanelOpen);
+  const toggleBrowserPanel = useStore((s) => s.toggleBrowserPanel);
+  const browserPanelFullscreen = useStore((s) => s.browserPanelFullscreen);
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
   useEffect(() => {
     const onResize = () => setWindowWidth(window.innerWidth);
@@ -32,13 +38,12 @@ export function App() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
   const contentW = windowWidth - (sidebarOpen ? SIDEBAR_WIDTH : 0);
-  const activePanelBaseW = diffPanelOpen ? DIFF_PANEL_WIDTH
-    : fileBrowserOpen ? FILE_BROWSER_WIDTH
-    : 0;
-  const panelOpen = diffPanelOpen || fileBrowserOpen;
+  const panelOpen = diffPanelOpen || fileBrowserOpen || browserPanelOpen;
+  const activePanelBaseW = panelOpen ? Math.max(PANEL_MIN, Math.round(contentW * PANEL_RATIO)) : 0;
   const forcedFullscreen = panelOpen && contentW - activePanelBaseW < MIN_WORKSPACE_WIDTH;
   const userFullscreen = diffPanelOpen ? diffPanelFullscreen
     : fileBrowserOpen ? fileBrowserFullscreen
+    : browserPanelOpen ? browserPanelFullscreen
     : false;
   const effectiveFullscreen = userFullscreen || forcedFullscreen;
   useShortcuts(() => setPaletteOpen(true));
@@ -80,6 +85,7 @@ export function App() {
           pt="2px"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
+          <BrowserToggleButton open={browserPanelOpen} onClick={toggleBrowserPanel} />
           <FileBrowserToggleButton open={fileBrowserOpen} onClick={toggleFileBrowser} />
           <DiffToggleButton open={diffPanelOpen} onClick={toggleDiffPanel} />
         </Flex>
@@ -132,6 +138,12 @@ export function App() {
               {diffPanelOpen && <DiffPanel forcedFullscreen={forcedFullscreen} />}
               {fileBrowserOpen && (
                 <FileBrowserPanel
+                  forcedFullscreen={forcedFullscreen}
+                  panelWidth={effectiveFullscreen ? contentW : activePanelBaseW}
+                />
+              )}
+              {browserPanelOpen && (
+                <BrowserPanel
                   forcedFullscreen={forcedFullscreen}
                   panelWidth={effectiveFullscreen ? contentW : activePanelBaseW}
                 />
@@ -259,6 +271,17 @@ function FileBrowserToggleButton({ open, onClick }: { open: boolean; onClick: ()
     <TitlebarIconButton active={open} title={open ? 'Hide files' : 'Show files'} onClick={onClick}>
       <svg width="18" height="16" viewBox="0 0 18 16" fill="none" stroke="currentColor">
         <path d="M2 3.5a1 1 0 0 1 1-1h4l1.5 1.5h7a1 1 0 0 1 1 1V12.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5z" strokeWidth="1.3" strokeLinejoin="round" />
+      </svg>
+    </TitlebarIconButton>
+  );
+}
+
+function BrowserToggleButton({ open, onClick }: { open: boolean; onClick: () => void }) {
+  return (
+    <TitlebarIconButton active={open} title={open ? 'Hide browser' : 'Show browser'} onClick={onClick}>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
+        <circle cx="8" cy="8" r="6" />
+        <path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12" strokeLinecap="round" />
       </svg>
     </TitlebarIconButton>
   );

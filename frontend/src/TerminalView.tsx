@@ -402,10 +402,18 @@ export function TerminalView({ tabId, active }: Props) {
   // history), output streams in without yanking the viewport. With this in
   // place, manual scroll + auto-follow coexist smoothly.
   const isPinnedRef = useRef(true);
+  const [pinned, setPinned] = useState(true);
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    isPinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+    isPinnedRef.current = atBottom;
+    setPinned((prev) => (prev === atBottom ? prev : atBottom));
+  };
+  const scrollToBottom = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
   };
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -682,28 +690,57 @@ export function TerminalView({ tabId, active }: Props) {
         <Box ref={xtermHostRef} w="100%" h="100%" />
       </Box>
 
-      <Box
-        ref={scrollRef}
-        onScroll={onScroll}
-        flex="1"
-        overflowY="auto"
-        fontFamily="var(--grove-mono)"
-        fontSize="13px"
-        color="#c9d1d9"
-        display="flex"
-        flexDirection="column"
-        borderBottom="1px solid #21262d"
-      >
-        <Box flex="1" />
-        {blocks.map((b) => (
-          <BlockCard
-            key={b.id}
-            block={b}
-            ctxNode={ctx?.node ?? null}
-            cmdHeld={cmdHeld}
-            onDelete={() => setBlocks((bs) => bs.filter((x) => x.id !== b.id))}
-          />
-        ))}
+      <Box position="relative" flex="1" minH="0" display="flex">
+        <Box
+          ref={scrollRef}
+          onScroll={onScroll}
+          flex="1"
+          overflowY="auto"
+          fontFamily="var(--grove-mono)"
+          fontSize="13px"
+          color="#c9d1d9"
+          display="flex"
+          flexDirection="column"
+          borderBottom="1px solid #21262d"
+        >
+          <Box flex="1" />
+          {blocks.map((b) => (
+            <BlockCard
+              key={b.id}
+              block={b}
+              ctxNode={ctx?.node ?? null}
+              cmdHeld={cmdHeld}
+              onDelete={() => setBlocks((bs) => bs.filter((x) => x.id !== b.id))}
+            />
+          ))}
+        </Box>
+        {!pinned && blocks.length > 0 && (
+          <Box
+            as="button"
+            onClick={scrollToBottom}
+            position="absolute"
+            bottom="12px"
+            right="16px"
+            w="32px"
+            h="32px"
+            borderRadius="full"
+            bg="#161b22"
+            border="1px solid #30363d"
+            color="#c9d1d9"
+            cursor="pointer"
+            display="flex"
+            alignItems="center"
+            justifyContent="center"
+            boxShadow="0 4px 12px rgba(0,0,0,0.4)"
+            transition="background 120ms ease, transform 120ms ease"
+            _hover={{ bg: '#21262d', transform: 'translateY(-1px)' }}
+            title="Scroll to bottom"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 6l4 4 4-4" />
+            </svg>
+          </Box>
+        )}
       </Box>
 
       <Box position="relative">
@@ -975,7 +1012,7 @@ function BlockMenu({ onCopyCmd, onCopyOutput, onDelete }: { onCopyCmd: () => voi
   const item = (label: string, onClick: () => void, danger = false) => (
     <Box
       as="button"
-      onMouseDown={(e: globalThis.MouseEvent) => e.preventDefault()}
+      onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
       onClick={() => {
         // Close the portal synchronously so it's committed to the DOM before
         // the action (which may unmount this component) runs. Without flushSync
@@ -1085,11 +1122,8 @@ function RunningBadge({ cmd, onStop }: { cmd: string; onStop: () => void }) {
         alignItems="center"
         px="1.5"
         h="16px"
-        border="1px solid #30363d"
-        borderTopColor="#3d444d"
-        borderBottomColor="#22272e"
-        borderRadius="4px"
-        bg="#161b22"
+        border="none"
+        bg="transparent"
         color="#7d8590"
         fontSize="12px"
         fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
@@ -1098,8 +1132,7 @@ function RunningBadge({ cmd, onStop }: { cmd: string; onStop: () => void }) {
         textTransform="uppercase"
         cursor="pointer"
         title="Send SIGINT to the running process"
-        style={{ boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.35)' }}
-        _hover={{ borderColor: '#f85149', color: '#f85149' }}
+        _hover={{ color: '#f85149' }}
       >
         ^C stop
       </Box>

@@ -97,6 +97,10 @@ function parseSegments(raw: string): Seg[] {
 // has at least one `/` segment, optional `:line:col`.
 const PATH_LIKE_WORD = /^(?:\.{1,2}\/|~\/|\/)?(?:[\w.-]+\/)+[\w.-]+(?::\d+(?::\d+)?)?$/;
 
+// HTTP(S) URL detection — clicked tokens skip filesystem resolve and open in
+// the embedded browser panel instead.
+const HTTP_URL_WORD = /^https?:\/\/[^\s<>"']+$/i;
+
 function stripLineCol(p: string): string {
   return p.replace(/:\d+(?::\d+)?$/, '');
 }
@@ -118,6 +122,14 @@ function cleanToken(s: string): string {
 }
 
 async function openLink(rawTarget: string, blockCwd: string) {
+  const cleanedRaw = cleanToken(rawTarget);
+  // HTTP(S) URLs route to the embedded browser panel, never the file browser.
+  if (HTTP_URL_WORD.test(cleanedRaw)) {
+    const store = useStore.getState();
+    store.setBrowserPanelUrl(cleanedRaw);
+    if (!store.browserPanelOpen) store.toggleBrowserPanel();
+    return;
+  }
   let p = urlToPath(rawTarget);
   p = cleanToken(p);
   p = p.replace(/[#?].*$/, '');
@@ -206,7 +218,7 @@ export function TerminalOutput({ text, cwd }: { text: string; cwd: string }) {
           out.push(<span key={key++} className={s.cls}>{chunk}</span>);
         } else {
           const stripped = cleanToken(chunk);
-          if (stripped && PATH_LIKE_WORD.test(stripped)) {
+          if (stripped && (PATH_LIKE_WORD.test(stripped) || HTTP_URL_WORD.test(stripped))) {
             out.push(<PathLink key={key++} href={stripped} cls={s.cls} cwd={cwd}>{chunk}</PathLink>);
           } else if (stripped) {
             out.push(<WordCandidate key={key++} word={stripped} cls={s.cls} cwd={cwd}>{chunk}</WordCandidate>);

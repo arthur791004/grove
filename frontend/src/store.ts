@@ -36,6 +36,11 @@ interface State {
   fileBrowserFullscreen: boolean;
   fileBrowserListOpen: boolean;
   fileBrowserRequest: { path: string; kind: 'file' | 'dir'; nonce: number } | null;
+  browserPanelOpen: boolean;
+  browserPanelFullscreen: boolean;
+  browserPanelListOpen: boolean;
+  browserPanelUrl: string | null;
+  browserHistory: Array<{ url: string; visitedAt: number; cwd: string }>;
   autoEditCwdGroupId: string | null;
   runningCmds: Record<string, string>;
 }
@@ -62,6 +67,11 @@ interface Actions {
   toggleFileBrowserList(): void;
   openFileInBrowser(path: string, kind?: 'file' | 'dir'): void;
   consumeFileBrowserRequest(): void;
+  toggleBrowserPanel(): void;
+  toggleBrowserPanelFullscreen(): void;
+  toggleBrowserPanelList(): void;
+  setBrowserPanelUrl(url: string | null): void;
+  removeBrowserHistory(url: string, cwd?: string): void;
   setAutoEditCwdGroupId(id: string | null): void;
   setRunningCmd(tabId: string, cmd: string | null): void;
 }
@@ -91,6 +101,11 @@ export const useStore = create<State & Actions>()(
       fileBrowserFullscreen: false,
       fileBrowserListOpen: true,
       fileBrowserRequest: null,
+      browserPanelOpen: false,
+      browserPanelFullscreen: false,
+      browserPanelListOpen: true,
+      browserPanelUrl: null,
+      browserHistory: [],
       autoEditCwdGroupId: null,
       runningCmds: {},
 
@@ -222,13 +237,13 @@ export const useStore = create<State & Actions>()(
 
       toggleSidebar() { set((s) => ({ sidebarOpen: !s.sidebarOpen })); },
 
-      // Right-side panels (diff + file browser) are mutually exclusive; toggling
-      // one closes the other so the workspace only ever has to push against a
-      // single sibling pane.
+      // Right-side panels (diff, file browser, web browser) are mutually
+      // exclusive — only one occupies the slot at a time so the workspace
+      // never has to compete with more than one sibling pane.
       toggleDiffPanel() {
         set((s) => s.diffPanelOpen
           ? { diffPanelOpen: false }
-          : { diffPanelOpen: true, fileBrowserOpen: false });
+          : { diffPanelOpen: true, fileBrowserOpen: false, browserPanelOpen: false });
       },
 
       toggleDiffPanelFullscreen() { set((s) => ({ diffPanelFullscreen: !s.diffPanelFullscreen })); },
@@ -238,19 +253,55 @@ export const useStore = create<State & Actions>()(
       toggleFileBrowser() {
         set((s) => s.fileBrowserOpen
           ? { fileBrowserOpen: false }
-          : { fileBrowserOpen: true, diffPanelOpen: false });
+          : { fileBrowserOpen: true, diffPanelOpen: false, browserPanelOpen: false });
       },
 
       toggleFileBrowserFullscreen() { set((s) => ({ fileBrowserFullscreen: !s.fileBrowserFullscreen })); },
 
       toggleFileBrowserList() { set((s) => ({ fileBrowserListOpen: !s.fileBrowserListOpen })); },
 
+      toggleBrowserPanel() {
+        set((s) => s.browserPanelOpen
+          ? { browserPanelOpen: false }
+          : { browserPanelOpen: true, diffPanelOpen: false, fileBrowserOpen: false });
+      },
+
+      toggleBrowserPanelFullscreen() { set((s) => ({ browserPanelFullscreen: !s.browserPanelFullscreen })); },
+
+      toggleBrowserPanelList() { set((s) => ({ browserPanelListOpen: !s.browserPanelListOpen })); },
+
+      setBrowserPanelUrl(url) {
+        set((s) => {
+          if (!url) return { browserPanelUrl: null };
+          // Normalize for the recents key only — strip a trailing slash on
+          // the path (but never the slash that immediately follows the host)
+          // so "http://x:3000/" and "http://x:3000" don't both pile up.
+          const normalized = url.replace(/(.+?:\/\/[^/]+\/.+?)\/$/, '$1').replace(/(.+?:\/\/[^/]+)\/$/, '$1');
+          // Scope recents by the active tab's workspace cwd so each project
+          // gets its own history. Falls back to '' when no active tab.
+          const active = s.tabs.find((t) => t.id === s.activeTabId);
+          const group = active ? s.groups.find((g) => g.id === active.groupId) : null;
+          const cwd = group?.cwd ?? '';
+          const rest = s.browserHistory.filter((h) => !(h.url === normalized && h.cwd === cwd));
+          const next = [{ url: normalized, visitedAt: Date.now(), cwd }, ...rest].slice(0, 100);
+          return { browserPanelUrl: normalized, browserHistory: next };
+        });
+      },
+      removeBrowserHistory(url, cwd) {
+        set((s) => ({
+          browserHistory: s.browserHistory.filter(
+            (h) => !(h.url === url && (cwd === undefined || h.cwd === cwd)),
+          ),
+        }));
+      },
+
       openFileInBrowser(path, kind = 'file') {
-        // Open the panel (closing the diff panel) and stamp a request the
-        // FileBrowserPanel will consume.
+        // Open the panel (closing the diff + browser panels) and stamp a
+        // request the FileBrowserPanel will consume.
         set({
           fileBrowserOpen: true,
           diffPanelOpen: false,
+          browserPanelOpen: false,
           fileBrowserRequest: { path, kind, nonce: Date.now() },
         });
       },
@@ -289,6 +340,11 @@ export const useStore = create<State & Actions>()(
         fileBrowserOpen: s.fileBrowserOpen,
         fileBrowserFullscreen: s.fileBrowserFullscreen,
         fileBrowserListOpen: s.fileBrowserListOpen,
+        browserPanelOpen: s.browserPanelOpen,
+        browserPanelFullscreen: s.browserPanelFullscreen,
+        browserPanelListOpen: s.browserPanelListOpen,
+        browserPanelUrl: s.browserPanelUrl,
+        browserHistory: s.browserHistory,
       }),
     },
   ),
