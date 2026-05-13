@@ -255,17 +255,19 @@ export function DiffPanel({ forcedFullscreen = false }: { forcedFullscreen?: boo
           </HStack>
         )}
         <Box flex="1" minW="0" />
-        {!forcedFullscreen && (
-          <HeaderIconButton
-            title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-            onClick={toggleFullscreen}
-          >
-            {fullscreen ? <ContractIcon /> : <ExpandIcon />}
+        <Flex gap="1" flexShrink={0} align="center">
+          {!forcedFullscreen && (
+            <HeaderIconButton
+              title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+              onClick={toggleFullscreen}
+            >
+              {fullscreen ? <ContractIcon /> : <ExpandIcon />}
+            </HeaderIconButton>
+          )}
+          <HeaderIconButton title="Close" onClick={togglePanel}>
+            <CloseIcon />
           </HeaderIconButton>
-        )}
-        <HeaderIconButton title="Close" onClick={togglePanel}>
-          <CloseIcon />
-        </HeaderIconButton>
+        </Flex>
       </HeaderRow>
 
       <Flex flex="1" minH="0" minW="0" position="relative" overflow="hidden">

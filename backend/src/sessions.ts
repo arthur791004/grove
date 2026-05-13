@@ -2,6 +2,7 @@ import * as pty from 'node-pty';
 import os from 'node:os';
 import { isTmuxAvailable, ensureSession, attachArgs, killSession } from './tmux.js';
 import { ensureShellInitDir } from './shellInit.js';
+import { findRepoRoot, safeRun, shortPath } from './gitUtil.js';
 
 type WSLike = { send(data: string): void; close(): void };
 
@@ -25,8 +26,11 @@ const MAX_BUFFER = 200_000;
 const MARKER_REGEX = /\x1b\]1337;grove-(pre|post);([^\x07\x1b]*)\x07/;
 const OSC7_REGEX = /\x1b\]7;file:\/\/[^/]*([^\x07\x1b]+)(?:\x07|\x1b\\)/g;
 const ENV_REGEX = /\x1b\]1337;grove-env;([^\x07\x1b]*)\x07/g;
-// All other OSC sequences (terminated by BEL or ST)
-const OSC_ANY = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+// All OSC sequences except OSC 8 (hyperlinks). OSC 8 looks like
+//   \e]8;params;url\e\\display\e]8;;\e\\
+// We preserve those so the frontend can render clickable paths emitted by
+// tools that embed file:// links (rustc, cargo, npm, etc.).
+const OSC_ANY = /\x1b\](?!8(?:[;\x07\x1b]|$))[^\x07\x1b]*(?:\x07|\x1b\\)/g;
 // All CSI sequences EXCEPT a small whitelist the block view interprets:
 //   m  → SGR (colors/styles)
 //   K  → EL (erase-in-line)
@@ -45,15 +49,24 @@ const BEL = /\x07/g;
 
 const CLEAR_SEQ = /\x1b\[[23]J|\x1bc/;
 
+const OSC8_RE = /\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)/g;
 function sanitize(s: string): string {
   if (!s) return s;
   if (s.indexOf('\x1b') === -1 && s.indexOf('\x07') === -1) return s;
-  return s
+  // Extract OSC 8 markers so the rest of sanitize can't strip the ESC \\ ST
+  // terminator (TWO_BYTE_ESC includes \\) or the OSC body.
+  const links: string[] = [];
+  const placeheld = s.replace(OSC8_RE, (m) => {
+    links.push(m);
+    return `\x00\x01OSC8_${links.length - 1}\x01\x00`;
+  });
+  const scrubbed = placeheld
     .replace(OSC_ANY, '')
     .replace(CSI_NON_SGR, '')
     .replace(TWO_BYTE_ESC, '')
     .replace(LONE_ESC, '')
     .replace(BEL, '');
+  return scrubbed.replace(/\x00\x01OSC8_(\d+)\x01\x00/g, (_, idx) => links[parseInt(idx, 10)]);
 }
 
 // Walk the buffer skipping complete escape sequences. Returns the highest index
@@ -126,6 +139,58 @@ function send(ws: WSLike, payload: unknown) {
   try { ws.send(JSON.stringify(payload)); } catch {}
 }
 
+// Coalesce burst pushes (OSC 7 + env + block-end can all fire in the same
+// chunk) into one git-shelling-out + broadcast pass per session.
+const ctxDebounce = new Map<string, NodeJS.Timeout>();
+const HOME = os.homedir();
+
+function buildCtx(session: Session) {
+  const cwd = session.cwd;
+  const sCwd = cwd.startsWith(HOME) ? '~' + cwd.slice(HOME.length) : cwd;
+  const repoRoot = findRepoRoot(cwd);
+  let branch: string | null = session.env.branch ?? null;
+  let diff: { added: number; removed: number; files: number } | null = null;
+  if (repoRoot) {
+    if (!branch) branch = safeRun('git', ['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot);
+    const shortstat = safeRun('git', ['diff', '--shortstat'], repoRoot, 1500);
+    if (shortstat) {
+      const filesM = shortstat.match(/(\d+) files? changed/);
+      const addM = shortstat.match(/(\d+) insertions?/);
+      const delM = shortstat.match(/(\d+) deletions?/);
+      diff = {
+        files: filesM ? parseInt(filesM[1], 10) : 0,
+        added: addM ? parseInt(addM[1], 10) : 0,
+        removed: delM ? parseInt(delM[1], 10) : 0,
+      };
+    }
+  }
+  return {
+    cwd,
+    shortCwd: sCwd,
+    repoRoot: repoRoot ? shortPath(repoRoot) : null,
+    branch,
+    diff,
+    node: session.nodeVersion,
+    env: session.env,
+    cwdReady: true,
+  };
+}
+
+function pushCtx(session: Session) {
+  const existing = ctxDebounce.get(session.tabId);
+  if (existing) clearTimeout(existing);
+  ctxDebounce.set(session.tabId, setTimeout(() => {
+    ctxDebounce.delete(session.tabId);
+    if (!sessions.has(session.tabId)) return;
+    try {
+      const ctx = buildCtx(session);
+      broadcast(session, { type: 'ctx', ctx });
+    } catch (err) {
+      console.error('[grove] failed to build ctx', err);
+    }
+  }, 150));
+}
+
 function broadcast(session: Session, payload: unknown) {
   for (const sub of session.subscribers) send(sub, payload);
 }
@@ -152,7 +217,10 @@ function processChunk(session: Session, chunk: string) {
     for (const m of session.parseBuffer.matchAll(OSC7_REGEX)) {
       try {
         const decoded = decodeURIComponent(m[1]);
-        if (decoded && decoded !== session.cwd) session.cwd = decoded;
+        if (decoded && decoded !== session.cwd) {
+          session.cwd = decoded;
+          pushCtx(session);
+        }
       } catch {}
     }
   }
@@ -170,8 +238,7 @@ function processChunk(session: Session, chunk: string) {
       }
       session.env = next;
       session.nodeVersion = next.node || null;
-      console.log('[grove] env updated:', next);
-      broadcast(session, { type: 'env', env: next });
+      pushCtx(session);
     }
   }
 
@@ -196,6 +263,7 @@ function processChunk(session: Session, chunk: string) {
         broadcast(session, { type: 'block-start', cmd: event.cmd, cwd: event.cwd });
       } else {
         broadcast(session, { type: 'block-end', exit: event.exit, durationMs: event.durationMs });
+        pushCtx(session);
       }
     }
     session.parseBuffer = session.parseBuffer.slice(found.index + found[0].length);
@@ -289,6 +357,9 @@ export function subscribe(tabId: string, ws: WSLike, cwd?: string): () => void {
   s.subscribers.add(ws);
   if (s.parsedOutputBuffer) send(ws, { type: 'output', data: s.parsedOutputBuffer });
   if (s.rawBuffer) send(ws, { type: 'raw', data: s.rawBuffer });
+  // Send the current ctx (if any) so the new subscriber's chips populate
+  // immediately instead of waiting for the next OSC 7 / env / block-end tick.
+  if (s.env && Object.keys(s.env).length > 0) pushCtx(s);
   return () => { s.subscribers.delete(ws); };
 }
 

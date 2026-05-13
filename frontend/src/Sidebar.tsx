@@ -460,8 +460,11 @@ function TabCard({ tab }: { tab: Tab }) {
   const setColor = useStore((s) => s.setTabColor);
   const [editing, setEditing] = useState(false);
   const [hovered, setHovered] = useState(false);
-  const ctx = useTabContext(tab.id);
   const runningCmd = useStore((s) => s.runningCmds[tab.id]);
+  // Only poll context for tabs the user is looking at or has a command in.
+  // Idle tabs keep their last cached ctx (branch/node/etc.) without spamming
+  // /context every 1.5s × every-tab.
+  const ctx = useTabContext(tab.id, 0, 1500, active || !!runningCmd);
   const group = useStore((s) => s.groups.find((g) => g.id === tab.groupId));
   const { openTabId, setOpenTabId } = useContext(ColorPopupContext);
   const showColors = openTabId === tab.id;

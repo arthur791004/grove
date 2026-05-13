@@ -4,11 +4,13 @@ import { Sidebar } from './Sidebar';
 import { Workspace } from './Workspace';
 import { CommandPalette } from './CommandPalette';
 import { DiffPanel } from './DiffPanel';
+import { FileBrowserPanel } from './FileBrowserPanel';
 import { useShortcuts } from './useShortcuts';
 import { useStore } from './store';
 
 const SIDEBAR_WIDTH = 220;
 const DIFF_PANEL_WIDTH = 420;
+const FILE_BROWSER_WIDTH = 420;
 // When the workspace would have less than this many pixels next to the diff
 // panel, force the panel into fullscreen instead of splitting the space.
 const MIN_WORKSPACE_WIDTH = 480;
@@ -20,6 +22,9 @@ export function App() {
   const diffPanelOpen = useStore((s) => s.diffPanelOpen);
   const toggleDiffPanel = useStore((s) => s.toggleDiffPanel);
   const diffPanelFullscreen = useStore((s) => s.diffPanelFullscreen);
+  const fileBrowserOpen = useStore((s) => s.fileBrowserOpen);
+  const toggleFileBrowser = useStore((s) => s.toggleFileBrowser);
+  const fileBrowserFullscreen = useStore((s) => s.fileBrowserFullscreen);
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
   useEffect(() => {
     const onResize = () => setWindowWidth(window.innerWidth);
@@ -27,8 +32,15 @@ export function App() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
   const contentW = windowWidth - (sidebarOpen ? SIDEBAR_WIDTH : 0);
-  const forcedFullscreen = contentW - DIFF_PANEL_WIDTH < MIN_WORKSPACE_WIDTH;
-  const effectiveFullscreen = diffPanelFullscreen || forcedFullscreen;
+  const activePanelBaseW = diffPanelOpen ? DIFF_PANEL_WIDTH
+    : fileBrowserOpen ? FILE_BROWSER_WIDTH
+    : 0;
+  const panelOpen = diffPanelOpen || fileBrowserOpen;
+  const forcedFullscreen = panelOpen && contentW - activePanelBaseW < MIN_WORKSPACE_WIDTH;
+  const userFullscreen = diffPanelOpen ? diffPanelFullscreen
+    : fileBrowserOpen ? fileBrowserFullscreen
+    : false;
+  const effectiveFullscreen = userFullscreen || forcedFullscreen;
   useShortcuts(() => setPaletteOpen(true));
 
   useEffect(() => {
@@ -68,6 +80,7 @@ export function App() {
           pt="2px"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
+          <FileBrowserToggleButton open={fileBrowserOpen} onClick={toggleFileBrowser} />
           <DiffToggleButton open={diffPanelOpen} onClick={toggleDiffPanel} />
         </Flex>
       </Flex>
@@ -86,13 +99,13 @@ export function App() {
           </Box>
         </Box>
         <Box flex="1" position="relative" minW="0">
-          {/* Workspace keeps its own width regardless of fullscreen toggle so
-              the terminal never re-layouts when the user maximizes/minimizes
-              the diff panel. Only opening/closing the panel resizes it. */}
+          {/* The workspace stays full-width when the diff panel is fullscreen so
+              the terminal never re-layouts on max/min. Only opening/closing the
+              right-side panel resizes it. */}
           <Box
             position="absolute"
             inset="0"
-            pr={diffPanelOpen && !forcedFullscreen ? `${DIFF_PANEL_WIDTH}px` : '0px'}
+            pr={panelOpen && !forcedFullscreen ? `${activePanelBaseW}px` : '0px'}
             style={{
               transition: 'padding-right 240ms cubic-bezier(0.22, 0.61, 0.36, 1)',
             }}
@@ -104,10 +117,10 @@ export function App() {
             top="0"
             right="0"
             bottom="0"
-            w={diffPanelOpen
-              ? (effectiveFullscreen ? '100%' : `${DIFF_PANEL_WIDTH}px`)
+            w={panelOpen
+              ? (effectiveFullscreen ? '100%' : `${activePanelBaseW}px`)
               : '0px'}
-            borderLeft={diffPanelOpen ? '1px solid #21262d' : '1px solid transparent'}
+            borderLeft={panelOpen ? '1px solid #21262d' : '1px solid transparent'}
             bg="#0d1117"
             overflow="hidden"
             style={{
@@ -117,6 +130,12 @@ export function App() {
           >
             <Box w="100%" h="100%">
               {diffPanelOpen && <DiffPanel forcedFullscreen={forcedFullscreen} />}
+              {fileBrowserOpen && (
+                <FileBrowserPanel
+                  forcedFullscreen={forcedFullscreen}
+                  panelWidth={effectiveFullscreen ? contentW : activePanelBaseW}
+                />
+              )}
             </Box>
           </Box>
         </Box>
@@ -232,6 +251,16 @@ function MenuItem({ children, hint, onClick }: { children: React.ReactNode; hint
       <Text fontSize="12px" color="#f0f6fc">{children}</Text>
       {hint && <Text className="menu-hint" fontSize="12px" color="#7d8590">{hint}</Text>}
     </Box>
+  );
+}
+
+function FileBrowserToggleButton({ open, onClick }: { open: boolean; onClick: () => void }) {
+  return (
+    <TitlebarIconButton active={open} title={open ? 'Hide files' : 'Show files'} onClick={onClick}>
+      <svg width="18" height="16" viewBox="0 0 18 16" fill="none" stroke="currentColor">
+        <path d="M2 3.5a1 1 0 0 1 1-1h4l1.5 1.5h7a1 1 0 0 1 1 1V12.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5z" strokeWidth="1.3" strokeLinejoin="round" />
+      </svg>
+    </TitlebarIconButton>
   );
 }
 

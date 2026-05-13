@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState, KeyboardEvent } from 'react';
 import { Box, HStack, Text } from '@chakra-ui/react';
-import Ansi from 'ansi-to-react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { useTabContext } from './useTabContext';
+import { useTabContext, setTabContext } from './useTabContext';
 import { useStore } from './store';
 import { API_BASE, WS_BASE } from './api';
+import { TerminalOutput } from './TerminalOutput';
 
 const ALT_ON   = /\x1b\[\?(?:1049|47|1047)h/g;
 const ALT_OFF  = /\x1b\[\?(?:1049|47|1047)l/g;
@@ -97,6 +97,28 @@ async function fetchServerCompletions(): Promise<string[]> {
 const MAX_BLOCK_OUTPUT = 200_000;
 const capOutput = (s: string): string => s.length > MAX_BLOCK_OUTPUT ? s.slice(-MAX_BLOCK_OUTPUT) : s;
 
+function useCmdHeld(): boolean {
+  const [down, setDown] = useState(false);
+  useEffect(() => {
+    const onDown = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Meta' || e.key === 'Control') setDown(true);
+    };
+    const onUp = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Meta' || e.key === 'Control') setDown(false);
+    };
+    const onBlur = () => setDown(false);
+    document.addEventListener('keydown', onDown);
+    document.addEventListener('keyup', onUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      document.removeEventListener('keydown', onDown);
+      document.removeEventListener('keyup', onUp);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, []);
+  return down;
+}
+
 function applyCarriageReturns(prev: string, incoming: string): string {
   if (
     incoming.indexOf('\r') === -1 &&
@@ -175,8 +197,9 @@ export function TerminalView({ tabId, active }: Props) {
   const [input, setInput] = useState('');
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
-  const [ctxRefreshKey, setCtxRefreshKey] = useState(0);
-  const ctx = useTabContext(tabId, ctxRefreshKey);
+  const isRunning = useStore((s) => !!s.runningCmds[tabId]);
+  const cmdHeld = useCmdHeld();
+  const ctx = useTabContext(tabId, 0, 0, active || isRunning);
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -309,8 +332,8 @@ export function TerminalView({ tabId, active }: Props) {
               rawModeRef.current = true;
             }
             useStore.getState().setRunningCmd(tabId, msg.cmd || '');
-          } else if (msg.type === 'env') {
-            setCtxRefreshKey((k) => k + 1);
+          } else if (msg.type === 'ctx') {
+            setTabContext(tabId, msg.ctx);
           } else if (msg.type === 'block-end') {
             const cur = currentBlockRef.current;
             if (cur !== null) {
@@ -322,9 +345,6 @@ export function TerminalView({ tabId, active }: Props) {
             inPromptRef.current = true;
             setForcedRaw(false);
             useStore.getState().setRunningCmd(tabId, null);
-            // Force context refresh so the cwd chip updates right after any
-            // command (esp. `cd`) finishes.
-            setCtxRefreshKey((k) => k + 1);
           }
         } catch {}
       };
@@ -619,7 +639,7 @@ export function TerminalView({ tabId, active }: Props) {
       >
         <Box flex="1" />
         {blocks.map((b) => (
-          <BlockCard key={b.id} block={b} ctxNode={ctx?.node ?? null} />
+          <BlockCard key={b.id} block={b} ctxNode={ctx?.node ?? null} cmdHeld={cmdHeld} />
         ))}
       </Box>
 
@@ -758,7 +778,7 @@ function DiffLabel({ added, removed }: { added: number; removed: number }) {
   );
 }
 
-function BlockCard({ block, ctxNode }: { block: Block; ctxNode: string | null }) {
+function BlockCard({ block, ctxNode, cmdHeld }: { block: Block; ctxNode: string | null; cmdHeld: boolean }) {
   const running = block.exit === null;
   const failed = block.exit !== null && block.exit !== 0;
   const durStr = formatDuration(block.durationMs, running);
@@ -839,6 +859,7 @@ function BlockCard({ block, ctxNode }: { block: Block; ctxNode: string | null })
       )}
       {!block.interactive && block.output && (
         <Box
+          className={cmdHeld ? 'grove-output grove-cmd-held' : 'grove-output'}
           color="#c9d1d9"
           fontFamily="var(--grove-mono)"
           fontSize="13px"
@@ -850,9 +871,10 @@ function BlockCard({ block, ctxNode }: { block: Block; ctxNode: string | null })
             fontKerning: 'none',
             fontFeatureSettings: '"liga" 0, "calt" 0, "kern" 0',
             fontVariantLigatures: 'none',
+            cursor: cmdHeld ? 'pointer' : 'text',
           }}
         >
-          <Ansi useClasses={true} linkify={false}>{block.output}</Ansi>
+          <TerminalOutput text={block.output} cwd={block.cwd} />
         </Box>
       )}
     </Box>

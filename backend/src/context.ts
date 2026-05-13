@@ -75,6 +75,6 @@ export function registerContextRoutes(app: FastifyInstance) {
     if (sessNode) ctx.node = sessNode;
     if (env.branch) ctx.branch = env.branch;
     ctx.env = env;
-    return ctx;
+    return { ...ctx, cwdReady: sessCwd !== null };
   });
 }

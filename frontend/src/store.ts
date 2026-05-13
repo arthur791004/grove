@@ -32,6 +32,10 @@ interface State {
   diffPanelOpen: boolean;
   diffPanelFullscreen: boolean;
   diffFileListOpen: boolean;
+  fileBrowserOpen: boolean;
+  fileBrowserFullscreen: boolean;
+  fileBrowserListOpen: boolean;
+  fileBrowserRequest: { path: string; kind: 'file' | 'dir'; nonce: number } | null;
   autoEditCwdGroupId: string | null;
   runningCmds: Record<string, string>;
 }
@@ -53,6 +57,11 @@ interface Actions {
   toggleDiffPanel(): void;
   toggleDiffPanelFullscreen(): void;
   toggleDiffFileList(): void;
+  toggleFileBrowser(): void;
+  toggleFileBrowserFullscreen(): void;
+  toggleFileBrowserList(): void;
+  openFileInBrowser(path: string, kind?: 'file' | 'dir'): void;
+  consumeFileBrowserRequest(): void;
   setAutoEditCwdGroupId(id: string | null): void;
   setRunningCmd(tabId: string, cmd: string | null): void;
 }
@@ -78,6 +87,10 @@ export const useStore = create<State & Actions>()(
       diffPanelOpen: false,
       diffPanelFullscreen: false,
       diffFileListOpen: true,
+      fileBrowserOpen: false,
+      fileBrowserFullscreen: false,
+      fileBrowserListOpen: true,
+      fileBrowserRequest: null,
       autoEditCwdGroupId: null,
       runningCmds: {},
 
@@ -209,11 +222,41 @@ export const useStore = create<State & Actions>()(
 
       toggleSidebar() { set((s) => ({ sidebarOpen: !s.sidebarOpen })); },
 
-      toggleDiffPanel() { set((s) => ({ diffPanelOpen: !s.diffPanelOpen })); },
+      // Right-side panels (diff + file browser) are mutually exclusive; toggling
+      // one closes the other so the workspace only ever has to push against a
+      // single sibling pane.
+      toggleDiffPanel() {
+        set((s) => s.diffPanelOpen
+          ? { diffPanelOpen: false }
+          : { diffPanelOpen: true, fileBrowserOpen: false });
+      },
 
       toggleDiffPanelFullscreen() { set((s) => ({ diffPanelFullscreen: !s.diffPanelFullscreen })); },
 
       toggleDiffFileList() { set((s) => ({ diffFileListOpen: !s.diffFileListOpen })); },
+
+      toggleFileBrowser() {
+        set((s) => s.fileBrowserOpen
+          ? { fileBrowserOpen: false }
+          : { fileBrowserOpen: true, diffPanelOpen: false });
+      },
+
+      toggleFileBrowserFullscreen() { set((s) => ({ fileBrowserFullscreen: !s.fileBrowserFullscreen })); },
+
+      toggleFileBrowserList() { set((s) => ({ fileBrowserListOpen: !s.fileBrowserListOpen })); },
+
+      openFileInBrowser(path, kind = 'file') {
+        // Open the panel (closing the diff panel) and stamp a request the
+        // FileBrowserPanel will consume.
+        set({
+          fileBrowserOpen: true,
+          diffPanelOpen: false,
+          fileBrowserRequest: { path, kind, nonce: Date.now() },
+        });
+      },
+      consumeFileBrowserRequest() {
+        set({ fileBrowserRequest: null });
+      },
 
       setAutoEditCwdGroupId(id) { set({ autoEditCwdGroupId: id }); },
 
@@ -243,6 +286,9 @@ export const useStore = create<State & Actions>()(
         diffPanelOpen: s.diffPanelOpen,
         diffPanelFullscreen: s.diffPanelFullscreen,
         diffFileListOpen: s.diffFileListOpen,
+        fileBrowserOpen: s.fileBrowserOpen,
+        fileBrowserFullscreen: s.fileBrowserFullscreen,
+        fileBrowserListOpen: s.fileBrowserListOpen,
       }),
     },
   ),

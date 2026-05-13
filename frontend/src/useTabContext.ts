@@ -7,13 +7,16 @@ export interface TabContext {
   node: string | null;
   diff: { added: number; removed: number; files: number } | null;
   env: Record<string, string>;
+  cwdReady: boolean;
 }
 
 const cache = new Map<string, TabContext>();
+const listeners = new Map<string, Set<(c: TabContext) => void>>();
+const oneShotFetched = new Set<string>();
 
-function sameCtx(a: TabContext | null | undefined, b: TabContext): boolean {
-  if (!a) return false;
+function sameCtx(a: TabContext, b: TabContext): boolean {
   if (a.shortCwd !== b.shortCwd || a.branch !== b.branch || a.node !== b.node) return false;
+  if (a.cwdReady !== b.cwdReady) return false;
   const ad = a.diff, bd = b.diff;
   if (ad !== bd) {
     if (!ad || !bd) return false;
@@ -25,33 +28,57 @@ function sameCtx(a: TabContext | null | undefined, b: TabContext): boolean {
   return true;
 }
 
-export function useTabContext(tabId: string, refreshKey: number = 0, pollMs = 1500): TabContext | null {
+function toCtx(data: Partial<TabContext> & Record<string, unknown>): TabContext {
+  return {
+    shortCwd: typeof data.shortCwd === 'string' ? data.shortCwd : '',
+    branch: typeof data.branch === 'string' ? data.branch : null,
+    node: typeof data.node === 'string' ? data.node : null,
+    diff: (data.diff as TabContext['diff']) ?? null,
+    env: (data.env as TabContext['env']) ?? {},
+    cwdReady: Boolean(data.cwdReady),
+  };
+}
+
+/** Backend-pushed ctx (from the per-tab WebSocket) flows in through here. */
+export function setTabContext(tabId: string, data: Partial<TabContext> & Record<string, unknown>): void {
+  const next = toCtx(data);
+  const prev = cache.get(tabId);
+  if (prev && sameCtx(prev, next)) return;
+  cache.set(tabId, next);
+  const subs = listeners.get(tabId);
+  if (subs) for (const fn of subs) fn(next);
+}
+
+export function useTabContext(
+  tabId: string,
+  _refreshKey: number = 0,
+  _pollMs = 0,
+  enabled = true,
+): TabContext | null {
   const [ctx, setCtx] = useState<TabContext | null>(cache.get(tabId) ?? null);
 
   useEffect(() => {
-    let cancelled = false;
-    async function refresh() {
-      try {
-        const ctxRes = await fetch(`${API_BASE}/context?tabId=${encodeURIComponent(tabId)}`);
-        const data = await ctxRes.json();
-        if (cancelled) return;
-        const next: TabContext = {
-          shortCwd: data.shortCwd,
-          branch: data.branch,
-          node: data.node,
-          diff: data.diff,
-          env: data.env ?? {},
-        };
-        const prev = cache.get(tabId);
-        if (sameCtx(prev, next)) return;
-        cache.set(tabId, next);
-        setCtx(next);
-      } catch {}
+    if (!tabId) return;
+    let subs = listeners.get(tabId);
+    if (!subs) { subs = new Set(); listeners.set(tabId, subs); }
+    const fn = (c: TabContext) => setCtx(c);
+    subs.add(fn);
+    const cached = cache.get(tabId);
+    if (cached) setCtx(cached);
+
+    // One-shot HTTP fetch on first mount per tab, so chips show something
+    // before the backend has had a chance to push (or in case the WS isn't
+    // connected yet). After that the WS push is the source of truth.
+    if (enabled && !oneShotFetched.has(tabId)) {
+      oneShotFetched.add(tabId);
+      fetch(`${API_BASE}/context?tabId=${encodeURIComponent(tabId)}`)
+        .then((r) => r.json())
+        .then((data) => setTabContext(tabId, data))
+        .catch(() => { oneShotFetched.delete(tabId); });
     }
-    refresh();
-    const id = setInterval(refresh, pollMs);
-    return () => { cancelled = true; clearInterval(id); };
-  }, [tabId, refreshKey, pollMs]);
+
+    return () => { subs!.delete(fn); };
+  }, [tabId, enabled]);
 
   return ctx;
 }

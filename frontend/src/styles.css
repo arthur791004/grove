@@ -127,6 +127,27 @@ html, body, #root {
   flex-shrink: 0;
 }
 
+/* When Cmd is held, auto-linked paths flip to solid blue. !important is here
+   because the ClickableSpan applies its base underline as an inline style,
+   which would otherwise win the cascade. We deliberately do NOT underline
+   arbitrary text on Cmd-hover — output spans often wrap multiple words and
+   the bleed-through looked worse than the affordance gained. */
+.grove-cmd-held .grove-output-link {
+  text-decoration-style: solid !important;
+  text-decoration-color: #79c0ff !important;
+  color: #79c0ff !important;
+}
+/* Per-word candidates: nothing at rest. With Cmd held + hover, light up the
+   single hovered word so the user knows the click target is exactly that
+   token (no bleed across siblings since each word is its own span). */
+.grove-cmd-held .grove-output-word:hover {
+  cursor: pointer;
+  color: #79c0ff;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: #79c0ff;
+}
+
 @keyframes grove-spin {
   to { transform: rotate(360deg); }
 }
