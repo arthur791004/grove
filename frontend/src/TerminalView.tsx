@@ -1,0 +1,909 @@
+import { useEffect, useMemo, useRef, useState, KeyboardEvent } from 'react';
+import { Box, HStack, Text } from '@chakra-ui/react';
+import Ansi from 'ansi-to-react';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import '@xterm/xterm/css/xterm.css';
+import { useTabContext } from './useTabContext';
+
+const ALT_ON   = /\x1b\[\?(?:1049|47|1047)h/g;
+const ALT_OFF  = /\x1b\[\?(?:1049|47|1047)l/g;
+const CURS_OFF = /\x1b\[\?25l/g;
+const CURS_ON  = /\x1b\[\?25h/g;
+
+type RawKind = 'alt' | 'cursor';
+interface RawTransition { on: boolean; kind: RawKind }
+
+// Scan for the LAST h/l toggle of a given pair. Returns null if neither appears.
+function lastToggle(text: string, onRe: RegExp, offRe: RegExp): boolean | null {
+  let lastIdx = -1;
+  let val: boolean | null = null;
+  let m: RegExpExecArray | null;
+  onRe.lastIndex = 0;
+  while ((m = onRe.exec(text))) {
+    if (m.index > lastIdx) { lastIdx = m.index; val = true; }
+  }
+  offRe.lastIndex = 0;
+  while ((m = offRe.exec(text))) {
+    if (m.index > lastIdx) { lastIdx = m.index; val = false; }
+  }
+  return val;
+}
+
+interface RawScan { alt: boolean | null; cursor: boolean | null }
+
+function detectRawScan(text: string): RawScan {
+  return {
+    alt: lastToggle(text, ALT_ON, ALT_OFF),
+    cursor: lastToggle(text, CURS_OFF, CURS_ON),
+  };
+}
+
+interface Props { tabId: string; active: boolean }
+
+const BACKEND_WS = (tabId: string) => `ws://127.0.0.1:4317/pty/${tabId}`;
+
+interface Block {
+  id: number;
+  cmd: string;
+  cwd: string;
+  output: string;
+  exit: number | null;
+  durationMs: number | null;
+  startedAt: number;
+  interactive?: boolean;
+}
+
+let blockCounter = 0;
+
+interface CompletionItem { value: string; label: string; kind: 'dir' | 'file' | 'branch' | 'script' }
+
+let serverCompletionsCache: string[] = [];
+let serverCompletionsFetchedAt = 0;
+async function fetchServerCompletions(): Promise<string[]> {
+  if (Date.now() - serverCompletionsFetchedAt < 30_000 && serverCompletionsCache.length) {
+    return serverCompletionsCache;
+  }
+  try {
+    const res = await fetch('http://127.0.0.1:4317/completions');
+    const data = await res.json();
+    serverCompletionsCache = Array.isArray(data.completions) ? data.completions : [];
+    serverCompletionsFetchedAt = Date.now();
+  } catch {}
+  return serverCompletionsCache;
+}
+
+const MAX_BLOCK_OUTPUT = 200_000;
+const capOutput = (s: string): string => s.length > MAX_BLOCK_OUTPUT ? s.slice(-MAX_BLOCK_OUTPUT) : s;
+
+function applyCarriageReturns(prev: string, incoming: string): string {
+  const merged = prev + incoming;
+  if (!incoming.includes('\r')) return merged;
+  const lines: string[] = [];
+  let buf = '';
+  for (let i = 0; i < merged.length; i++) {
+    const ch = merged[i];
+    if (ch === '\n') { lines.push(buf); buf = ''; }
+    else if (ch === '\r') {
+      if (merged[i + 1] === '\n') { lines.push(buf); buf = ''; i++; }
+      else buf = '';
+    } else buf += ch;
+  }
+  lines.push(buf);
+  return lines.join('\n');
+}
+
+export function TerminalView({ tabId, active }: Props) {
+  const [blocks, setBlocks] = useState<Block[]>([]);
+  const [input, setInput] = useState('');
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+  const [ctxRefreshKey, setCtxRefreshKey] = useState(0);
+  const ctx = useTabContext(tabId, ctxRefreshKey);
+  const wsRef = useRef<WebSocket | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const currentBlockRef = useRef<number | null>(null);
+  const [caretLeft, setCaretLeft] = useState(0);
+  const [caretVisible, setCaretVisible] = useState(true);
+  const charWidthRef = useRef<number>(7.8);
+  const [altScreen, setAltScreen] = useState(false);
+  const [cursorHide, setCursorHide] = useState(false);
+  const rawMode = altScreen || cursorHide;
+  const rawKind: RawKind = altScreen ? 'alt' : 'cursor';
+  const rawModeRef = useRef(false);
+  const inPromptRef = useRef(true);
+  const xtermHostRef = useRef<HTMLDivElement>(null);
+  const xtermRef = useRef<Terminal | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+  const altCarryRef = useRef<string>('');
+
+  useEffect(() => {
+    let closed = false;
+    let attempt = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function connect() {
+      if (closed) return;
+      const ws = new WebSocket(BACKEND_WS(tabId));
+      wsRef.current = ws;
+      ws.onopen = () => {
+        attempt = 0;
+        ws.send(JSON.stringify({ type: 'resize', cols: 200, rows: 50 }));
+        // Clear any stale readline buffer pollution (Ctrl-U = kill-whole-line)
+        ws.send(JSON.stringify({ type: 'input', data: '\x15' }));
+      };
+      ws.onclose = () => {
+        if (closed) return;
+        attempt += 1;
+        const delay = Math.min(2000, 200 * 2 ** Math.min(attempt - 1, 4));
+        if (attempt > 8) {
+          console.error('[grove] failed to connect to backend at 127.0.0.1:4317 after multiple attempts');
+          return;
+        }
+        reconnectTimer = setTimeout(connect, delay);
+      };
+      ws.onerror = () => { /* handled in onclose */ };
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'raw') {
+            const scan = altCarryRef.current + msg.data;
+            const result = detectRawScan(scan);
+            const willEnterRaw =
+              ((result.alt === true) || (result.cursor === true)) && !rawModeRef.current;
+
+            if (willEnterRaw) xtermRef.current?.reset();
+            xtermRef.current?.write(msg.data);
+
+            if (result.alt !== null) setAltScreen(result.alt);
+            if (result.cursor !== null) setCursorHide(result.cursor);
+
+            if (willEnterRaw) {
+              const cur = currentBlockRef.current;
+              if (cur !== null) {
+                setBlocks((bs) => bs.map((b) =>
+                  b.id === cur ? { ...b, interactive: true, output: '' } : b,
+                ));
+              }
+            }
+            altCarryRef.current = scan.slice(-16);
+            return;
+          }
+          if (msg.type === 'clear') {
+            // Wipe everything EXCEPT the in-progress block (so the `clear`
+            // block keeps its header until the command finishes naturally).
+            const cur = currentBlockRef.current;
+            setBlocks((bs) => cur !== null ? bs.filter((b) => b.id === cur).map((b) => ({ ...b, output: '' })) : []);
+            return;
+          }
+          if (msg.type === 'output') {
+            // Discard output while in raw mode (xterm is live) or at the
+            // prompt (it's just PS1, nothing to record in the blocks view).
+            if (rawModeRef.current || inPromptRef.current) return;
+            const cur = currentBlockRef.current;
+            if (cur === null) return;
+            setBlocks((bs) => bs.map((b) =>
+              b.id === cur ? { ...b, output: capOutput(applyCarriageReturns(b.output, msg.data)) } : b,
+            ));
+          } else if (msg.type === 'block-start') {
+            inPromptRef.current = false;
+            const id = ++blockCounter;
+            currentBlockRef.current = id;
+            setBlocks((bs) => [...bs.slice(-200), {
+              id,
+              cmd: msg.cmd,
+              cwd: msg.cwd,
+              output: '',
+              exit: null,
+              durationMs: null,
+              startedAt: Date.now(),
+            }]);
+          } else if (msg.type === 'block-end') {
+            const cur = currentBlockRef.current;
+            if (cur !== null) {
+              setBlocks((bs) => bs.map((b) =>
+                b.id === cur ? { ...b, exit: msg.exit, durationMs: msg.durationMs } : b,
+              ));
+              currentBlockRef.current = null;
+            }
+            inPromptRef.current = true;
+            // Force context refresh so the cwd chip updates right after any
+            // command (esp. `cd`) finishes.
+            setCtxRefreshKey((k) => k + 1);
+          }
+        } catch {}
+      };
+    }
+
+    connect();
+    return () => {
+      closed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      wsRef.current?.close();
+    };
+  }, [tabId]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [blocks]);
+
+  useEffect(() => {
+    if (!xtermHostRef.current) return;
+    const term = new Terminal({
+      fontFamily: 'var(--grove-mono), Menlo, monospace',
+      fontSize: 13,
+      theme: { background: '#010409', foreground: '#c9d1d9' },
+      cursorBlink: true,
+      scrollback: 5000,
+      allowProposedApi: true,
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(xtermHostRef.current);
+    xtermRef.current = term;
+    fitRef.current = fit;
+
+    term.onData((data) => {
+      // Only forward to PTY in raw mode. Otherwise xterm's auto-responses to
+      // terminal queries (DA, cursor position, etc.) pollute the input stream.
+      if (!rawModeRef.current) return;
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'input', data }));
+      }
+    });
+
+    function doFitAndResize() {
+      try { fit.fit(); } catch {}
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      }
+    }
+    const ro = new ResizeObserver(doFitAndResize);
+    ro.observe(xtermHostRef.current);
+
+    // Re-measure after fonts load (xterm caches cell width on open).
+    const fontsReady = (document as Document & { fonts?: { ready: Promise<void> } }).fonts?.ready;
+    if (fontsReady) fontsReady.then(() => {
+      // Touching fontFamily forces xterm to flush its cached metrics.
+      const fam = term.options.fontFamily;
+      term.options.fontFamily = 'monospace';
+      term.options.fontFamily = fam;
+      doFitAndResize();
+    });
+    const t1 = setTimeout(doFitAndResize, 100);
+    const t2 = setTimeout(doFitAndResize, 500);
+
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      ro.disconnect();
+      term.dispose();
+      xtermRef.current = null;
+    };
+  }, [tabId]);
+
+  useEffect(() => { rawModeRef.current = rawMode; }, [rawMode]);
+
+  useEffect(() => {
+    if (rawMode && active) {
+      requestAnimationFrame(() => {
+        const t = xtermRef.current;
+        const f = fitRef.current;
+        const ws = wsRef.current;
+        if (!t || !f) return;
+        try { f.fit(); } catch {}
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
+        }
+        t.focus();
+      });
+    } else if (active) {
+      inputRef.current?.focus();
+    }
+  }, [rawMode, active]);
+
+  useEffect(() => {
+    const c = document.createElement('canvas');
+    const ctx = c.getContext('2d');
+    if (ctx) {
+      const fam = getComputedStyle(document.documentElement).getPropertyValue('--grove-mono') || 'monospace';
+      ctx.font = `13px ${fam}`;
+      const w = ctx.measureText('M').width;
+      if (w > 0) charWidthRef.current = w;
+    }
+  }, []);
+
+  function updateCaret() {
+    const el = inputRef.current;
+    if (!el) return;
+    const pos = el.selectionStart ?? input.length;
+    setCaretLeft(pos * charWidthRef.current);
+  }
+
+  useEffect(() => { updateCaret(); }, [input]);
+
+  function send(data: string) {
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data }));
+  }
+
+  const [serverCompletions, setServerCompletions] = useState<string[]>(serverCompletionsCache);
+  const [contextual, setContextual] = useState<CompletionItem[]>([]);
+  const [dropdownIndex, setDropdownIndex] = useState(0);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetchServerCompletions().then((list) => { if (!cancelled) setServerCompletions(list); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!input.trim()) { setContextual([]); return; }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const cwdRes = await fetch(`http://127.0.0.1:4317/session/${tabId}/cwd`);
+        const { cwd } = await cwdRes.json();
+        const url = `http://127.0.0.1:4317/complete?cwd=${encodeURIComponent(cwd ?? '')}&input=${encodeURIComponent(input)}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!cancelled) {
+          setContextual(Array.isArray(data.completions) ? data.completions : []);
+          setDropdownIndex(0);
+          setDropdownOpen(false);
+        }
+      } catch {
+        if (!cancelled) setContextual([]);
+      }
+    }, 80);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [input, tabId]);
+
+  const showDropdown = dropdownOpen && contextual.length > 0 && input.trim().length > 0;
+
+  const suggestion = useMemo(() => {
+    if (!input) return '';
+    // 1) Contextual top match (also shown in dropdown)
+    if (contextual[dropdownIndex]) {
+      const c = contextual[dropdownIndex].value;
+      if (c.startsWith(input) && c !== input) return c;
+    }
+    for (const item of contextual) {
+      if (item.value.startsWith(input) && item.value !== input) return item.value;
+    }
+    // 2) In-session history
+    for (let i = history.length - 1; i >= 0; i--) {
+      const cmd = history[i];
+      if (cmd.startsWith(input) && cmd !== input) return cmd;
+    }
+    // 3) Server-side history + defaults
+    for (const cmd of serverCompletions) {
+      if (cmd.startsWith(input) && cmd !== input) return cmd;
+    }
+    return '';
+  }, [input, history, serverCompletions, contextual, dropdownIndex]);
+
+  function acceptSuggestion() { if (suggestion) setInput(suggestion); }
+
+  function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.ctrlKey && e.key === 'c') {
+      e.preventDefault();
+      if (input.length > 0) {
+        setInput('');
+        setHistoryIndex(null);
+      } else {
+        send('\x03');
+      }
+      return;
+    }
+    if (e.ctrlKey && e.key === 'd') { e.preventDefault(); send('\x04'); return; }
+    if (e.ctrlKey && e.key === 'l') { e.preventDefault(); setBlocks([]); return; }
+    if (e.key === 'Escape' && showDropdown) {
+      e.preventDefault();
+      setDropdownOpen(false);
+      return;
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      if (showDropdown) {
+        const dir = e.shiftKey ? -1 : 1;
+        setDropdownIndex((i) => (i + dir + contextual.length) % contextual.length);
+      } else if (contextual.length > 0) {
+        setDropdownIndex(0);
+        setDropdownOpen(true);
+      } else {
+        acceptSuggestion();
+      }
+      return;
+    }
+    if (e.key === 'ArrowRight') {
+      const el = e.currentTarget;
+      if (suggestion && el.selectionStart === input.length) {
+        e.preventDefault(); acceptSuggestion(); return;
+      }
+    }
+    if (e.key === 'ArrowUp') {
+      if (showDropdown) {
+        e.preventDefault();
+        setDropdownIndex((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (history.length === 0) return;
+      e.preventDefault();
+      const idx = historyIndex === null ? history.length - 1 : Math.max(0, historyIndex - 1);
+      setHistoryIndex(idx); setInput(history[idx]); return;
+    }
+    if (e.key === 'ArrowDown') {
+      if (showDropdown) {
+        e.preventDefault();
+        setDropdownIndex((i) => Math.min(contextual.length - 1, i + 1));
+        return;
+      }
+      if (historyIndex === null) return;
+      e.preventDefault();
+      const idx = historyIndex + 1;
+      if (idx >= history.length) { setHistoryIndex(null); setInput(''); }
+      else { setHistoryIndex(idx); setInput(history[idx]); }
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      // When dropdown is open, Enter accepts the highlighted candidate into the
+      // input instead of submitting the current input.
+      if (showDropdown && contextual[dropdownIndex]) {
+        setInput(contextual[dropdownIndex].value);
+        setDropdownOpen(false);
+        return;
+      }
+      setDropdownOpen(false);
+      const text = input;
+      send(text + '\n');
+      if (text.trim()) setHistory((h) => [...h.slice(-200), text]);
+      setHistoryIndex(null);
+      setInput('');
+    }
+  }
+
+  return (
+    <Box display="flex" flexDirection="column" w="100%" h="100%" bg="#010409" overflow="hidden" position="relative">
+      {/* xterm overlay — visible only in raw mode.
+          Alt-screen apps (vim, htop, less) get edge-to-edge.
+          Inline cursor-hide apps (claude, gum) keep block-style padding. */}
+      <Box
+        position="absolute"
+        inset="0"
+        bg="#010409"
+        zIndex={rawMode ? 5 : -1}
+        visibility={rawMode ? 'visible' : 'hidden'}
+        px={rawKind === 'alt' ? '0' : '2'}
+        py={rawKind === 'alt' ? '0' : '2'}
+      >
+        <Box ref={xtermHostRef} w="100%" h="100%" />
+      </Box>
+
+      <Box
+        ref={scrollRef}
+        flex="1"
+        overflowY="auto"
+        fontFamily="var(--grove-mono)"
+        fontSize="13px"
+        color="#c9d1d9"
+        display="flex"
+        flexDirection="column"
+        borderBottom="1px solid #21262d"
+      >
+        <Box flex="1" />
+        {blocks.map((b) => (
+          <BlockCard key={b.id} block={b} ctxNode={ctx?.node ?? null} />
+        ))}
+      </Box>
+
+      <Box position="relative">
+        {showDropdown && (
+          <Box position="absolute" bottom="100%" left="0" right="0" zIndex={20} pointerEvents="auto">
+            <CompletionDropdown
+              items={contextual}
+              selectedIndex={dropdownIndex}
+              onPick={(i) => { setInput(contextual[i].value); setDropdownOpen(false); inputRef.current?.focus(); }}
+              onHover={setDropdownIndex}
+            />
+          </Box>
+        )}
+
+      <ChipStrip ctx={ctx} />
+
+      <Box bg="#010409" px="4" pt="1" pb="4" display="flex" alignItems="center" gap="2" position="relative">
+        <Box flex="1" position="relative" h="22px">
+          {suggestion && (
+            <Box position="absolute" inset="0" pointerEvents="none"
+              fontFamily="var(--grove-mono)" fontSize="13px" lineHeight="22px" color="#484f58"
+              style={{
+                whiteSpace: 'pre',
+                letterSpacing: 0,
+                wordSpacing: 0,
+                fontFeatureSettings: '"liga" 0, "calt" 0',
+                fontVariantLigatures: 'none',
+                textRendering: 'geometricPrecision',
+                boxSizing: 'border-box',
+                padding: 0,
+                margin: 0,
+              }}
+            >
+              <span style={{ color: 'transparent' }}>{input}</span>
+              <span>{suggestion.slice(input.length)}</span>
+              {suggestion.slice(input.length).length > 0 && (
+                <Box
+                  as="span"
+                  ml="3"
+                  display="inline-flex"
+                  alignItems="center"
+                  gap="1"
+                  px="1.5"
+                  h="16px"
+                  border="1px solid #30363d"
+                  borderTopColor="#3d444d"
+                  borderBottomColor="#22272e"
+                  borderRadius="4px"
+                  bg="#161b22"
+                  color="#7d8590"
+                  verticalAlign="middle"
+                  fontSize="9px"
+                  fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+                  fontWeight="600"
+                  letterSpacing="0.06em"
+                  textTransform="uppercase"
+                  style={{ boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.35)' }}
+                >
+                  <span>tab</span>
+                </Box>
+              )}
+            </Box>
+          )}
+          <input
+            ref={inputRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { onKeyDown(e); requestAnimationFrame(updateCaret); }}
+            onKeyUp={updateCaret}
+            onClick={updateCaret}
+            onSelect={updateCaret}
+            onFocus={() => { setCaretVisible(true); updateCaret(); }}
+            onBlur={() => setCaretVisible(false)}
+            autoComplete="off" autoCorrect="off" spellCheck={false}
+            style={{
+              width: '100%', height: '22px', background: 'transparent',
+              border: 'none', outline: 'none',
+              padding: 0, margin: 0, textIndent: 0,
+              boxSizing: 'border-box',
+              display: 'block',
+              verticalAlign: 'top',
+              appearance: 'none',
+              WebkitAppearance: 'none',
+              letterSpacing: 0,
+              wordSpacing: 0,
+              fontFamily: 'var(--grove-mono)', fontSize: '13px', lineHeight: '22px',
+              color: '#c9d1d9', caretColor: 'transparent',
+              position: 'relative', zIndex: 1,
+              fontFeatureSettings: '"liga" 0, "calt" 0',
+              fontVariantLigatures: 'none',
+              textRendering: 'geometricPrecision',
+            }}
+          />
+          {caretVisible && (
+            <Box
+              className="grove-caret"
+              position="absolute"
+              left={`${caretLeft}px`}
+              top="4.5px"
+              w="2px"
+              h="13px"
+              bg="#83C2D7"
+              pointerEvents="none"
+              zIndex={2}
+            />
+          )}
+        </Box>
+      </Box>
+      </Box>
+    </Box>
+  );
+}
+
+function shortPath(p: string): string {
+  return p.replace(/^\/Users\/[^/]+/, '~');
+}
+
+function formatDuration(ms: number | null, running: boolean): string {
+  if (ms === null) return running ? 'running…' : '';
+  return ms < 1000 ? `${ms.toFixed(0)}ms` : `${(ms / 1000).toFixed(2)}s`;
+}
+
+function formatDiff(d: { added: number; removed: number }): string {
+  if (d.added === 0 && d.removed === 0) return '0';
+  const parts: string[] = [];
+  if (d.added) parts.push(`+${d.added}`);
+  if (d.removed) parts.push(`-${d.removed}`);
+  return parts.join(' ');
+}
+
+function BlockCard({ block, ctxNode }: { block: Block; ctxNode: string | null }) {
+  const running = block.exit === null;
+  const failed = block.exit !== null && block.exit !== 0;
+  const durStr = formatDuration(block.durationMs, running);
+  return (
+    <Box
+      px="4"
+      py="2"
+      borderTop="1px solid #21262d"
+      borderLeft={failed ? '2px solid #f85149' : '2px solid transparent'}
+      bg="transparent"
+      transition="background 0.12s"
+      _hover={{ bg: '#0d1117', '& .block-actions': { opacity: 1 } }}
+      role="group"
+    >
+      <HStack
+        gap="3"
+        fontSize="11px"
+        fontFamily="var(--grove-mono)"
+        align="center"
+        lineHeight="1.4"
+      >
+        {ctxNode && <Text color="#7ee787">{ctxNode}</Text>}
+        {block.cwd && <Text color="#79c0ff">{shortPath(block.cwd)}</Text>}
+        {block.exit !== null && block.exit !== 0 && (
+          <Text color="#f85149">✗ {block.exit}</Text>
+        )}
+        {durStr && <Text color="#7d8590">({durStr})</Text>}
+        {block.interactive && (
+          <Text
+            px="1.5"
+            py="0.5"
+            ml="1"
+            fontSize="9px"
+            color="#83C2D7"
+            border="1px solid #30363d"
+            borderRadius="3px"
+            bg="#161b22"
+            textTransform="uppercase"
+            letterSpacing="0.06em"
+            fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+            fontWeight="600"
+          >
+            interactive
+          </Text>
+        )}
+        <Box flex="1" />
+        <HStack
+          className="block-actions"
+          gap="2"
+          opacity="0"
+          transition="opacity 0.12s"
+          color="#7d8590"
+        >
+          <BlockActionIcon title="Filter">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M2 3h12l-4.5 6v4l-3 1.5V9L2 3z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+            </svg>
+          </BlockActionIcon>
+          <BlockActionIcon title="More">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <circle cx="8" cy="3.5" r="1.2" /><circle cx="8" cy="8" r="1.2" /><circle cx="8" cy="12.5" r="1.2" />
+            </svg>
+          </BlockActionIcon>
+        </HStack>
+      </HStack>
+      {block.cmd && (
+        <Text
+          mt="1"
+          mb={block.output ? '1' : '0'}
+          color="#f0f6fc"
+          fontWeight="700"
+          fontFamily="var(--grove-mono)"
+          fontSize="13px"
+          style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+        >
+          {block.cmd}
+        </Text>
+      )}
+      {!block.interactive && block.output && (
+        <Box
+          color="#c9d1d9"
+          fontFamily="var(--grove-mono)"
+          fontSize="13px"
+          lineHeight="1"
+          style={{
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            letterSpacing: 0,
+            fontKerning: 'none',
+            fontFeatureSettings: '"liga" 0, "calt" 0, "kern" 0',
+            fontVariantLigatures: 'none',
+          }}
+        >
+          <Ansi useClasses={true} linkify={false}>{block.output}</Ansi>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+function BlockActionIcon({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <button
+      title={title}
+      style={{
+        background: 'transparent', border: 'none', cursor: 'pointer',
+        color: 'inherit', padding: 2, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        borderRadius: 3,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ChipStrip({ ctx }: { ctx: ReturnType<typeof useTabContext> }) {
+  if (!ctx) return null;
+  return (
+    <HStack px="4" pt="4" pb="0" gap="2" bg="#010409">
+      {ctx.node && (
+        <Chip icon={<NodeIcon />} label={ctx.node} labelColor="#7ee787" />
+      )}
+      <Chip icon={<FolderIcon />} label={ctx.shortCwd} />
+      {ctx.branch && (
+        <Chip icon={<BranchIcon />} label={ctx.branch} labelColor="#7ee787" />
+      )}
+      {ctx.diff && ctx.diff.files > 0 && (
+        <Chip icon={<DiffIcon />} label={formatDiff(ctx.diff)} />
+      )}
+    </HStack>
+  );
+}
+
+function Chip({ icon, label, labelColor }: {
+  icon?: React.ReactNode; label: React.ReactNode; labelColor?: string;
+}) {
+  return (
+    <HStack
+      gap="1.5"
+      px="2"
+      h="22px"
+      bg="#0d1117"
+      border="1px solid #21262d"
+      borderRadius="5px"
+      align="center"
+      lineHeight="1"
+    >
+      {icon && (
+        <Box
+          color="#7d8590"
+          display="flex"
+          alignItems="center"
+          justifyContent="center"
+          w="12px"
+          h="12px"
+        >
+          {icon}
+        </Box>
+      )}
+      <Text fontSize="11px" color={labelColor ?? '#c9d1d9'} fontFamily="var(--grove-mono)" fontWeight="500" lineHeight="1">
+        {label}
+      </Text>
+    </HStack>
+  );
+}
+
+function CompletionDropdown({
+  items, selectedIndex, onPick, onHover,
+}: {
+  items: CompletionItem[];
+  selectedIndex: number;
+  onPick: (i: number) => void;
+  onHover: (i: number) => void;
+}) {
+  const kindLabel: Record<CompletionItem['kind'], string> = {
+    dir: 'Directory', file: 'File', branch: 'Branch', script: 'Script',
+  };
+  return (
+    <Box
+      mx="3"
+      mb="1"
+      maxH="260px"
+      overflowY="auto"
+      bg="#0d1117"
+      border="1px solid #21262d"
+      borderRadius="8px"
+      boxShadow="0 10px 30px rgba(0,0,0,0.5)"
+      py="1"
+      style={{ alignSelf: 'flex-start', maxWidth: '480px' }}
+    >
+      {items.slice(0, 12).map((item, i) => {
+        const isSel = i === selectedIndex;
+        return (
+          <Box
+            key={item.value + i}
+            px="3"
+            py="1.5"
+            bg={isSel ? '#1f6feb' : 'transparent'}
+            color={isSel ? '#ffffff' : '#c9d1d9'}
+            cursor="pointer"
+            display="flex"
+            alignItems="center"
+            gap="2"
+            onMouseEnter={() => onHover(i)}
+            onMouseDown={(e) => { e.preventDefault(); onPick(i); }}
+          >
+            <Box color={isSel ? '#ffffff' : '#7d8590'} display="flex" alignItems="center">
+              {item.kind === 'dir' && <FolderIcon />}
+              {item.kind === 'file' && <FileIcon />}
+              {item.kind === 'branch' && <BranchIcon />}
+              {item.kind === 'script' && <ScriptIcon />}
+            </Box>
+            <Text fontFamily="var(--grove-mono)" fontSize="13px" fontWeight={isSel ? '600' : '500'} flex="1" truncate>
+              {item.label}
+            </Text>
+            <Text fontFamily="var(--grove-mono)" fontSize="11px" color={isSel ? '#cce0ff' : '#7d8590'}>
+              {kindLabel[item.kind]}
+            </Text>
+          </Box>
+        );
+      })}
+    </Box>
+  );
+}
+
+function FileIcon() {
+  return (
+    <svg width="12" height="13" viewBox="0 0 12 14" fill="none">
+      <path d="M2 1h5l3 3v9a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1" />
+      <path d="M7 1v3h3" stroke="currentColor" strokeWidth="1" />
+    </svg>
+  );
+}
+
+function ScriptIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+      <path d="M3 4l3 3-3 3M7 11h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function NodeIcon() {
+  return (
+    <svg width="11" height="12" viewBox="0 0 11 12" fill="none">
+      <path d="M5.5 0.5L10.5 3.25v5.5L5.5 11.5L0.5 8.75v-5.5L5.5 0.5z" stroke="#7ee787" strokeWidth="1" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function FolderIcon() {
+  return (
+    <svg width="12" height="11" viewBox="0 0 14 12" fill="none">
+      <path d="M1 2.5a1 1 0 0 1 1-1h3.5l1.5 1.5h5a1 1 0 0 1 1 1V10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2.5z" stroke="currentColor" strokeWidth="1" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function BranchIcon() {
+  return (
+    <svg width="10" height="12" viewBox="0 0 10 12" fill="none">
+      <circle cx="2" cy="2.5" r="1.2" stroke="#7ee787" strokeWidth="1" />
+      <circle cx="2" cy="9.5" r="1.2" stroke="#7ee787" strokeWidth="1" />
+      <circle cx="8" cy="2.5" r="1.2" stroke="#7ee787" strokeWidth="1" />
+      <path d="M2 3.7v4.6M2 6c0-1.7 1.4-3.5 6-3.5" stroke="#7ee787" strokeWidth="1" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function DiffIcon() {
+  return (
+    <svg width="12" height="10" viewBox="0 0 12 10" fill="none">
+      <path d="M2 2.5h8M2 5h8M2 7.5h8" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
+    </svg>
+  );
+}

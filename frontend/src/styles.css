@@ -1,0 +1,101 @@
+:root {
+  color-scheme: dark;
+  /* Warp default font stack — Hack first (Warp's bundled default), then common monos */
+  --grove-mono: 'Hack', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Menlo, Monaco, monospace;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background: #0d1117;
+  color: #c9d1d9;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
+}
+
+/* ansi-to-react palette — GitHub dark inspired, tuned for #010409 bg */
+.ansi-black-fg          { color: #484f58; }
+.ansi-red-fg            { color: #ff7b72; }
+.ansi-green-fg          { color: #7ee787; }
+.ansi-yellow-fg         { color: #e3b341; }
+.ansi-blue-fg           { color: #79c0ff; }
+.ansi-magenta-fg        { color: #d2a8ff; }
+.ansi-cyan-fg           { color: #56d4dd; }
+.ansi-white-fg          { color: #c9d1d9; }
+.ansi-bright-black-fg   { color: #6e7681; }
+.ansi-bright-red-fg     { color: #ffa198; }
+.ansi-bright-green-fg   { color: #56d364; }
+.ansi-bright-yellow-fg  { color: #f1c40f; }
+.ansi-bright-blue-fg    { color: #58a6ff; }
+.ansi-bright-magenta-fg { color: #c297ff; }
+.ansi-bright-cyan-fg    { color: #39c5cf; }
+.ansi-bright-white-fg   { color: #f0f6fc; }
+
+.ansi-black-bg          { background: #161b22; }
+.ansi-red-bg            { background: #4c1f1c; }
+.ansi-green-bg          { background: #1f3a23; }
+.ansi-yellow-bg         { background: #4a3a14; }
+.ansi-blue-bg           { background: #1e3a5f; }
+.ansi-magenta-bg        { background: #3d2554; }
+.ansi-cyan-bg           { background: #134549; }
+.ansi-white-bg          { background: #21262d; }
+.ansi-bright-black-bg   { background: #21262d; }
+.ansi-bright-red-bg     { background: #5a2620; }
+.ansi-bright-green-bg   { background: #1f4d2a; }
+.ansi-bright-yellow-bg  { background: #5a4310; }
+.ansi-bright-blue-bg    { background: #1f3f6b; }
+.ansi-bright-magenta-bg { background: #45225e; }
+.ansi-bright-cyan-bg    { background: #1a4f54; }
+.ansi-bright-white-bg   { background: #30363d; }
+
+.ansi-bold              { font-weight: 600; }
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #010409;
+}
+::-webkit-scrollbar-thumb {
+  background: #21262d;
+  border-radius: 5px;
+  border: 2px solid #010409;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #30363d;
+}
+::-webkit-scrollbar-corner {
+  background: #010409;
+}
+
+/* Hide xterm's viewport scrollbar so it doesn't reserve width on the right.
+   Wheel / touchpad scrolling still works. */
+.xterm .xterm-viewport {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.xterm .xterm-viewport::-webkit-scrollbar {
+  display: none;
+  width: 0 !important;
+}
+
+/* xterm.js DOM renderer: kill letter-spacing/kerning so block chars (▀▄█) tile */
+.xterm,
+.xterm .xterm-rows,
+.xterm .xterm-rows > div,
+.xterm .xterm-rows span {
+  letter-spacing: 0 !important;
+  font-kerning: none !important;
+  font-feature-settings: "liga" 0, "calt" 0, "kern" 0 !important;
+  font-variant-ligatures: none !important;
+}
+
+@keyframes grove-caret-blink {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.grove-caret {
+  animation: grove-caret-blink 1.05s steps(2, end) infinite;
+}
+.ansi-italic            { font-style: italic; }
+.ansi-underline         { text-decoration: underline; }
