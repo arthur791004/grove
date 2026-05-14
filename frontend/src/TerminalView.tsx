@@ -257,7 +257,6 @@ export function TerminalView({ tabId, active }: Props) {
   const serializeRef = useRef<SerializeAddon | null>(null);
   const altCarryRef = useRef<string>('');
   const pendingOutputRef = useRef<Map<number, string>>(new Map());
-  const pendingBlockRef = useRef<Block | null>(null);
   const flushRafRef = useRef<number | null>(null);
 
   // Snapshot the currently-active xterm buffer as plain text. Used when raw
@@ -296,28 +295,15 @@ export function TerminalView({ tabId, active }: Props) {
   function flushPendingOutput() {
     flushRafRef.current = null;
     const snapshot = pendingOutputRef.current;
-    if (snapshot.size === 0 && !pendingBlockRef.current) return;
+    if (snapshot.size === 0) return;
     pendingOutputRef.current = new Map();
-    const pending = pendingBlockRef.current;
-    pendingBlockRef.current = null;
     // The updater must be pure — React 18 StrictMode double-invokes it in
-    // dev, so we can't mutate `snapshot` (e.g. .delete) here. Instead we
-    // skip the just-committed pending block while mapping so its initial
-    // output isn't re-applied via applyCarriageReturns.
-    setBlocks((bs) => {
-      let next = bs;
-      if (pending) {
-        const firstChunk = snapshot.get(pending.id) ?? '';
-        next = [...bs.slice(-200), { ...pending, output: capOutput(firstChunk) }];
-      }
-      if (snapshot.size === 0) return next;
-      return next.map((b) => {
-        const chunk = snapshot.get(b.id);
-        if (!chunk) return b;
-        if (pending && b.id === pending.id) return b;
-        return { ...b, output: capOutput(applyCarriageReturns(b.output, chunk)) };
-      });
-    });
+    // dev, so we can't mutate `snapshot` (e.g. .delete) here.
+    setBlocks((bs) => bs.map((b) => {
+      const chunk = snapshot.get(b.id);
+      if (!chunk) return b;
+      return { ...b, output: capOutput(applyCarriageReturns(b.output, chunk)) };
+    }));
   }
   function scheduleFlush() {
     if (flushRafRef.current !== null) return;
@@ -403,6 +389,11 @@ export function TerminalView({ tabId, active }: Props) {
               // next WS message (before React re-renders rawMode → useEffect →
               // ref) sees raw mode as already active and skips its own reset.
               rawModeRef.current = true;
+              // New raw-mode session starts at viewport-top; pin the viewport
+              // to bottom so subsequent writes auto-follow. Without this,
+              // normal-buffer apps (claude, ssh) leave the viewport offset
+              // and wheel-down can't reach the bottom row.
+              xtermRef.current?.scrollToBottom();
             } else {
               xtermRef.current?.write(msg.data);
             }
@@ -429,7 +420,6 @@ export function TerminalView({ tabId, active }: Props) {
             // current block on the frontend — block-end's null-cur branch
             // handles it as a no-op cleanup.
             pendingOutputRef.current.clear();
-            pendingBlockRef.current = null;
             currentBlockRef.current = null;
             setBlocks(() => []);
             return;
@@ -450,10 +440,9 @@ export function TerminalView({ tabId, active }: Props) {
             const id = ++blockCounter;
             currentBlockRef.current = id;
             const interactive = isInteractiveCmd(msg.cmd ?? '');
-            // Don't render an empty block for one frame before output arrives —
-            // park it in a ref and commit only on first output or block-end.
-            // Interactive commands (vim, top) commit immediately because their
-            // output goes to xterm, not the block list.
+            // Commit immediately so slow commands (git pull, npm install) show
+            // their card right away instead of looking like nothing happened
+            // until the first output chunk lands.
             const pending: Block = {
               id,
               cmd: msg.cmd,
@@ -464,9 +453,8 @@ export function TerminalView({ tabId, active }: Props) {
               startedAt: Date.now(),
               interactive: interactive || undefined,
             };
+            setBlocks((bs) => [...bs.slice(-200), pending]);
             if (interactive) {
-              setBlocks((bs) => [...bs.slice(-200), pending]);
-              pendingBlockRef.current = null;
               // Only reset xterm if we haven't already entered raw mode via
               // ?25l/?1049h in the raw stream — otherwise we wipe the TUI's
               // already-drawn first frame and the rest of the run only shows
@@ -477,8 +465,7 @@ export function TerminalView({ tabId, active }: Props) {
               }
               setForcedRaw(true);
               rawModeRef.current = true;
-            } else {
-              pendingBlockRef.current = pending;
+              xtermRef.current?.scrollToBottom();
             }
             useStore.getState().setRunningCmd(tabId, msg.cmd || '');
           } else if (msg.type === 'ctx') {
@@ -490,12 +477,7 @@ export function TerminalView({ tabId, active }: Props) {
             // before the block ended.
             const snapshot = rawModeRef.current ? snapshotXtermBuffer() : null;
             const cur = currentBlockRef.current;
-            const pending = pendingBlockRef.current;
-            if (pending && pending.id === cur) {
-              // Block had no output at all — commit a finalized empty one.
-              setBlocks((bs) => [...bs.slice(-200), { ...pending, exit: msg.exit, durationMs: msg.durationMs }]);
-              pendingBlockRef.current = null;
-            } else if (cur !== null) {
+            if (cur !== null) {
               setBlocks((bs) => bs.map((b) =>
                 b.id === cur ? { ...b, exit: msg.exit, durationMs: msg.durationMs } : b,
               ));
@@ -591,6 +573,9 @@ export function TerminalView({ tabId, active }: Props) {
       const host = xtermHostRef.current;
       if (!host || host.clientWidth === 0 || host.clientHeight === 0) return;
       try { fit.fit(); } catch {}
+      // After a resize the viewport may sit above the new bottom row, leaving
+      // a gap that wheel-down can't cross. Re-pin while in raw mode.
+      if (rawModeRef.current) xtermRef.current?.scrollToBottom();
       const ws = wsRef.current;
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));

@@ -323,14 +323,43 @@ function onLinkClick(e: React.MouseEvent, href: string, cwd: string) {
   openLink(href, cwd);
 }
 
+// One styled slice of a word. Multiple pieces with differing SGR may make up
+// a single logical word when SerializeAddon split the URL across cells.
+interface Piece { cls: string; style: React.CSSProperties | undefined; text: string }
+
 export function TerminalOutput({ text, cwd }: { text: string; cwd: string }) {
   const nodes = useMemo(() => {
     const segs = parseSegments(text);
     const out: React.ReactNode[] = [];
     let key = 0;
+    // Buffered run of non-whitespace pieces that may span SGR changes — we
+    // can't classify them as URL/path/word until we hit whitespace and know
+    // the full token.
+    let wordPieces: Piece[] = [];
+    const flushWord = () => {
+      if (wordPieces.length === 0) return;
+      const joined = wordPieces.map((p) => p.text).join('');
+      const stripped = cleanToken(joined);
+      if (stripped && (PATH_LIKE_WORD.test(stripped) || HTTP_URL_WORD.test(stripped))) {
+        for (const p of wordPieces) {
+          out.push(<PathLink key={key++} href={stripped} cls={p.cls} style={p.style} cwd={cwd}>{p.text}</PathLink>);
+        }
+      } else if (stripped) {
+        for (const p of wordPieces) {
+          out.push(<WordCandidate key={key++} word={stripped} cls={p.cls} style={p.style} cwd={cwd}>{p.text}</WordCandidate>);
+        }
+      } else {
+        for (const p of wordPieces) {
+          out.push(<span key={key++} className={p.cls} style={p.style}>{p.text}</span>);
+        }
+      }
+      wordPieces = [];
+    };
     for (const s of segs) {
       if (s.url) {
-        // Explicit OSC 8 link — render whole segment as one clickable span.
+        // Explicit OSC 8 link — flush any pending word, then render the whole
+        // segment as one clickable span.
+        flushWord();
         out.push(
           <PathLink key={key++} href={s.url} cls={s.cls} style={s.style} cwd={cwd}>
             {s.text}
@@ -338,9 +367,6 @@ export function TerminalOutput({ text, cwd }: { text: string; cwd: string }) {
         );
         continue;
       }
-      // Walk the segment word-by-word so each token can independently light
-      // up on ⌘-hover. Whitespace stays in a plain span so wrapping/breaks
-      // still work naturally.
       let i = 0;
       while (i < s.text.length) {
         const isWs = /\s/.test(s.text[i]);
@@ -348,20 +374,15 @@ export function TerminalOutput({ text, cwd }: { text: string; cwd: string }) {
         while (j < s.text.length && /\s/.test(s.text[j]) === isWs) j++;
         const chunk = s.text.slice(i, j);
         if (isWs) {
+          flushWord();
           out.push(<span key={key++} className={s.cls} style={s.style}>{chunk}</span>);
         } else {
-          const stripped = cleanToken(chunk);
-          if (stripped && (PATH_LIKE_WORD.test(stripped) || HTTP_URL_WORD.test(stripped))) {
-            out.push(<PathLink key={key++} href={stripped} cls={s.cls} style={s.style} cwd={cwd}>{chunk}</PathLink>);
-          } else if (stripped) {
-            out.push(<WordCandidate key={key++} word={stripped} cls={s.cls} style={s.style} cwd={cwd}>{chunk}</WordCandidate>);
-          } else {
-            out.push(<span key={key++} className={s.cls} style={s.style}>{chunk}</span>);
-          }
+          wordPieces.push({ cls: s.cls, style: s.style, text: chunk });
         }
         i = j;
       }
     }
+    flushWord();
     return out;
   }, [text, cwd]);
   return <Fragment>{nodes}</Fragment>;
