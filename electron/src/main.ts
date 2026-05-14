@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, protocol, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, net, protocol, session, shell } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -213,7 +213,7 @@ function registerAppProtocol() {
     if (!resolved.startsWith(distRoot + path.sep) && resolved !== distRoot) {
       return new Response('Forbidden', { status: 403 });
     }
-    return fetch(pathToFileURL(resolved).toString());
+    return net.fetch(pathToFileURL(resolved).toString());
   });
 }
 
