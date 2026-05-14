@@ -1,38 +1,72 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
-// Subscribe to frame events in preload (runs before the React renderer),
-// otherwise an iframe that fails instantly (e.g. ECONNREFUSED on localhost)
-// can fire `did-fail-load` before the renderer has had a chance to attach
-// its listener — the message would be lost.
+// Subscribe to browser-view events in preload (runs before the React renderer),
+// otherwise a view that fails instantly (e.g. ECONNREFUSED on localhost) can
+// fire `grove:browser-fail` before the renderer has attached its listener —
+// the message would be lost. We buffer the last failure and replay it to late
+// subscribers.
 type FailInfo = { url: string; code: number; message: string };
+type NavState = { canGoBack: boolean; canGoForward: boolean };
 let lastFail: FailInfo | null = null;
+let lastNavState: NavState = { canGoBack: false, canGoForward: false };
 const failSubs = new Set<(info: FailInfo) => void>();
 const navSubs = new Set<(url: string) => void>();
-ipcRenderer.on('grove:frame-fail', (_e, info: FailInfo) => {
+const navStateSubs = new Set<(state: NavState) => void>();
+const loadingSubs = new Set<(loading: boolean) => void>();
+
+ipcRenderer.on('grove:browser-fail', (_e, info: FailInfo) => {
   lastFail = info;
   for (const fn of failSubs) fn(info);
 });
-ipcRenderer.on('grove:frame-nav', (_e, url: string) => {
+ipcRenderer.on('grove:browser-nav', (_e, url: string) => {
   // A successful nav supersedes any pending error for that URL.
   if (lastFail && lastFail.url === url) lastFail = null;
   for (const fn of navSubs) fn(url);
 });
+ipcRenderer.on('grove:browser-navstate', (_e, state: NavState) => {
+  lastNavState = state;
+  for (const fn of navStateSubs) fn(state);
+});
+ipcRenderer.on('grove:browser-loading', (_e, loading: boolean) => {
+  if (loading) lastFail = null;
+  for (const fn of loadingSubs) fn(loading);
+});
+
+type Bounds = { x: number; y: number; width: number; height: number; zoom?: number };
 
 contextBridge.exposeInMainWorld('grove', {
   pickFolder: (): Promise<string | null> => ipcRenderer.invoke('grove:pick-folder'),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('grove:open-external', url),
   stateGet: (): Promise<string | null> => ipcRenderer.invoke('grove:state-get'),
   stateSet: (content: string): Promise<void> => ipcRenderer.invoke('grove:state-set', content),
-  onFrameNav: (cb: (url: string) => void): (() => void) => {
-    navSubs.add(cb);
-    return () => { navSubs.delete(cb); };
+  browser: {
+    open: (url: string): Promise<void> => ipcRenderer.invoke('grove:browser-open', url),
+    close: (): Promise<void> => ipcRenderer.invoke('grove:browser-close'),
+    setBounds: (bounds: Bounds | null): Promise<void> => ipcRenderer.invoke('grove:browser-set-bounds', bounds),
+    navigate: (url: string): Promise<void> => ipcRenderer.invoke('grove:browser-navigate', url),
+    reload: (): Promise<void> => ipcRenderer.invoke('grove:browser-reload'),
+    back: (): Promise<void> => ipcRenderer.invoke('grove:browser-back'),
+    forward: (): Promise<void> => ipcRenderer.invoke('grove:browser-forward'),
+    onNav: (cb: (url: string) => void): (() => void) => {
+      navSubs.add(cb);
+      return () => { navSubs.delete(cb); };
+    },
+    onNavState: (cb: (state: NavState) => void): (() => void) => {
+      navStateSubs.add(cb);
+      // Replay the latest state so late subscribers aren't stuck disabled.
+      cb(lastNavState);
+      return () => { navStateSubs.delete(cb); };
+    },
+    onFail: (cb: (info: FailInfo) => void): (() => void) => {
+      failSubs.add(cb);
+      // Replay the most recent failure to late subscribers.
+      if (lastFail) cb(lastFail);
+      return () => { failSubs.delete(cb); };
+    },
+    onLoading: (cb: (loading: boolean) => void): (() => void) => {
+      loadingSubs.add(cb);
+      return () => { loadingSubs.delete(cb); };
+    },
+    clearFail: (): void => { lastFail = null; },
   },
-  onFrameFail: (cb: (info: FailInfo) => void): (() => void) => {
-    failSubs.add(cb);
-    // Replay the most recent fail to late subscribers (fixes the race where
-    // the iframe fails before React mounts the listener).
-    if (lastFail) cb(lastFail);
-    return () => { failSubs.delete(cb); };
-  },
-  clearFrameFail: (): void => { lastFail = null; },
 });

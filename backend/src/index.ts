@@ -10,6 +10,9 @@ import { registerDiffRoutes } from './diff.js';
 import { registerFileRoutes } from './files.js';
 import { registerServiceRoutes } from './services.js';
 import { sessionCwd } from './sessions.js';
+import { setupBackendLogging } from './logger.js';
+
+setupBackendLogging();
 
 const PORT = Number(process.env.GROVE_BACKEND_PORT ?? 4317);
 

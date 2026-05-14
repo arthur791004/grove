@@ -1,8 +1,9 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, net, protocol, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, net, protocol, shell, WebContentsView, type WebContents } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { inspect } from 'node:util';
 
 // Custom scheme used to serve the built renderer in packaged builds. Loading
 // the bundle from file:// breaks dynamic import() of code-split chunks because
@@ -19,6 +20,81 @@ app.setName('Grove');
 const windowStateKeeper = require('electron-window-state');
 
 let backend: ChildProcess | null = null;
+let mainWindow: BrowserWindow | null = null;
+
+// Embedded browser surface for the BrowserPanel. A WebContentsView is a real
+// top-level browsing context (no X-Frame-Options/CSP embedding limits) layered
+// above the renderer's DOM. Kept alive across panel open/close so page state
+// survives toggling; destroyed only when the window closes.
+let browserView: WebContentsView | null = null;
+let browserViewUrl: string | null = null;
+
+// --- Crash/error logging ---------------------------------------------------
+// "Aw Snap" renderer crashes and uncaught main-process errors leave nothing
+// behind once the terminal is gone, so mirror them to a file under userData.
+// Tail it with: tail -f "$(...)/grove.log".
+const LOG_FILE = path.join(app.getPath('userData'), 'grove.log');
+
+function logLine(line: string) {
+  try {
+    fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${line}\n`);
+  } catch { /* logging must never throw */ }
+}
+
+function formatArgs(args: unknown[]): string {
+  return args
+    .map((a) => (typeof a === 'string' ? a : inspect(a, { depth: 3 })))
+    .join(' ');
+}
+
+function setupLogging() {
+  // Roll the file over once it gets large so it can't grow unbounded.
+  try {
+    if (fs.statSync(LOG_FILE).size > 5_000_000) {
+      fs.renameSync(LOG_FILE, LOG_FILE + '.old');
+    }
+  } catch { /* file may not exist yet */ }
+  logLine(`--- session start (electron ${process.versions.electron}, chrome ${process.versions.chrome}) ---`);
+  console.log('[grove] logging to', LOG_FILE);
+
+  // Mirror the main process's own console.error/.warn to the log — the
+  // webContents `console-message` event only covers renderer output, not this
+  // process. Originals still print to the terminal.
+  for (const method of ['error', 'warn'] as const) {
+    const original = console[method].bind(console);
+    console[method] = (...args: unknown[]) => {
+      original(...args);
+      logLine(`[main:${method}] ${formatArgs(args)}`);
+    };
+  }
+
+  process.on('uncaughtException', (err) => {
+    logLine(`[main] uncaughtException: ${err?.stack ?? String(err)}`);
+  });
+  process.on('unhandledRejection', (reason) => {
+    logLine(`[main] unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}`);
+  });
+  // GPU / utility / pid-host subprocess crashes.
+  app.on('child-process-gone', (_e, details) => {
+    logLine(`[main] child-process-gone: type=${details.type} reason=${details.reason} exitCode=${details.exitCode}`);
+  });
+}
+
+// Mirror a webContents' console errors/warnings and crash events to the log.
+function attachWebContentsLogging(wc: WebContents, label: string) {
+  wc.on('console-message', (_e, level, message, line, sourceId) => {
+    // level: 0 verbose, 1 info, 2 warning, 3 error — only keep the noisy ones.
+    if (level < 2) return;
+    logLine(`[${label}:${level === 3 ? 'error' : 'warn'}] ${message} (${sourceId}:${line})`);
+  });
+  wc.on('render-process-gone', (_e, details) => {
+    logLine(`[${label}] render-process-gone: reason=${details.reason} exitCode=${details.exitCode}`);
+  });
+  wc.on('unresponsive', () => logLine(`[${label}] unresponsive`));
+  wc.on('preload-error', (_e, preloadPath, error) => {
+    logLine(`[${label}] preload-error (${preloadPath}): ${error?.stack ?? String(error)}`);
+  });
+}
 
 function startBackend() {
   // In a packaged build the backend lives at
@@ -30,9 +106,25 @@ function startBackend() {
   backend = spawn(process.execPath, [backendEntry], {
     // ELECTRON_RUN_AS_NODE makes the spawned Electron binary behave as a
     // plain Node runtime (skips the GUI / main script lookup).
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', GROVE_BACKEND_PORT: '4317' },
-    stdio: 'inherit',
+    // GROVE_LOG_FILE tells the backend we're teeing its stdio into the log so
+    // it skips its own (would-be duplicate) file logging.
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', GROVE_BACKEND_PORT: '4317', GROVE_LOG_FILE: LOG_FILE },
+    // Pipe (not 'inherit') so backend output can be teed into the log file.
+    // It's still echoed to our own stdout/stderr so the dev terminal is
+    // unchanged.
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  const tee = (stream: NodeJS.ReadableStream | null, out: NodeJS.WriteStream, tag: string) => {
+    stream?.on('data', (chunk: Buffer) => {
+      out.write(chunk);
+      for (const line of chunk.toString().split('\n')) {
+        if (line.trim()) logLine(`[backend:${tag}] ${line}`);
+      }
+    });
+  };
+  tee(backend.stdout, process.stdout, 'out');
+  tee(backend.stderr, process.stderr, 'err');
+  backend.on('exit', (code, signal) => logLine(`[backend] exited code=${code} signal=${signal}`));
 }
 
 // Poll /health until fastify is listening so the renderer never observes the
@@ -74,6 +166,16 @@ function createWindow() {
     try { app.dock.setIcon(nativeImage.createFromPath(iconPath)); } catch {}
   }
   state.manage(win);
+  mainWindow = win;
+  attachWebContentsLogging(win.webContents, 'renderer');
+  win.on('closed', () => {
+    if (browserView) {
+      browserView.webContents.close();
+      browserView = null;
+      browserViewUrl = null;
+    }
+    if (mainWindow === win) mainWindow = null;
+  });
 
   const devUrl = process.env.GROVE_DEV_URL;
   if (devUrl) {
@@ -84,36 +186,6 @@ function createWindow() {
 
   // DevTools no longer auto-open in dev; toggle with View → Toggle Developer
   // Tools (⌥⌘I) when you need them.
-
-  // Forward sub-frame navigations (e.g. the BrowserPanel iframe) to the
-  // renderer so its address bar can reflect the real URL after links inside
-  // the embedded page are clicked. Same-origin policy blocks reading this
-  // from the renderer side.
-  const sendFrameNav = (url: string, isMain: boolean) => {
-    if (isMain) return;
-    if (!/^https?:/i.test(url)) return;
-    win.webContents.send('grove:frame-nav', url);
-  };
-  win.webContents.on('did-frame-navigate', (_e, url, _httpResponseCode, _httpStatusText, isMainFrame) => {
-    sendFrameNav(url, isMainFrame);
-  });
-  win.webContents.on('did-navigate-in-page', (_e, url, isMainFrame) => {
-    sendFrameNav(url, isMainFrame);
-  });
-  // Surface sub-frame load failures (server down, DNS error, refused, etc.)
-  // so the renderer can show a Chrome-style error page instead of a blank
-  // iframe. errorCode -3 is "aborted" which fires on intentional navigation
-  // away — ignore so we don't flash an error on every link click.
-  win.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedUrl, isMainFrame) => {
-    if (isMainFrame) return;
-    if (errorCode === -3) return;
-    if (!/^https?:/i.test(validatedUrl)) return;
-    win.webContents.send('grove:frame-fail', { url: validatedUrl, code: errorCode, message: errorDescription });
-  });
-  win.webContents.on('did-frame-finish-load', (_e, isMainFrame) => {
-    if (isMainFrame) return;
-    win.webContents.send('grove:frame-loaded');
-  });
 }
 
 // Persisted UI state — origin-independent (tabs, panels, recents).
@@ -156,47 +228,105 @@ ipcMain.handle('grove:pick-folder', async () => {
   return result.filePaths[0];
 });
 
-// Strip framing-prevention headers from localhost responses so the Browser
-// panel can iframe-embed dev servers that ship X-Frame-Options: SAMEORIGIN
-// (Calypso, Rails, etc.). We only touch hosts on private/loopback addresses
-// so public sites keep their original protection.
-function stripFramingHeadersForLocalhost() {
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    try {
-      const u = new URL(details.url);
-      const host = u.hostname;
-      const isLocal =
-        host === 'localhost' ||
-        host.endsWith('.localhost') ||
-        host === '127.0.0.1' ||
-        host === '::1' ||
-        host.startsWith('192.168.') ||
-        host.startsWith('10.') ||
-        /^172\.(1[6-9]|2\d|3[01])\./.test(host);
-      if (!isLocal) {
-        callback({ responseHeaders: details.responseHeaders });
-        return;
-      }
-      const headers: Record<string, string | string[]> = { ...(details.responseHeaders ?? {}) };
-      for (const key of Object.keys(headers)) {
-        const k = key.toLowerCase();
-        if (k === 'x-frame-options') {
-          delete headers[key];
-        } else if (k === 'content-security-policy') {
-          const v = headers[key];
-          const list = Array.isArray(v) ? v : [v];
-          // Drop frame-ancestors directives but keep the rest of the CSP intact.
-          headers[key] = list.map((s) =>
-            s.split(';').filter((d) => !d.trim().toLowerCase().startsWith('frame-ancestors')).join(';'),
-          );
-        }
-      }
-      callback({ responseHeaders: headers });
-    } catch {
-      callback({ responseHeaders: details.responseHeaders });
-    }
+// --- Embedded browser (BrowserPanel) ---------------------------------------
+// The view is created lazily on first open and reused for the window's
+// lifetime so page state survives panel toggling.
+function ensureBrowserView(): WebContentsView {
+  if (browserView) return browserView;
+  const view = new WebContentsView({
+    webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
+  const wc = view.webContents;
+  attachWebContentsLogging(wc, 'browser-view');
+  // Push the current address + history availability so the panel's URL bar
+  // and back/forward buttons stay in sync with the real navigation state.
+  const sendNav = (url: string) => {
+    if (!/^https?:/i.test(url)) return;
+    browserViewUrl = url;
+    mainWindow?.webContents.send('grove:browser-nav', url);
+    mainWindow?.webContents.send('grove:browser-navstate', {
+      canGoBack: wc.navigationHistory.canGoBack(),
+      canGoForward: wc.navigationHistory.canGoForward(),
+    });
+  };
+  wc.on('did-navigate', (_e, url) => sendNav(url));
+  wc.on('did-navigate-in-page', (_e, url, isMainFrame) => { if (isMainFrame) sendNav(url); });
+  wc.on('did-start-loading', () => mainWindow?.webContents.send('grove:browser-loading', true));
+  wc.on('did-stop-loading', () => mainWindow?.webContents.send('grove:browser-loading', false));
+  // errorCode -3 is ERR_ABORTED — fires on intentional navigation away, not a
+  // real failure, so ignore it to avoid flashing an error page on every click.
+  wc.on('did-fail-load', (_e, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+    if (!isMainFrame || errorCode === -3) return;
+    mainWindow?.webContents.send('grove:browser-fail', {
+      url: validatedUrl, code: errorCode, message: errorDescription,
+    });
+  });
+  // Links that try to open a new window navigate the embedded view instead.
+  wc.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) {
+      browserViewUrl = url;
+      wc.loadURL(url);
+    }
+    return { action: 'deny' };
+  });
+  browserView = view;
+  return view;
 }
+
+ipcMain.handle('grove:browser-open', (_e, url: string) => {
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return;
+  const view = ensureBrowserView();
+  if (mainWindow && !mainWindow.contentView.children.includes(view)) {
+    mainWindow.contentView.addChildView(view);
+  }
+  if (browserViewUrl !== url) {
+    browserViewUrl = url;
+    view.webContents.loadURL(url);
+  }
+});
+
+ipcMain.handle('grove:browser-close', () => {
+  if (browserView && mainWindow?.contentView.children.includes(browserView)) {
+    mainWindow.contentView.removeChildView(browserView);
+  }
+});
+
+ipcMain.handle('grove:browser-set-bounds', (_e, b: { x: number; y: number; width: number; height: number; zoom?: number } | null) => {
+  if (!browserView) return;
+  // A null/empty rect parks the view offscreen — used while a DOM overlay
+  // (e.g. the load-error page) needs to show in the view's place.
+  if (!b || b.width <= 0 || b.height <= 0) {
+    browserView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+    return;
+  }
+  browserView.setBounds({
+    x: Math.round(b.x), y: Math.round(b.y),
+    width: Math.round(b.width), height: Math.round(b.height),
+  });
+  // zoomFactor < 1 keeps a wider logical (CSS) viewport than the physical
+  // panel — used to preserve a desktop layout in a narrow panel.
+  browserView.webContents.setZoomFactor(b.zoom && b.zoom > 0 ? b.zoom : 1);
+});
+
+ipcMain.handle('grove:browser-navigate', (_e, url: string) => {
+  if (!browserView || typeof url !== 'string' || !/^https?:\/\//i.test(url)) return;
+  browserViewUrl = url;
+  browserView.webContents.loadURL(url);
+});
+
+ipcMain.handle('grove:browser-reload', () => {
+  browserView?.webContents.reload();
+});
+
+ipcMain.handle('grove:browser-back', () => {
+  const nav = browserView?.webContents.navigationHistory;
+  if (nav?.canGoBack()) nav.goBack();
+});
+
+ipcMain.handle('grove:browser-forward', () => {
+  const nav = browserView?.webContents.navigationHistory;
+  if (nav?.canGoForward()) nav.goForward();
+});
 
 function registerAppProtocol() {
   // Resolve any request under grove://app/<relative> to the corresponding file
@@ -218,12 +348,12 @@ function registerAppProtocol() {
 }
 
 app.whenReady().then(async () => {
+  setupLogging();
   if (!process.env.GROVE_DEV_URL) {
     startBackend();
     await waitForBackend();
   }
   registerAppProtocol();
-  stripFramingHeadersForLocalhost();
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

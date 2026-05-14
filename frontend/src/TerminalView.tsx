@@ -339,7 +339,7 @@ export function TerminalView({ tabId, active }: Props) {
         attempt += 1;
         const delay = Math.min(2000, 200 * 2 ** Math.min(attempt - 1, 4));
         if (attempt > 8) {
-          console.error('[grove] failed to connect to backend at 127.0.0.1:4317 after multiple attempts');
+          console.error(`[grove] failed to connect to backend at ${WS_BASE} after multiple attempts`);
           return;
         }
         reconnectTimer = setTimeout(connect, delay);

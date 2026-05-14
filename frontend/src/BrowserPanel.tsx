@@ -44,55 +44,87 @@ export function BrowserPanel({
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [addr, setAddr] = useState(url ?? '');
   const [viewport, setViewport] = useState<'desktop' | 'mobile'>('desktop');
-  const [iframeNonce, setIframeNonce] = useState(0);
-  const [stageW, setStageW] = useState(0);
   const stageRef = useRef<HTMLDivElement | null>(null);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
   const MOBILE_WIDTH = 390; // iPhone 14/15 logical width
-  const DESKTOP_WIDTH = 1280;
+  const DESKTOP_WIDTH = 1280; // logical desktop viewport kept regardless of panel width
 
-  // Measure the iframe stage so we can scale the 1280px viewport down to fit
-  // narrower panels without showing a horizontal scrollbar.
-  useEffect(() => {
-    const el = stageRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(([entry]) => {
-      setStageW(entry.contentRect.width);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [url]);
-
-  // Force the iframe to reload by bumping a nonce that's used as a key. Plain
-  // <iframe> doesn't expose a reliable reload() across cross-origin pages.
-  const reloadIframe = () => setIframeNonce((n) => n + 1);
+  const reload = () => { window.grove?.browser?.reload(); };
+  const goBack = () => { window.grove?.browser?.back(); };
+  const goForward = () => { window.grove?.browser?.forward(); };
 
   useEffect(() => { setAddr(url ?? ''); }, [url]);
 
-  // Sub-frame navigations are forwarded by the main process via IPC because
-  // same-origin policy hides them from the renderer. Update only the visible
-  // address bar — don't reset the iframe src, which would reload the page.
-  useEffect(() => {
-    if (!window.grove?.onFrameNav) return;
-    return window.grove.onFrameNav((u) => setAddr(u));
-  }, []);
-
   const [frameError, setFrameError] = useState<{ code: number; message: string } | null>(null);
-  // Track load failures (server down, DNS, refused) and clear on each new
-  // load. The iframe key bump triggers a fresh load → clear stale errors.
-  // Preload buffers the last fail so we still catch failures that fired
-  // before this listener mounted (instant ECONNREFUSED is faster than
-  // React's first useEffect). Clearing on url/iframeNonce change handles
-  // user-initiated reloads/navigations.
+  const [navState, setNavState] = useState({ canGoBack: false, canGoForward: false });
+
+  // The embedded browser lives in an Electron WebContentsView (a real
+  // top-level browsing context, not an iframe). The main process forwards its
+  // navigation/load events over IPC. Preload buffers the last failure so we
+  // still catch instant ECONNREFUSED errors that fire before this listener
+  // mounts.
   useEffect(() => {
-    if (!window.grove?.onFrameFail) return;
-    return window.grove.onFrameFail((info) => setFrameError({ code: info.code, message: info.message }));
+    const b = window.grove?.browser;
+    if (!b) return;
+    const offNav = b.onNav((u) => { setAddr(u); setFrameError(null); });
+    const offNavState = b.onNavState(setNavState);
+    const offFail = b.onFail((info) => setFrameError({ code: info.code, message: info.message }));
+    const offLoading = b.onLoading((loading) => { if (loading) setFrameError(null); });
+    return () => { offNav(); offNavState(); offFail(); offLoading(); };
   }, []);
   useEffect(() => {
     setFrameError(null);
-    window.grove?.clearFrameFail?.();
-  }, [url, iframeNonce]);
+    window.grove?.browser?.clearFail?.();
+  }, [url]);
+
+  // Drive the WebContentsView: open/navigate when a URL is set, remove it from
+  // the window when showing the services list, and tear it down on unmount.
+  useEffect(() => {
+    const b = window.grove?.browser;
+    if (!b) return;
+    if (url) b.open(url);
+    else b.close();
+  }, [url]);
+  useEffect(() => () => { window.grove?.browser?.close(); }, []);
+
+  // The view is an OS-compositor layer above the DOM — it can't be positioned
+  // with CSS. Instead we mirror the placeholder Box's screen rect into the
+  // view's bounds every frame (cheap: a getBoundingClientRect + string compare)
+  // so it tracks panel resize, fullscreen, sidebar, and width transitions.
+  // Mobile uses a real 390px-wide viewport centered in the stage. Desktop
+  // keeps a 1280px logical viewport: when the panel is narrower we zoom the
+  // page out (zoomFactor < 1 widens the CSS viewport) so the full desktop
+  // layout still fits without a horizontal scrollbar. While an error overlay
+  // is showing we park the view offscreen so the DOM shows.
+  useEffect(() => {
+    const b = window.grove?.browser;
+    if (!url || !b) return;
+    let raf = 0;
+    let lastKey = '';
+    const tick = () => {
+      const el = stageRef.current;
+      if (el && !frameError) {
+        const r = el.getBoundingClientRect();
+        const isMobile = viewport === 'mobile';
+        const width = isMobile ? Math.min(MOBILE_WIDTH, r.width) : r.width;
+        const x = r.left + (isMobile ? (r.width - width) / 2 : 0);
+        const zoom = !isMobile && r.width < DESKTOP_WIDTH && r.width > 0
+          ? r.width / DESKTOP_WIDTH
+          : 1;
+        const key = `${Math.round(x)}|${Math.round(r.top)}|${Math.round(width)}|${Math.round(r.height)}|${zoom.toFixed(3)}`;
+        if (key !== lastKey) {
+          lastKey = key;
+          b.setBounds({ x, y: r.top, width, height: r.height, zoom });
+        }
+      } else if (lastKey !== 'hidden') {
+        lastKey = 'hidden';
+        b.setBounds(null);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [url, viewport, frameError]);
 
   const fetchServices = useCallback(async () => {
     try {
@@ -128,8 +160,6 @@ export function BrowserPanel({
     setUrl(v);
   };
 
-  const effectiveFs = forcedFullscreen || fullscreen;
-
   return (
     <Flex direction="column" h="100%" w="100%" bg="#010409" borderLeft="1px solid #21262d">
       <Flex
@@ -148,9 +178,22 @@ export function BrowserPanel({
         )}
         {url ? (
           <>
-            <HeaderIconButton title="Back to services" onClick={() => setUrl(null)}>
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M7.5 2L3.5 6l4 4" />
+            <HeaderIconButton title="Workspace services" onClick={() => setUrl(null)}>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2">
+                <rect x="1.5" y="1.5" width="3.5" height="3.5" rx="0.6" />
+                <rect x="7" y="1.5" width="3.5" height="3.5" rx="0.6" />
+                <rect x="1.5" y="7" width="3.5" height="3.5" rx="0.6" />
+                <rect x="7" y="7" width="3.5" height="3.5" rx="0.6" />
+              </svg>
+            </HeaderIconButton>
+            <HeaderIconButton title="Back" onClick={goBack} disabled={!navState.canGoBack}>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M7.5 2.5L4 6l3.5 3.5" />
+              </svg>
+            </HeaderIconButton>
+            <HeaderIconButton title="Forward" onClick={goForward} disabled={!navState.canGoForward}>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4.5 2.5L8 6l-3.5 3.5" />
               </svg>
             </HeaderIconButton>
             <Box as="form" onSubmit={onSubmitAddr} flex="1">
@@ -190,7 +233,7 @@ export function BrowserPanel({
                 </svg>
               )}
             </HeaderIconButton>
-            <HeaderIconButton title="Reload" onClick={reloadIframe}>
+            <HeaderIconButton title="Reload" onClick={reload}>
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M9.5 3.5V2M9.5 3.5H8" />
                 <path d="M9.5 3.5A4 4 0 1 0 10 6.5" />
@@ -239,54 +282,16 @@ export function BrowserPanel({
       </Flex>
       <Box flex="1" minH="0" position="relative">
         {url ? (
-          (() => {
-            const isMobile = viewport === 'mobile';
-            // Mobile is always a fixed 390 frame (auto-fit if the panel is
-            // narrower). Desktop has DESKTOP_WIDTH as a *minimum* viewport
-            // — when the panel is wider we let the iframe stretch to fill
-            // the panel so no empty space is wasted.
-            const frameW = isMobile
-              ? MOBILE_WIDTH
-              : Math.max(DESKTOP_WIDTH, stageW || DESKTOP_WIDTH);
-            const scale = stageW > 0 && stageW < frameW ? stageW / frameW : 1;
-            // Center the mobile frame when there's extra panel width; desktop
-            // grows to fill so no centering needed.
-            const offsetX = isMobile && scale === 1 && stageW > frameW
-              ? (stageW - frameW) / 2
-              : 0;
-            return (
-              <Box ref={stageRef} position="absolute" inset="0" overflow="hidden" bg="#0d1117">
-                <Box
-                  position="absolute"
-                  top="0"
-                  left={`${offsetX}px`}
-                  w={`${frameW}px`}
-                  h={scale < 1 ? `${100 / scale}%` : '100%'}
-                  transform={`scale(${scale})`}
-                  transformOrigin="top left"
-                  visibility={frameError ? 'hidden' : 'visible'}
-                >
-                  <iframe
-                    key={iframeNonce}
-                    ref={iframeRef}
-                    src={url}
-                    title="Embedded browser"
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      display: 'block',
-                      border: 'none',
-                      background: '#ffffff',
-                      boxShadow: '0 0 0 1px #30363d',
-                    }}
-                  />
-                </Box>
-                {frameError && (
-                  <FrameErrorView url={url} info={frameError} onRetry={reloadIframe} />
-                )}
-              </Box>
-            );
-          })()
+          // Placeholder for the WebContentsView. The view itself is an
+          // OS-compositor layer painted above this Box by the main process;
+          // its bounds are synced to this Box's screen rect every frame. When
+          // a load fails the view is parked offscreen and this DOM error
+          // surface shows in its place.
+          <Box ref={stageRef} position="absolute" inset="0" overflow="hidden" bg="#0d1117">
+            {frameError && (
+              <FrameErrorView url={url} info={frameError} onRetry={reload} />
+            )}
+          </Box>
         ) : (
           <ServicesList
             services={services}
@@ -300,8 +305,6 @@ export function BrowserPanel({
           />
         )}
       </Box>
-      <Box position="absolute" />
-      {effectiveFs && null}
     </Flex>
   );
 }
@@ -541,21 +544,23 @@ function LoadingDots() {
 }
 
 function HeaderIconButton({
-  children, title, onClick, active,
-}: { children: React.ReactNode; title: string; onClick: () => void; active?: boolean }) {
+  children, title, onClick, active, disabled,
+}: { children: React.ReactNode; title: string; onClick: () => void; active?: boolean; disabled?: boolean }) {
   const [hover, setHover] = useState(false);
-  const bg = active ? '#30363d' : hover ? '#21262d' : 'transparent';
+  const bg = disabled ? 'transparent' : active ? '#30363d' : hover ? '#21262d' : 'transparent';
   return (
     <button
-      onClick={onClick}
+      onClick={disabled ? undefined : onClick}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       title={title}
+      disabled={disabled}
       style={{
         background: bg,
         border: 'none',
         color: '#c9d1d9',
-        cursor: 'pointer',
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.35 : 1,
         padding: 0,
         height: '24px',
         width: '24px',
@@ -564,7 +569,7 @@ function HeaderIconButton({
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
-        transition: 'background 120ms ease',
+        transition: 'background 120ms ease, opacity 120ms ease',
       }}
     >
       {children}
