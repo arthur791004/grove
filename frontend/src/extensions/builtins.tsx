@@ -1,5 +1,26 @@
 import { lazy } from 'react';
 import { panelRegistry } from './registry';
+import { registerActionHandler } from './actions';
+import { useStore } from '../store';
+
+// Built-in action wiring. These bind once at module load (App.tsx imports
+// this file for side effects) so terminal click-handlers can fire even when
+// the relevant panel isn't currently mounted — opening the panel + handing
+// it the payload happens here.
+registerActionHandler('open-url', (payload) => {
+  const p = payload as { url?: unknown };
+  if (typeof p?.url !== 'string') return;
+  const s = useStore.getState();
+  s.setBrowserPanelUrl(p.url);
+  s.openPanel('browser');
+});
+
+registerActionHandler('open-file', (payload) => {
+  const p = payload as { path?: unknown; kind?: unknown };
+  if (typeof p?.path !== 'string') return;
+  const kind = p.kind === 'dir' ? 'dir' : 'file';
+  useStore.getState().openFileInBrowser(p.path, kind);
+});
 
 // Code-split the three built-in panels — each pulls a non-trivial dep tree
 // (react-diff-view for Diff, prism + icon set for Files, the embedded

@@ -85,9 +85,11 @@ export function FileBrowserPanel({
   panelWidth: number;
 }) {
   const activeTabId = useStore((s) => s.activeTabId);
-  const togglePanel = useStore((s) => s.toggleFileBrowser);
-  const fullscreen = useStore((s) => s.fileBrowserFullscreen);
-  const toggleFullscreen = useStore((s) => s.toggleFileBrowserFullscreen);
+  const closePanel = useStore((s) => s.closePanel);
+  const togglePanelFullscreen = useStore((s) => s.togglePanelFullscreen);
+  const fullscreen = useStore((s) => !!s.panelFullscreen.files);
+  const togglePanel = closePanel;
+  const toggleFullscreen = () => togglePanelFullscreen('files');
   const listOpen = useStore((s) => s.fileBrowserListOpen);
   const toggleList = useStore((s) => s.toggleFileBrowserList);
   const fileRequest = useStore((s) => s.fileBrowserRequest);

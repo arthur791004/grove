@@ -80,11 +80,13 @@ function sliceHunkBody(hunk: ParsedHunk, from: number, to: number): string[] {
 
 export function DiffPanel({ forcedFullscreen = false }: { forcedFullscreen?: boolean }) {
   const activeTabId = useStore((s) => s.activeTabId);
-  const togglePanel = useStore((s) => s.toggleDiffPanel);
-  const toggleFullscreen = useStore((s) => s.toggleDiffPanelFullscreen);
+  const closePanel = useStore((s) => s.closePanel);
+  const togglePanelFullscreen = useStore((s) => s.togglePanelFullscreen);
   const toggleFileList = useStore((s) => s.toggleDiffFileList);
-  const fullscreen = useStore((s) => s.diffPanelFullscreen);
+  const fullscreen = useStore((s) => !!s.panelFullscreen.diff);
   const fileListOpen = useStore((s) => s.diffFileListOpen);
+  const togglePanel = closePanel;
+  const toggleFullscreen = () => togglePanelFullscreen('diff');
   const [data, setData] = useState<DiffResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());

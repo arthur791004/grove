@@ -29,7 +29,17 @@ new piece of UI, follow this order:
      attribute — native `title` has a long delay before showing and looks
      system-default.
 
-5. **State and polling.**
+5. **Extensions (in progress).** See the Extensions handoff doc for the full
+   plan. Decisions already locked:
+   - **Conflict resolution: first-registered wins.** If two extensions
+     register the same panel id, action name, or command, the second
+     registration is rejected with a console warning. Deterministic, easy
+     to surface in the manifest validator, no UX flow needed.
+   - Built-in panel ids are `files`, `diff`, `browser`. Extensions must
+     namespace action names with their id (e.g. `linear.create-issue`);
+     built-ins use unprefixed names (`open-file`, `open-url`).
+
+6. **State and polling.**
    - Don't add polling loops without a good reason. The backend already
      pushes per-tab context over a WebSocket; piggyback on it via
      `subscribeAllTabContexts` (in `useTabContext.ts`) when you need a

@@ -13,6 +13,12 @@ class PanelRegistry {
   private snapshot: PanelDefinition[] = [];
 
   register(def: PanelDefinition): void {
+    // First-registered wins (see CLAUDE.md). Built-ins register at module
+    // load; if an extension tries to claim the same id, log + reject.
+    if (this.panels.has(def.id)) {
+      console.warn(`[grove] panel id "${def.id}" already registered; ignoring second registration`);
+      return;
+    }
     this.panels.set(def.id, def);
     this.rebuild();
   }

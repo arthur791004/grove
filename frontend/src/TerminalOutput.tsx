@@ -1,6 +1,7 @@
 import React, { Fragment, useMemo } from 'react';
 import { useStore } from './store';
 import { API_BASE } from './api';
+import { dispatch } from './extensions/actions';
 
 // Renderer for terminal block output.
 //
@@ -303,11 +304,8 @@ function cleanToken(s: string): string {
 
 async function openLink(rawTarget: string, blockCwd: string) {
   const cleanedRaw = cleanToken(rawTarget);
-  // HTTP(S) URLs route to the embedded browser panel, never the file browser.
   if (HTTP_URL_WORD.test(cleanedRaw)) {
-    const store = useStore.getState();
-    store.setBrowserPanelUrl(cleanedRaw);
-    if (!store.browserPanelOpen) store.toggleBrowserPanel();
+    dispatch('open-url', { url: cleanedRaw });
     return;
   }
   let p = urlToPath(rawTarget);
@@ -323,7 +321,7 @@ async function openLink(rawTarget: string, blockCwd: string) {
     const json = await res.json();
     if (!json.exists) return;
     const kind: 'file' | 'dir' = json.isDir ? 'dir' : 'file';
-    useStore.getState().openFileInBrowser(json.abs, kind);
+    dispatch('open-file', { path: json.abs, kind });
   } catch (err) {
     console.error('[grove] file resolve failed', err);
   }

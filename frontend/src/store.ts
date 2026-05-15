@@ -69,15 +69,15 @@ interface State {
   tabOrderByGroup: Record<string, string[]>;
   activeTabId: string | null;
   sidebarOpen: boolean;
-  diffPanelOpen: boolean;
-  diffPanelFullscreen: boolean;
+  // Right-panel host state. activePanelId is the registry id (e.g. 'diff',
+  // 'files', 'browser', or an extension id) of the panel currently open; null
+  // = closed. Mutually exclusive — only one panel at a time.
+  activePanelId: string | null;
+  // Per-panel fullscreen pref, keyed by panel id. Survives panel switches.
+  panelFullscreen: Record<string, boolean>;
   diffFileListOpen: boolean;
-  fileBrowserOpen: boolean;
-  fileBrowserFullscreen: boolean;
   fileBrowserListOpen: boolean;
   fileBrowserRequest: { path: string; kind: 'file' | 'dir'; nonce: number } | null;
-  browserPanelOpen: boolean;
-  browserPanelFullscreen: boolean;
   browserPanelListOpen: boolean;
   browserPanelUrl: string | null;
   browserHistory: Array<{ url: string; visitedAt: number; cwd: string }>;
@@ -108,16 +108,15 @@ interface Actions {
   moveTab(tabId: string, targetGroupId: string, targetIndex: number): void;
   reorderGroups(newOrder: string[]): void;
   toggleSidebar(): void;
-  toggleDiffPanel(): void;
-  toggleDiffPanelFullscreen(): void;
+  // Generic right-panel host actions, keyed by registry panel id.
+  openPanel(id: string): void;
+  closePanel(): void;
+  togglePanel(id: string): void;
+  togglePanelFullscreen(id: string): void;
   toggleDiffFileList(): void;
-  toggleFileBrowser(): void;
-  toggleFileBrowserFullscreen(): void;
   toggleFileBrowserList(): void;
   openFileInBrowser(path: string, kind?: 'file' | 'dir'): void;
   consumeFileBrowserRequest(): void;
-  toggleBrowserPanel(): void;
-  toggleBrowserPanelFullscreen(): void;
   toggleBrowserPanelList(): void;
   setBrowserPanelUrl(url: string | null): void;
   removeBrowserHistory(url: string, cwd?: string): void;
@@ -145,15 +144,11 @@ export const useStore = create<State & Actions>()(
       tabOrderByGroup: { default: [] },
       activeTabId: null,
       sidebarOpen: true,
-      diffPanelOpen: false,
-      diffPanelFullscreen: false,
+      activePanelId: null,
+      panelFullscreen: {},
       diffFileListOpen: true,
-      fileBrowserOpen: false,
-      fileBrowserFullscreen: false,
       fileBrowserListOpen: true,
       fileBrowserRequest: null,
-      browserPanelOpen: false,
-      browserPanelFullscreen: false,
       browserPanelListOpen: true,
       browserPanelUrl: null,
       browserHistory: [],
@@ -392,51 +387,30 @@ export const useStore = create<State & Actions>()(
         set((s) => ({ sidebarOpen: !s.sidebarOpen }));
       },
 
-      // Right-side panels (diff, file browser, web browser) are mutually
-      // exclusive — only one occupies the slot at a time so the workspace
-      // never has to compete with more than one sibling pane.
-      toggleDiffPanel() {
-        set((s) =>
-          s.diffPanelOpen
-            ? { diffPanelOpen: false }
-            : { diffPanelOpen: true, fileBrowserOpen: false, browserPanelOpen: false },
-        );
+      // Right-side panels (Files, Diff, Browser, future extension panels) are
+      // mutually exclusive — only one occupies the slot at a time so the
+      // workspace never competes with more than one sibling pane.
+      openPanel(id) {
+        set({ activePanelId: id });
       },
-
-      toggleDiffPanelFullscreen() {
-        set((s) => ({ diffPanelFullscreen: !s.diffPanelFullscreen }));
+      closePanel() {
+        set({ activePanelId: null });
+      },
+      togglePanel(id) {
+        set((s) => ({ activePanelId: s.activePanelId === id ? null : id }));
+      },
+      togglePanelFullscreen(id) {
+        set((s) => ({
+          panelFullscreen: { ...s.panelFullscreen, [id]: !s.panelFullscreen[id] },
+        }));
       },
 
       toggleDiffFileList() {
         set((s) => ({ diffFileListOpen: !s.diffFileListOpen }));
       },
 
-      toggleFileBrowser() {
-        set((s) =>
-          s.fileBrowserOpen
-            ? { fileBrowserOpen: false }
-            : { fileBrowserOpen: true, diffPanelOpen: false, browserPanelOpen: false },
-        );
-      },
-
-      toggleFileBrowserFullscreen() {
-        set((s) => ({ fileBrowserFullscreen: !s.fileBrowserFullscreen }));
-      },
-
       toggleFileBrowserList() {
         set((s) => ({ fileBrowserListOpen: !s.fileBrowserListOpen }));
-      },
-
-      toggleBrowserPanel() {
-        set((s) =>
-          s.browserPanelOpen
-            ? { browserPanelOpen: false }
-            : { browserPanelOpen: true, diffPanelOpen: false, fileBrowserOpen: false },
-        );
-      },
-
-      toggleBrowserPanelFullscreen() {
-        set((s) => ({ browserPanelFullscreen: !s.browserPanelFullscreen }));
       },
 
       toggleBrowserPanelList() {
@@ -471,12 +445,10 @@ export const useStore = create<State & Actions>()(
       },
 
       openFileInBrowser(path, kind = 'file') {
-        // Open the panel (closing the diff + browser panels) and stamp a
-        // request the FileBrowserPanel will consume.
+        // Switch to Files panel and stamp a request the FileBrowserPanel
+        // will consume on its next render.
         set({
-          fileBrowserOpen: true,
-          diffPanelOpen: false,
-          browserPanelOpen: false,
+          activePanelId: 'files',
           fileBrowserRequest: { path, kind, nonce: Date.now() },
         });
       },
@@ -519,20 +491,43 @@ export const useStore = create<State & Actions>()(
         tabOrderByGroup: s.tabOrderByGroup,
         activeTabId: s.activeTabId,
         sidebarOpen: s.sidebarOpen,
-        diffPanelOpen: s.diffPanelOpen,
-        diffPanelFullscreen: s.diffPanelFullscreen,
+        activePanelId: s.activePanelId,
+        panelFullscreen: s.panelFullscreen,
         diffFileListOpen: s.diffFileListOpen,
-        fileBrowserOpen: s.fileBrowserOpen,
-        fileBrowserFullscreen: s.fileBrowserFullscreen,
         fileBrowserListOpen: s.fileBrowserListOpen,
-        browserPanelOpen: s.browserPanelOpen,
-        browserPanelFullscreen: s.browserPanelFullscreen,
         browserPanelListOpen: s.browserPanelListOpen,
         browserPanelUrl: s.browserPanelUrl,
         browserHistory: s.browserHistory,
         monoFontFamily: s.monoFontFamily,
         monoFontSize: s.monoFontSize,
       }),
+      version: 1,
+      // Lift any prior per-panel boolean into the new activePanelId /
+      // panelFullscreen shape so users coming from older builds don't see
+      // a closed panel where they last left one open.
+      migrate: (persistedState: unknown, _from: number) => {
+        const s = (persistedState ?? {}) as Record<string, unknown>;
+        if (s.activePanelId === undefined) {
+          if (s.diffPanelOpen) s.activePanelId = 'diff';
+          else if (s.fileBrowserOpen) s.activePanelId = 'files';
+          else if (s.browserPanelOpen) s.activePanelId = 'browser';
+          else s.activePanelId = null;
+        }
+        if (s.panelFullscreen === undefined) {
+          s.panelFullscreen = {
+            diff: !!s.diffPanelFullscreen,
+            files: !!s.fileBrowserFullscreen,
+            browser: !!s.browserPanelFullscreen,
+          };
+        }
+        delete s.diffPanelOpen;
+        delete s.fileBrowserOpen;
+        delete s.browserPanelOpen;
+        delete s.diffPanelFullscreen;
+        delete s.fileBrowserFullscreen;
+        delete s.browserPanelFullscreen;
+        return s;
+      },
     },
   ),
 );

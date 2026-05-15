@@ -23,30 +23,6 @@ import { usePanels } from './extensions/registry';
 // re-render every store tick because zustand uses reference equality.
 const EMPTY_GROUPS: Group[] = [];
 
-// Transitional shims while the store still keeps one boolean per built-in
-// panel. Slice 1 only refactors the rendering plumbing onto the registry;
-// generalizing the open-state to `activePanelId: string | null` is a future
-// slice (touches toggle handlers, per-panel fullscreen, etc.). New panels
-// added in later slices will need entries here OR a real store cutover.
-const PANEL_OPEN_SELECTORS: Record<string, (s: ReturnType<typeof useStore.getState>) => boolean> = {
-  diff: (s) => s.diffPanelOpen,
-  files: (s) => s.fileBrowserOpen,
-  browser: (s) => s.browserPanelOpen,
-};
-const PANEL_FULLSCREEN_SELECTORS: Record<
-  string,
-  (s: ReturnType<typeof useStore.getState>) => boolean
-> = {
-  diff: (s) => s.diffPanelFullscreen,
-  files: (s) => s.fileBrowserFullscreen,
-  browser: (s) => s.browserPanelFullscreen,
-};
-const PANEL_TOGGLERS: Record<string, (s: ReturnType<typeof useStore.getState>) => void> = {
-  diff: (s) => s.toggleDiffPanel(),
-  files: (s) => s.toggleFileBrowser(),
-  browser: (s) => s.toggleBrowserPanel(),
-};
-
 const SIDEBAR_WIDTH = 220;
 // Default right-side panel takes 40% of the content area, with a minimum
 // width so it stays usable on small windows.
@@ -68,20 +44,14 @@ export function App() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  // Registry-driven panel state. Active panel id (if any) is derived from
-  // each panel's open-selector — at most one is open at a time.
+  // Registry-driven panel state. activePanelId is the registry id (or null);
+  // the active panel is looked up from the registry.
   const panels = usePanels();
-  const activePanelId = useStore((s) => {
-    for (const p of panels) {
-      const sel = PANEL_OPEN_SELECTORS[p.id];
-      if (sel?.(s)) return p.id;
-    }
-    return null;
-  });
-  const activeUserFullscreen = useStore((s) => {
-    if (!activePanelId) return false;
-    return PANEL_FULLSCREEN_SELECTORS[activePanelId]?.(s) ?? false;
-  });
+  const activePanelId = useStore((s) => s.activePanelId);
+  const togglePanel = useStore((s) => s.togglePanel);
+  const activeUserFullscreen = useStore((s) =>
+    activePanelId ? !!s.panelFullscreen[activePanelId] : false,
+  );
   const activePanel = activePanelId ? (panels.find((p) => p.id === activePanelId) ?? null) : null;
 
   const contentW = windowWidth - (sidebarOpen ? SIDEBAR_WIDTH : 0);
@@ -148,7 +118,7 @@ export function App() {
                   ? `Hide ${p.title.toLowerCase()}`
                   : `Show ${p.title.toLowerCase()}`
               }
-              onClick={() => PANEL_TOGGLERS[p.id]?.(useStore.getState())}
+              onClick={() => togglePanel(p.id)}
             >
               {p.icon}
             </TitlebarIconButton>

@@ -25,9 +25,11 @@ export function BrowserPanel({
   panelWidth: number;
 }) {
   const activeTabId = useStore((s) => s.activeTabId);
-  const togglePanel = useStore((s) => s.toggleBrowserPanel);
-  const fullscreen = useStore((s) => s.browserPanelFullscreen);
-  const toggleFullscreen = useStore((s) => s.toggleBrowserPanelFullscreen);
+  const closePanel = useStore((s) => s.closePanel);
+  const togglePanelFullscreen = useStore((s) => s.togglePanelFullscreen);
+  const fullscreen = useStore((s) => !!s.panelFullscreen.browser);
+  const togglePanel = closePanel;
+  const toggleFullscreen = () => togglePanelFullscreen('browser');
   const url = useStore((s) => s.browserPanelUrl);
   const setUrl = useStore((s) => s.setBrowserPanelUrl);
   const removeHistory = useStore((s) => s.removeBrowserHistory);
