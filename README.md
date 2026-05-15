@@ -66,25 +66,26 @@ Backend pushes context changes over WebSocket (debounced) instead of clients pol
 
 These are what Grove is becoming. Not in the box yet — listed roughly in priority order.
 
-### 🚧 A real embedded browser (not an iframe)
+### ✅ Real embedded browser (WebContentsView)
 
-Migrating the Browser panel to Electron's `WebContentsView` to fix the things iframe can't:
+The Browser panel is a real Electron `WebContentsView`, not an iframe. That means:
 
 - Any cross-origin site, not just localhost — no header stripping needed
 - **WebAuthn / security keys** for 2FA on staging and prod
-- **Chrome extensions** including 1Password, via `electron-chrome-extensions`
-- Persistent cookies scoped per workspace — staging in one tab, prod in another
+- Persistent cookies and login state across sessions
 - Real `setZoomFactor` for viewport scaling instead of CSS transforms
 
-The iframe approach works fine for localhost dev servers, which is 80% of the use case. The migration unlocks the other 20%.
+Chrome-extension support (1Password, etc.) via `electron-chrome-extensions` is the next layer; the substrate is in.
 
-### 🚧 Git worktree as a first-class concept
+### ✅ Workspace forking via git worktrees
 
-Workspaces today are pinned cwds. The plan is to make them **git worktrees**: one repo, many branches checked out simultaneously, each in its own tab group.
+Right-click a workspace → **Fork workspace** (or `+ → Fork workspace…`). Grove runs `git worktree add` under the hood, drops a sibling row right below the source, and gives it a memorable animal-hash name like `otter-a3f2`. Forks are ephemeral by design — close one and the worktree directory + the `grove/<animal>-<hash>` branch are cleaned up together. Use it for: hotfixes off `main` without disturbing in-progress work, PR reviews without context-switching, throwaway experiments.
 
-- `Cmd+T` on a repo tab → "new worktree from branch", no `git worktree add` ceremony
-- Each worktree gets its own port range and its own block history
-- Cleanup on merge: prompt to prune the worktree when the branch is gone
+Stale `grove/*` branches surface in Settings → Clean up Grove branches; orphan worktree directories from earlier crashes are detected and removable from the same panel.
+
+### ✅ Settings: Appearance + cleanup
+
+`⚙` in the titlebar. Pick a mono font family (Hack, JetBrains Mono, SF Mono, …), tune size live (xterm updates without restart), and clean up orphan `grove/*` branches.
 
 ### 🚧 Claude Code as the default shell
 

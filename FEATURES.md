@@ -93,21 +93,35 @@ macOS only. Single window. Dark theme only. The granular tracking doc behind
 
 Mirrors the README — granular subtasks where useful.
 
-### 🚧 Real embedded browser (WebContentsView)
+### ✅ Real embedded browser (WebContentsView)
 
-- [ ] Replace iframe with Electron `WebContentsView` per Browser-panel instance
-- [ ] WebAuthn / security-key support for 2FA on staging+prod
+- [x] Replace iframe with Electron `WebContentsView`
+- [x] WebAuthn / security-key support for 2FA on staging+prod
+- [x] Real `setZoomFactor` viewport scaling (replaces CSS transform hack)
+- [x] Persistent cookies via Electron's default session
 - [ ] Chrome extensions via `electron-chrome-extensions` (1Password, etc.)
 - [ ] Per-workspace cookie partitions
-- [ ] Real `setZoomFactor` viewport scaling (replace CSS transform hack)
 
-### 🚧 Git worktree as a first-class concept
+### ✅ Workspace forking via git worktrees
 
-- [ ] Workspace == worktree: one repo, many branches checked out at once
-- [ ] `Cmd+T` on a repo tab → "new worktree from branch" flow (wraps `git worktree add`)
+- [x] Right-click workspace → **Fork workspace** (and `+ → Fork workspace…`)
+- [x] Generated animal-hash branch names (`grove/<animal>-<4hex>`)
+- [x] Forks slot directly under their source in the sidebar
+- [x] Close-workspace confirm dialog warns about uncommitted / unpushed changes
+- [x] Worktree dir + grove/\* branch both deleted on close (always — confirm gates dirty cases)
+- [x] Workspace branch chip (sidebar) — updates from the existing WS ctx stream, no polling
+- [x] Per-tab chip only renders when its branch differs from the workspace's
+- [x] Settings → Clean up Grove branches: detects orphan branches + worktree dirs from earlier builds, bulk-deletes
 - [ ] Per-worktree port range
-- [ ] Per-worktree block history (already keyed by tabId, generalize to worktree)
-- [ ] Cleanup prompt to prune worktrees whose branch is gone
+- [ ] Per-worktree block history (already keyed by tabId; generalize to worktree path)
+- [ ] Cleanup prompt to prune worktrees whose branch is merged on remote
+
+### ✅ Settings panel
+
+- [x] Titlebar gear opens a Chakra Dialog
+- [x] Appearance: mono font family + size, live-applied to xterm and the rest of the UI
+- [x] Clean up Grove branches section (see above)
+- [x] Persisted across restart via the existing grove-state.json
 
 ### 🚧 Claude Code as the default shell
 

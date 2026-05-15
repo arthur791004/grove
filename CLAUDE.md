@@ -30,11 +30,27 @@ new piece of UI, follow this order:
      system-default.
 
 5. **Extensions (in progress).** See the Extensions handoff doc for the full
-   plan. Decisions already locked:
-   - **Conflict resolution: first-registered wins.** If two extensions
-     register the same panel id, action name, or command, the second
-     registration is rejected with a console warning. Deterministic, easy
-     to surface in the manifest validator, no UX flow needed.
+   plan. Built so far (Slice 1, 1.5, 3):
+   - `frontend/src/extensions/registry.ts` — panel catalog. Files, Diff,
+     Browser register at module load via `frontend/src/extensions/builtins.tsx`.
+     New panels go through `panelRegistry.register({ id, title, icon,
+component, source })`. App.tsx renders from `usePanels()`; no panel
+     paths are hardcoded in the host anymore.
+   - Panel open-state lives in zustand as `activePanelId: string | null` +
+     `panelFullscreen: Record<string, boolean>`. Use `openPanel(id)`,
+     `closePanel()`, `togglePanel(id)`, `togglePanelFullscreen(id)` — never
+     reintroduce panel-flavored booleans.
+   - `frontend/src/extensions/actions.ts` — cross-panel action bus.
+     `dispatch('open-file', { path, kind })` / `dispatch('open-url', { url })`
+     route through registered handlers. Use `useActionHandler(name, fn)` in
+     React; `registerActionHandler` outside React. Handlers live where the
+     work happens (built-ins register in `builtins.tsx`); a dispatch with no
+     handler is a no-op + console warning.
+
+   Locked decisions:
+   - **Conflict resolution: first-registered wins.** Enforced in
+     `PanelRegistry.register`; the same rule applies to actions and (later)
+     commands. Second registration is rejected with a console warning.
    - Built-in panel ids are `files`, `diff`, `browser`. Extensions must
      namespace action names with their id (e.g. `linear.create-issue`);
      built-ins use unprefixed names (`open-file`, `open-url`).
