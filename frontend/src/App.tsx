@@ -1,5 +1,14 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { Box, CloseButton, Dialog, Flex, IconButton, NativeSelect, Portal, Text } from '@chakra-ui/react';
+import {
+  Box,
+  CloseButton,
+  Dialog,
+  Flex,
+  IconButton,
+  NativeSelect,
+  Portal,
+  Text,
+} from '@chakra-ui/react';
 import { RefreshCw, SlidersHorizontal } from 'lucide-react';
 import { Sidebar } from './Sidebar';
 import { Workspace } from './Workspace';
@@ -17,8 +26,12 @@ const EMPTY_GROUPS: Group[] = [];
 // prism-react-renderer + the icon set; BrowserPanel hosts the iframe).
 // First open pays the import cost, then they're cached.
 const DiffPanel = lazy(() => import('./DiffPanel').then((m) => ({ default: m.DiffPanel })));
-const FileBrowserPanel = lazy(() => import('./FileBrowserPanel').then((m) => ({ default: m.FileBrowserPanel })));
-const BrowserPanel = lazy(() => import('./BrowserPanel').then((m) => ({ default: m.BrowserPanel })));
+const FileBrowserPanel = lazy(() =>
+  import('./FileBrowserPanel').then((m) => ({ default: m.FileBrowserPanel })),
+);
+const BrowserPanel = lazy(() =>
+  import('./BrowserPanel').then((m) => ({ default: m.BrowserPanel })),
+);
 
 const SIDEBAR_WIDTH = 220;
 // Default right-side panel takes 40% of the content area, with a minimum
@@ -53,10 +66,13 @@ export function App() {
   const panelOpen = diffPanelOpen || fileBrowserOpen || browserPanelOpen;
   const activePanelBaseW = panelOpen ? Math.max(PANEL_MIN, Math.round(contentW * PANEL_RATIO)) : 0;
   const forcedFullscreen = panelOpen && contentW - activePanelBaseW < MIN_WORKSPACE_WIDTH;
-  const userFullscreen = diffPanelOpen ? diffPanelFullscreen
-    : fileBrowserOpen ? fileBrowserFullscreen
-    : browserPanelOpen ? browserPanelFullscreen
-    : false;
+  const userFullscreen = diffPanelOpen
+    ? diffPanelFullscreen
+    : fileBrowserOpen
+      ? fileBrowserFullscreen
+      : browserPanelOpen
+        ? browserPanelFullscreen
+        : false;
   const effectiveFullscreen = userFullscreen || forcedFullscreen;
   useShortcuts(() => setPaletteOpen(true));
 
@@ -147,9 +163,7 @@ export function App() {
             top="0"
             right="0"
             bottom="0"
-            w={panelOpen
-              ? (effectiveFullscreen ? '100%' : `${activePanelBaseW}px`)
-              : '0px'}
+            w={panelOpen ? (effectiveFullscreen ? '100%' : `${activePanelBaseW}px`) : '0px'}
             borderLeft={panelOpen ? '1px solid #21262d' : '1px solid transparent'}
             bg="#0d1117"
             overflow="hidden"
@@ -186,9 +200,19 @@ export function App() {
 
 function PanelLoading() {
   return (
-    <Flex h="100%" w="100%" align="center" justify="center" bg="#010409" borderLeft="1px solid #21262d">
+    <Flex
+      h="100%"
+      w="100%"
+      align="center"
+      justify="center"
+      bg="#010409"
+      borderLeft="1px solid #21262d"
+    >
       <span className="grove-sq-loader">
-        <span /><span /><span /><span />
+        <span />
+        <span />
+        <span />
+        <span />
       </span>
     </Flex>
   );
@@ -197,8 +221,16 @@ function PanelLoading() {
 const TITLEBAR_ICON_COLOR = '#c9d1d9';
 
 function TitlebarIconButton({
-  title, onClick, active, children,
-}: { title: string; onClick: () => void; active?: boolean; children: React.ReactNode }) {
+  title,
+  onClick,
+  active,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  active?: boolean;
+  children: React.ReactNode;
+}) {
   const [hover, setHover] = useState(false);
   const bg = active ? '#30363d' : hover ? '#21262d' : 'transparent';
   return (
@@ -258,7 +290,10 @@ function AddWorkspaceSplitButton() {
     return () => document.removeEventListener('mousedown', onDoc);
   }, [open]);
 
-  const quickAdd = () => { newGroup(undefined, '~'); setOpen(false); };
+  const quickAdd = () => {
+    newGroup(undefined, '~');
+    setOpen(false);
+  };
 
   const addWithFolder = async () => {
     setOpen(false);
@@ -286,21 +321,28 @@ function AddWorkspaceSplitButton() {
     const all = useStore.getState().groups;
     // Resolve gitness for everything we don't already know, in parallel —
     // forks (forkedFromId set) are git-backed by construction so skip them.
-    const checks = await Promise.all(all.map(async (g) => {
-      if (g.forkedFromId) return [g.id, true] as const;
-      const ok = await window.grove!.workspace.isGitRepo({ cwd: g.cwd });
-      return [g.id, !!ok] as const;
-    }));
+    const checks = await Promise.all(
+      all.map(async (g) => {
+        if (g.forkedFromId) return [g.id, true] as const;
+        const ok = await window.grove!.workspace.isGitRepo({ cwd: g.cwd });
+        return [g.id, !!ok] as const;
+      }),
+    );
     const map = Object.fromEntries(checks);
     setForkable(map);
     const eligible = all.filter((g) => map[g.id]);
     if (eligible.length === 0) {
       // eslint-disable-next-line no-alert
-      window.alert('No git repositories among your workspaces. Fork is only available for workspaces inside a git repo.');
+      window.alert(
+        'No git repositories among your workspaces. Fork is only available for workspaces inside a git repo.',
+      );
       setOpen(false);
       return;
     }
-    if (eligible.length === 1) { doFork(eligible[0].id); return; }
+    if (eligible.length === 1) {
+      doFork(eligible[0].id);
+      return;
+    }
     setShowForkPicker(true);
   };
 
@@ -314,8 +356,18 @@ function AddWorkspaceSplitButton() {
     <Box ref={ref} position="relative" display="inline-flex" alignItems="center">
       <TitlebarIconButton title="Add workspace" active={open} onClick={() => setOpen((o) => !o)}>
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-          <path d="M2 5.5a1 1 0 0 1 1-1h4l1.5 1.5h6a1 1 0 0 1 1 1V13.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5.5z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
-          <path d="M9 8.5v3.5M7.25 10.25h3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+          <path
+            d="M2 5.5a1 1 0 0 1 1-1h4l1.5 1.5h6a1 1 0 0 1 1 1V13.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5.5z"
+            stroke="currentColor"
+            strokeWidth="1.3"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M9 8.5v3.5M7.25 10.25h3.5"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+          />
         </svg>
       </TitlebarIconButton>
       {open && (
@@ -335,25 +387,35 @@ function AddWorkspaceSplitButton() {
         >
           {!showForkPicker && (
             <>
-              <MenuItem onClick={quickAdd} hint="Adds a workspace rooted at ~">Quick add</MenuItem>
-              <MenuItem onClick={addWithFolder} hint="Create then immediately edit folder">Add with folder…</MenuItem>
-              <MenuItem onClick={forkClicked} hint="Clean parallel copy on a fresh branch">Fork workspace…</MenuItem>
+              <MenuItem onClick={quickAdd} hint="Adds a workspace rooted at ~">
+                Quick add
+              </MenuItem>
+              <MenuItem onClick={addWithFolder} hint="Create then immediately edit folder">
+                Add with folder…
+              </MenuItem>
+              <MenuItem onClick={forkClicked} hint="Clean parallel copy on a fresh branch">
+                Fork workspace…
+              </MenuItem>
             </>
           )}
           {showForkPicker && (
             <>
               <Box px="3" py="1.5">
-                <Text fontSize="11px" color="#7d8590">Fork from…</Text>
+                <Text fontSize="11px" color="#7d8590">
+                  Fork from…
+                </Text>
               </Box>
-              {groups.filter((g) => forkable[g.id]).map((g) => (
-                <MenuItem
-                  key={g.id}
-                  onClick={() => doFork(g.id)}
-                  hint={g.id === activeGroupId ? 'active' : g.cwd}
-                >
-                  {g.name}
-                </MenuItem>
-              ))}
+              {groups
+                .filter((g) => forkable[g.id])
+                .map((g) => (
+                  <MenuItem
+                    key={g.id}
+                    onClick={() => doFork(g.id)}
+                    hint={g.id === activeGroupId ? 'active' : g.cwd}
+                  >
+                    {g.name}
+                  </MenuItem>
+                ))}
             </>
           )}
         </Box>
@@ -362,7 +424,15 @@ function AddWorkspaceSplitButton() {
   );
 }
 
-function MenuItem({ children, hint, onClick }: { children: React.ReactNode; hint?: string; onClick: () => void }) {
+function MenuItem({
+  children,
+  hint,
+  onClick,
+}: {
+  children: React.ReactNode;
+  hint?: string;
+  onClick: () => void;
+}) {
   return (
     <Box
       px="3"
@@ -371,8 +441,14 @@ function MenuItem({ children, hint, onClick }: { children: React.ReactNode; hint
       _hover={{ bg: '#1f6feb', '& .menu-hint': { color: '#cce0ff' } }}
       onClick={onClick}
     >
-      <Text fontSize="12px" color="#f0f6fc">{children}</Text>
-      {hint && <Text className="menu-hint" fontSize="12px" color="#7d8590">{hint}</Text>}
+      <Text fontSize="12px" color="#f0f6fc">
+        {children}
+      </Text>
+      {hint && (
+        <Text className="menu-hint" fontSize="12px" color="#7d8590">
+          {hint}
+        </Text>
+      )}
     </Box>
   );
 }
@@ -381,7 +457,11 @@ function FileBrowserToggleButton({ open, onClick }: { open: boolean; onClick: ()
   return (
     <TitlebarIconButton active={open} title={open ? 'Hide files' : 'Show files'} onClick={onClick}>
       <svg width="18" height="16" viewBox="0 0 18 16" fill="none" stroke="currentColor">
-        <path d="M2 3.5a1 1 0 0 1 1-1h4l1.5 1.5h7a1 1 0 0 1 1 1V12.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5z" strokeWidth="1.3" strokeLinejoin="round" />
+        <path
+          d="M2 3.5a1 1 0 0 1 1-1h4l1.5 1.5h7a1 1 0 0 1 1 1V12.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5z"
+          strokeWidth="1.3"
+          strokeLinejoin="round"
+        />
       </svg>
     </TitlebarIconButton>
   );
@@ -389,8 +469,19 @@ function FileBrowserToggleButton({ open, onClick }: { open: boolean; onClick: ()
 
 function BrowserToggleButton({ open, onClick }: { open: boolean; onClick: () => void }) {
   return (
-    <TitlebarIconButton active={open} title={open ? 'Hide browser' : 'Show browser'} onClick={onClick}>
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">
+    <TitlebarIconButton
+      active={open}
+      title={open ? 'Hide browser' : 'Show browser'}
+      onClick={onClick}
+    >
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.3"
+      >
         <circle cx="8" cy="8" r="6" />
         <path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12" strokeLinecap="round" />
       </svg>
@@ -402,7 +493,11 @@ function DiffToggleButton({ open, onClick }: { open: boolean; onClick: () => voi
   return (
     <TitlebarIconButton active={open} title={open ? 'Hide diff' : 'Show diff'} onClick={onClick}>
       <svg width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="currentColor">
-        <path d="M3 1h5l3 3v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" strokeWidth="1.2" strokeLinejoin="round" />
+        <path
+          d="M3 1h5l3 3v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z"
+          strokeWidth="1.2"
+          strokeLinejoin="round"
+        />
         <path d="M8 1v3h3" strokeWidth="1.2" />
         <path d="M5 7.5h4M7 5.5v4" strokeWidth="1.3" strokeLinecap="round" />
         <path d="M5 11h4" strokeWidth="1.3" strokeLinecap="round" />
@@ -466,7 +561,9 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
 
   // Re-scan each time the dialog opens (don't keep stale lists after deletes
   // or closures from other surfaces).
-  useEffect(() => { if (open) refresh(); }, [open]);
+  useEffect(() => {
+    if (open) refresh();
+  }, [open]);
 
   const deleteAll = async () => {
     if (cleanup.status !== 'list' || !window.grove?.workspace) return;
@@ -477,7 +574,13 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
   };
 
   return (
-    <Dialog.Root open={open} onOpenChange={(e) => { if (!e.open) onClose(); }} placement="center">
+    <Dialog.Root
+      open={open}
+      onOpenChange={(e) => {
+        if (!e.open) onClose();
+      }}
+      placement="center"
+    >
       <Portal>
         <Dialog.Backdrop bg="rgba(0,0,0,0.5)" />
         <Dialog.Positioner>
@@ -492,16 +595,29 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
             display="flex"
             flexDirection="column"
           >
-            <Dialog.Header px="4" py="3" borderBottom="1px solid #30363d" display="flex" alignItems="center" justifyContent="space-between">
-              <Dialog.Title fontSize="14px" color="#f0f6fc" fontWeight="600">Settings</Dialog.Title>
+            <Dialog.Header
+              px="4"
+              py="3"
+              borderBottom="1px solid #30363d"
+              display="flex"
+              alignItems="center"
+              justifyContent="space-between"
+            >
+              <Dialog.Title fontSize="14px" color="#f0f6fc" fontWeight="600">
+                Settings
+              </Dialog.Title>
               <Dialog.CloseTrigger asChild>
                 <CloseButton size="sm" color="#7d8590" />
               </Dialog.CloseTrigger>
             </Dialog.Header>
             <Dialog.Body flex="1" overflowY="auto" px="4" py="3">
-              <Text fontSize="13px" color="#f0f6fc" fontWeight="600" mb="2">Appearance</Text>
+              <Text fontSize="13px" color="#f0f6fc" fontWeight="600" mb="2">
+                Appearance
+              </Text>
               <Flex align="center" gap="3" mb="2">
-                <Text fontSize="12px" color="#7d8590" w="80px" flexShrink={0}>Font family</Text>
+                <Text fontSize="12px" color="#7d8590" w="80px" flexShrink={0}>
+                  Font family
+                </Text>
                 <Box flex="1">
                   <NativeSelect.Root size="sm">
                     <NativeSelect.Field
@@ -513,7 +629,9 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
                       fontSize="12px"
                     >
                       {MONO_FONT_OPTIONS.map((opt) => (
-                        <option key={opt.label} value={opt.value}>{opt.label}</option>
+                        <option key={opt.label} value={opt.value}>
+                          {opt.label}
+                        </option>
                       ))}
                     </NativeSelect.Field>
                     <NativeSelect.Indicator color="#7d8590" />
@@ -521,7 +639,9 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
                 </Box>
               </Flex>
               <Flex align="center" gap="3" mb="4">
-                <Text fontSize="12px" color="#7d8590" w="80px" flexShrink={0}>Font size</Text>
+                <Text fontSize="12px" color="#7d8590" w="80px" flexShrink={0}>
+                  Font size
+                </Text>
                 <input
                   type="number"
                   min={8}
@@ -529,18 +649,26 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
                   value={monoFontSize}
                   onChange={(e) => setMonoFontSize(Number(e.target.value) || 13)}
                   style={{
-                    width: 64, background: '#0d1117', color: '#c9d1d9',
-                    border: '1px solid #30363d', borderRadius: 4,
-                    padding: '4px 8px', fontSize: 12,
+                    width: 64,
+                    background: '#0d1117',
+                    color: '#c9d1d9',
+                    border: '1px solid #30363d',
+                    borderRadius: 4,
+                    padding: '4px 8px',
+                    fontSize: 12,
                     outline: 'none',
                   }}
                 />
-                <Text fontSize="11px" color="#7d8590">px</Text>
+                <Text fontSize="11px" color="#7d8590">
+                  px
+                </Text>
                 <Box flex="1" />
                 <Text
                   color="#c9d1d9"
                   style={{
-                    fontFamily: monoFontFamily || "'Hack', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Menlo, Monaco, monospace",
+                    fontFamily:
+                      monoFontFamily ||
+                      "'Hack', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Menlo, Monaco, monospace",
                     fontSize: `${monoFontSize}px`,
                   }}
                 >
@@ -549,7 +677,9 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
               </Flex>
               <Box borderTop="1px solid #30363d" my="3" />
               <Flex align="center" justify="space-between" mb="2">
-                <Text fontSize="13px" color="#f0f6fc" fontWeight="600">Clean up Grove branches</Text>
+                <Text fontSize="13px" color="#f0f6fc" fontWeight="600">
+                  Clean up Grove branches
+                </Text>
                 {(cleanup.status === 'list' || cleanup.status === 'done') && (
                   <IconButton
                     aria-label="Refresh"
@@ -565,23 +695,59 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
                 )}
               </Flex>
               <Text fontSize="11px" color="#7d8590" mb="3">
-                Orphan grove/* branches and worktree directories with no live workspace backing them.
+                Orphan grove/* branches and worktree directories with no live workspace backing
+                them.
               </Text>
-              {cleanup.status === 'loading' && <Text fontSize="12px" color="#7d8590">Scanning…</Text>}
-              {cleanup.status === 'empty' && <Text fontSize="12px" color="#c9d1d9">Nothing to clean up.</Text>}
+              {cleanup.status === 'loading' && (
+                <Text fontSize="12px" color="#7d8590">
+                  Scanning…
+                </Text>
+              )}
+              {cleanup.status === 'empty' && (
+                <Text fontSize="12px" color="#c9d1d9">
+                  Nothing to clean up.
+                </Text>
+              )}
               {cleanup.status === 'list' && (
                 <>
-                  <Box border="1px solid #30363d" borderRadius="6px" maxH="280px" overflowY="auto" mb="3">
+                  <Box
+                    border="1px solid #30363d"
+                    borderRadius="6px"
+                    maxH="280px"
+                    overflowY="auto"
+                    mb="3"
+                  >
                     {cleanup.entries.map((e) => (
-                      <Flex key={`${e.repoRoot}\0${e.branch}`} px="3" py="2" borderBottom="1px solid #21262d" align="center" gap="2">
+                      <Flex
+                        key={`${e.repoRoot}\0${e.branch}`}
+                        px="3"
+                        py="2"
+                        borderBottom="1px solid #21262d"
+                        align="center"
+                        gap="2"
+                      >
                         <Box flex="1" minW="0">
-                          <Text fontSize="12px" color="#f0f6fc" fontFamily="var(--grove-mono)" truncate title={`${e.branch}\n${shortPath(e.repoRoot)}`}>
+                          <Text
+                            fontSize="12px"
+                            color="#f0f6fc"
+                            fontFamily="var(--grove-mono)"
+                            truncate
+                            title={`${e.branch}\n${shortPath(e.repoRoot)}`}
+                          >
                             {e.branch}
                           </Text>
-                          <Text fontSize="10px" color="#7d8590" truncate>{shortPath(e.repoRoot)}</Text>
+                          <Text fontSize="10px" color="#7d8590" truncate>
+                            {shortPath(e.repoRoot)}
+                          </Text>
                         </Box>
                         {e.worktreePath && (
-                          <Text fontSize="10px" color="#d29922" fontFamily="var(--grove-mono)" flexShrink={0} title={shortPath(e.worktreePath)}>
+                          <Text
+                            fontSize="10px"
+                            color="#d29922"
+                            fontFamily="var(--grove-mono)"
+                            flexShrink={0}
+                            title={shortPath(e.worktreePath)}
+                          >
                             orphan worktree
                           </Text>
                         )}
@@ -590,20 +756,39 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
                   </Box>
                   <button
                     onClick={deleteAll}
-                    style={{ background: 'transparent', border: '1px solid #30363d', color: '#c9d1d9', cursor: 'pointer', padding: '4px 12px', borderRadius: 4, fontSize: 12 }}
+                    style={{
+                      background: 'transparent',
+                      border: '1px solid #30363d',
+                      color: '#c9d1d9',
+                      cursor: 'pointer',
+                      padding: '4px 12px',
+                      borderRadius: 4,
+                      fontSize: 12,
+                    }}
                   >
-                    Delete {cleanup.entries.length} {cleanup.entries.length === 1 ? 'entry' : 'entries'}
+                    Delete {cleanup.entries.length}{' '}
+                    {cleanup.entries.length === 1 ? 'entry' : 'entries'}
                   </button>
                 </>
               )}
               {cleanup.status === 'done' && (
                 <>
-                  <Text fontSize="12px" color="#c9d1d9">Deleted {cleanup.deleted} branch{cleanup.deleted === 1 ? '' : 'es'}.</Text>
+                  <Text fontSize="12px" color="#c9d1d9">
+                    Deleted {cleanup.deleted} branch{cleanup.deleted === 1 ? '' : 'es'}.
+                  </Text>
                   {cleanup.errors.length > 0 && (
                     <Box mt="2">
-                      <Text fontSize="11px" color="#f85149" mb="1">{cleanup.errors.length} failed:</Text>
+                      <Text fontSize="11px" color="#f85149" mb="1">
+                        {cleanup.errors.length} failed:
+                      </Text>
                       {cleanup.errors.map((err) => (
-                        <Text key={err.branch} fontSize="10px" color="#7d8590" fontFamily="var(--grove-mono)" mb="0.5">
+                        <Text
+                          key={err.branch}
+                          fontSize="10px"
+                          color="#7d8590"
+                          fontFamily="var(--grove-mono)"
+                          mb="0.5"
+                        >
                           {err.branch} — {err.message}
                         </Text>
                       ))}
@@ -621,8 +806,19 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
 
 function SidebarToggleButton({ open, onClick }: { open: boolean; onClick: () => void }) {
   return (
-    <TitlebarIconButton active={open} title={open ? 'Hide sidebar (⌘\\)' : 'Show sidebar (⌘\\)'} onClick={onClick}>
-      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ display: 'block' }}>
+    <TitlebarIconButton
+      active={open}
+      title={open ? 'Hide sidebar (⌘\\)' : 'Show sidebar (⌘\\)'}
+      onClick={onClick}
+    >
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 18 18"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        style={{ display: 'block' }}
+      >
         <rect x="2" y="3" width="14" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
         <line x1="6.5" y1="3.5" x2="6.5" y2="14.5" stroke="currentColor" strokeWidth="1.3" />
         {open && <rect x="3" y="4" width="3" height="10" fill="currentColor" opacity="0.25" />}

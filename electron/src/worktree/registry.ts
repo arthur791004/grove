@@ -13,7 +13,8 @@ export interface WorktreeRecord {
 }
 
 // Path override is for tests; production reads the home-dir path.
-const REGISTRY_FILE = process.env.GROVE_WORKTREE_REGISTRY ?? path.join(os.homedir(), '.grove', 'worktrees.json');
+const REGISTRY_FILE =
+  process.env.GROVE_WORKTREE_REGISTRY ?? path.join(os.homedir(), '.grove', 'worktrees.json');
 
 let records: WorktreeRecord[] | null = null;
 
@@ -33,7 +34,11 @@ function persist() {
 // so registry paths and git's listing only match after both go through
 // realpath.
 function safeRealpath(p: string): string | null {
-  try { return fs.realpathSync(p); } catch { return null; }
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return null;
+  }
 }
 
 function selfHeal(rs: WorktreeRecord[]): WorktreeRecord[] {
@@ -44,9 +49,7 @@ function selfHeal(rs: WorktreeRecord[]): WorktreeRecord[] {
     if (!real) continue;
     let known = knownByRepo.get(r.repoRoot);
     if (!known) {
-      known = new Set(
-        listWorktreePaths(r.repoRoot).map((p) => safeRealpath(p) ?? p),
-      );
+      known = new Set(listWorktreePaths(r.repoRoot).map((p) => safeRealpath(p) ?? p));
       knownByRepo.set(r.repoRoot, known);
     }
     if (!known.has(real)) continue;
@@ -61,10 +64,13 @@ export function load(): WorktreeRecord[] {
   try {
     const text = fs.readFileSync(REGISTRY_FILE, 'utf8');
     const parsed = JSON.parse(text);
-    if (Array.isArray(parsed)) raw = parsed.filter((r) =>
-      r && typeof r.workspaceId === 'string' && typeof r.worktreePath === 'string',
-    );
-  } catch { /* missing or malformed — start empty */ }
+    if (Array.isArray(parsed))
+      raw = parsed.filter(
+        (r) => r && typeof r.workspaceId === 'string' && typeof r.worktreePath === 'string',
+      );
+  } catch {
+    /* missing or malformed — start empty */
+  }
   const healed = selfHeal(raw);
   records = healed;
   if (healed.length !== raw.length) persist();

@@ -14,7 +14,12 @@ addCollection(materialIcons as Parameters<typeof addCollection>[0]);
 // Module-level home-dir cache. Filled by the first /env/home call; lets the
 // frontend resolve `~/foo` paths to absolute without a per-render fetch.
 let cachedHome: string | null = null;
-fetch(`${API_BASE}/env/home`).then((r) => r.json()).then((j) => { cachedHome = j.home ?? null; }).catch(() => {});
+fetch(`${API_BASE}/env/home`)
+  .then((r) => r.json())
+  .then((j) => {
+    cachedHome = j.home ?? null;
+  })
+  .catch(() => {});
 
 function resolveTilde(p: string): string {
   if (!cachedHome) return p;
@@ -45,8 +50,15 @@ interface FileContentResponse {
   size: number;
   error: string | null;
 }
-interface SearchHit { path: string; abs: string }
-interface SearchResponse { cwdReady: boolean; root: string; results: SearchHit[] }
+interface SearchHit {
+  path: string;
+  abs: string;
+}
+interface SearchResponse {
+  cwdReady: boolean;
+  root: string;
+  results: SearchHit[];
+}
 
 const LIST_W = 240;
 // Below this many pixels of panel width, switch to single-pane master-detail
@@ -54,7 +66,10 @@ const LIST_W = 240;
 const NARROW_THRESHOLD = 520;
 const DIR_CACHE_MAX = 64;
 
-interface CacheEntry { ts: number; data: FilesResponse }
+interface CacheEntry {
+  ts: number;
+  data: FilesResponse;
+}
 
 function relativeToBase(filePath: string, base: string): string {
   if (base && filePath.startsWith(base + '/')) return filePath.slice(base.length + 1);
@@ -108,7 +123,11 @@ export function FileBrowserPanel({
     if (cache.size > DIR_CACHE_MAX) {
       let oldestKey: string | null = null;
       let oldestTs = Infinity;
-      for (const [k, v] of cache) if (v.ts < oldestTs) { oldestTs = v.ts; oldestKey = k; }
+      for (const [k, v] of cache)
+        if (v.ts < oldestTs) {
+          oldestTs = v.ts;
+          oldestKey = k;
+        }
       if (oldestKey) cache.delete(oldestKey);
     }
   }
@@ -127,7 +146,10 @@ export function FileBrowserPanel({
     dirCache.current.clear();
   }, [activeTabId, ctx?.shortCwd]);
 
-  useEffect(() => { setSelectedFile(null); setFileContent(null); }, [path]);
+  useEffect(() => {
+    setSelectedFile(null);
+    setFileContent(null);
+  }, [path]);
 
   // Wait for the shell to publish its cwd before fetching the default listing
   // — otherwise /files falls back to ~ and the user sees their home directory
@@ -136,9 +158,12 @@ export function FileBrowserPanel({
 
   useEffect(() => {
     if (!activeTabId || !cwdReady) return;
-    const cacheKey = `${activeTabId}::${path ?? ''}::${path ? '' : ctx?.shortCwd ?? ''}`;
+    const cacheKey = `${activeTabId}::${path ?? ''}::${path ? '' : (ctx?.shortCwd ?? '')}`;
     const cached = getCached(cacheKey);
-    if (cached) { setDir(cached); setDirError(null); }
+    if (cached) {
+      setDir(cached);
+      setDirError(null);
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -155,12 +180,18 @@ export function FileBrowserPanel({
         if (!cancelled) setDirError(String((err as Error).message || err));
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [activeTabId, path, cwdReady, ctx?.shortCwd]);
 
   useEffect(() => {
     const q = query.trim();
-    if (!q || !activeTabId) { setSearchResults(null); setSearching(false); return; }
+    if (!q || !activeTabId) {
+      setSearchResults(null);
+      setSearching(false);
+      return;
+    }
     setSearching(true);
     let cancelled = false;
     const id = setTimeout(async () => {
@@ -175,11 +206,18 @@ export function FileBrowserPanel({
         if (!cancelled) setSearching(false);
       }
     }, 120);
-    return () => { cancelled = true; clearTimeout(id); };
+    return () => {
+      cancelled = true;
+      clearTimeout(id);
+    };
   }, [activeTabId, query]);
 
   useEffect(() => {
-    if (!selectedFile || !activeTabId) { setFileContent(null); setFileLoading(false); return; }
+    if (!selectedFile || !activeTabId) {
+      setFileContent(null);
+      setFileLoading(false);
+      return;
+    }
     // Clear the previous file's content immediately so the user never sees an
     // unrelated preview flash while the new file is being fetched.
     setFileContent(null);
@@ -192,17 +230,25 @@ export function FileBrowserPanel({
         const json: FileContentResponse = await res.json();
         if (!cancelled) setFileContent(json);
       } catch (err) {
-        if (!cancelled) setFileContent({ content: null, truncated: false, size: 0, error: String((err as Error).message || err) });
+        if (!cancelled)
+          setFileContent({
+            content: null,
+            truncated: false,
+            size: 0,
+            error: String((err as Error).message || err),
+          });
       } finally {
         if (!cancelled) setFileLoading(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [activeTabId, selectedFile]);
 
   const workspaceCwd = useStore((s) => {
     const tab = s.tabs.find((t) => t.id === activeTabId);
-    return tab ? s.groups.find((g) => g.id === tab.groupId)?.cwd ?? null : null;
+    return tab ? (s.groups.find((g) => g.id === tab.groupId)?.cwd ?? null) : null;
   });
   const rows: ListRow[] = useMemo(() => {
     const out: ListRow[] = [];
@@ -213,7 +259,10 @@ export function FileBrowserPanel({
     const wsResolved = workspaceCwd ? resolveTilde(workspaceCwd) : null;
     const atWorkspaceRoot = wsResolved != null && dir?.cwd === wsResolved;
     if (dir?.parent && !atWorkspaceRoot) {
-      out.push({ kind: 'parent', entry: { name: '..', path: dir.parent, isDir: true, size: null, mtimeMs: 0 } });
+      out.push({
+        kind: 'parent',
+        entry: { name: '..', path: dir.parent, isDir: true, size: null, mtimeMs: 0 },
+      });
     }
     if (dir) for (const e of dir.entries) out.push({ kind: 'entry', entry: e });
     return out;
@@ -233,7 +282,9 @@ export function FileBrowserPanel({
     setFileLoading(true);
     if (isNarrow) setNarrowView('preview');
   }
-  function backToList() { setNarrowView('list'); }
+  function backToList() {
+    setNarrowView('list');
+  }
 
   // Honor cmd+click requests from terminal blocks. For directories we just
   // navigate. For files we navigate to the parent AND stash a `pendingSelect`
@@ -284,7 +335,12 @@ export function FileBrowserPanel({
         {isNarrow && narrowView === 'preview' ? (
           <HeaderIconButton title="Back to file list" onClick={backToList}>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
-              <path d="M7.5 2.5L3 6l4.5 3.5" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+              <path
+                d="M7.5 2.5L3 6l4.5 3.5"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
             </svg>
           </HeaderIconButton>
         ) : (
@@ -319,7 +375,10 @@ export function FileBrowserPanel({
             onClick={() => {
               const next = !searchOpen;
               setSearchOpen(next);
-              if (!next) { setQuery(''); setSearchResults(null); }
+              if (!next) {
+                setQuery('');
+                setSearchResults(null);
+              }
             }}
           >
             <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor">
@@ -332,10 +391,25 @@ export function FileBrowserPanel({
               title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
               onClick={toggleFullscreen}
             >
-              {fullscreen
-                ? <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M10 2L6.5 5.5M6.5 5.5V2.5M6.5 5.5H9.5M2 10l3.5-3.5M5.5 6.5v3M5.5 6.5h-3" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                : <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M7 2h3v3M10 2L6.5 5.5M5 10H2V7M2 10l3.5-3.5" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>
-              }
+              {fullscreen ? (
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
+                  <path
+                    d="M10 2L6.5 5.5M6.5 5.5V2.5M6.5 5.5H9.5M2 10l3.5-3.5M5.5 6.5v3M5.5 6.5h-3"
+                    strokeWidth="1.3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              ) : (
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
+                  <path
+                    d="M7 2h3v3M10 2L6.5 5.5M5 10H2V7M2 10l3.5-3.5"
+                    strokeWidth="1.3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              )}
             </HeaderIconButton>
           )}
           <HeaderIconButton title="Close" onClick={togglePanel}>
@@ -363,7 +437,11 @@ export function FileBrowserPanel({
                 value={query}
                 onChange={setQuery}
                 searching={searching}
-                onClose={() => { setSearchOpen(false); setQuery(''); setSearchResults(null); }}
+                onClose={() => {
+                  setSearchOpen(false);
+                  setQuery('');
+                  setSearchResults(null);
+                }}
               />
             )}
             <Box flex="1" minH="0" overflow="hidden">
@@ -377,17 +455,24 @@ export function FileBrowserPanel({
               ) : (
                 <>
                   {dirError && (
-                    <Text px="3" py="2" fontSize="12px" color="#f85149">{dirError}</Text>
+                    <Text px="3" py="2" fontSize="12px" color="#f85149">
+                      {dirError}
+                    </Text>
                   )}
                   {!dir && !dirError && (
                     <Flex h="100%" align="center" justify="center">
                       <span className="grove-sq-loader">
-                        <span /><span /><span /><span />
+                        <span />
+                        <span />
+                        <span />
+                        <span />
                       </span>
                     </Flex>
                   )}
                   {dir && rows.length === 0 && !dirError && (
-                    <Text px="3" py="2" fontSize="12px" color="#7d8590">Empty folder.</Text>
+                    <Text px="3" py="2" fontSize="12px" color="#7d8590">
+                      Empty folder.
+                    </Text>
                   )}
                   {rows.length > 0 && (
                     <Virtuoso
@@ -398,10 +483,14 @@ export function FileBrowserPanel({
                         return (
                           <FileRow
                             entry={r.entry}
-                            selected={r.kind === 'entry' && !r.entry.isDir && selectedFile === r.entry.path}
-                            onClick={r.entry.isDir
-                              ? () => setPath(r.entry.path)
-                              : () => selectFile(r.entry.path)}
+                            selected={
+                              r.kind === 'entry' && !r.entry.isDir && selectedFile === r.entry.path
+                            }
+                            onClick={
+                              r.entry.isDir
+                                ? () => setPath(r.entry.path)
+                                : () => selectFile(r.entry.path)
+                            }
                           />
                         );
                       }}
@@ -429,10 +518,20 @@ interface ListRow {
 }
 
 function SearchInput({
-  value, onChange, searching, onClose,
-}: { value: string; onChange: (v: string) => void; searching: boolean; onClose: () => void }) {
+  value,
+  onChange,
+  searching,
+  onClose,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  searching: boolean;
+  onClose: () => void;
+}) {
   const ref = useRef<HTMLInputElement | null>(null);
-  useEffect(() => { ref.current?.focus(); }, []);
+  useEffect(() => {
+    ref.current?.focus();
+  }, []);
   return (
     <Flex
       align="center"
@@ -443,7 +542,15 @@ function SearchInput({
       borderBottom="1px solid #21262d"
       bg="#0d1117"
     >
-      <Box w="12px" h="12px" color="#7d8590" flexShrink={0} display="inline-flex" alignItems="center" justifyContent="center">
+      <Box
+        w="12px"
+        h="12px"
+        color="#7d8590"
+        flexShrink={0}
+        display="inline-flex"
+        alignItems="center"
+        justifyContent="center"
+      >
         {searching ? (
           <span className="grove-sq-loader" />
         ) : (
@@ -457,7 +564,9 @@ function SearchInput({
         ref={ref}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onClose();
+        }}
         placeholder="Search files…"
         spellCheck={false}
         autoCorrect="off"
@@ -477,9 +586,18 @@ function SearchInput({
           onClick={() => onChange('')}
           title="Clear"
           style={{
-            background: 'transparent', border: 'none', color: '#7d8590',
-            cursor: 'pointer', padding: 0, width: 16, height: 16, borderRadius: 3,
-            display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+            background: 'transparent',
+            border: 'none',
+            color: '#7d8590',
+            cursor: 'pointer',
+            padding: 0,
+            width: 16,
+            height: 16,
+            borderRadius: 3,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
           }}
         >
           <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor">
@@ -492,7 +610,10 @@ function SearchInput({
 }
 
 function SearchResults({
-  results, searching, selectedFile, onPick,
+  results,
+  searching,
+  selectedFile,
+  onPick,
 }: {
   results: SearchHit[] | null;
   searching: boolean;
@@ -503,13 +624,20 @@ function SearchResults({
     return (
       <Flex h="100%" align="center" justify="center">
         <span className="grove-sq-loader">
-          <span /><span /><span /><span />
+          <span />
+          <span />
+          <span />
+          <span />
         </span>
       </Flex>
     );
   }
   if (results !== null && results.length === 0) {
-    return <Text px="3" py="2" fontSize="12px" color="#7d8590">No matches.</Text>;
+    return (
+      <Text px="3" py="2" fontSize="12px" color="#7d8590">
+        No matches.
+      </Text>
+    );
   }
   if (!results) return null;
   return (
@@ -533,11 +661,29 @@ function SearchResults({
             _hover={{ bg: selectedFile === r.abs ? '#1f6feb44' : '#161b22' }}
             onClick={() => onPick(r.abs)}
           >
-            <Box w="14px" h="14px" flexShrink={0} display="inline-flex" alignItems="center" justifyContent="center">
-              <Icon icon={iconNameForFile(r.path.split('/').pop() || r.path)} width="14" height="14" style={{ display: 'block' }} />
+            <Box
+              w="14px"
+              h="14px"
+              flexShrink={0}
+              display="inline-flex"
+              alignItems="center"
+              justifyContent="center"
+            >
+              <Icon
+                icon={iconNameForFile(r.path.split('/').pop() || r.path)}
+                width="14"
+                height="14"
+                style={{ display: 'block' }}
+              />
             </Box>
             <Box flex="1" minW="0">
-              <Text fontFamily="var(--grove-mono)" fontSize="12px" color="#c9d1d9" truncate title={r.path}>
+              <Text
+                fontFamily="var(--grove-mono)"
+                fontSize="12px"
+                color="#c9d1d9"
+                truncate
+                title={r.path}
+              >
                 {name}
               </Text>
               {dir && (
@@ -553,11 +699,21 @@ function SearchResults({
   );
 }
 
-function FilePreview({ file, content, loading }: { file: string | null; content: FileContentResponse | null; loading: boolean }) {
+function FilePreview({
+  file,
+  content,
+  loading,
+}: {
+  file: string | null;
+  content: FileContentResponse | null;
+  loading: boolean;
+}) {
   if (!file) {
     return (
       <Flex h="100%" align="center" justify="center" px="4">
-        <Text fontSize="12px" color="#7d8590">Select a file to preview</Text>
+        <Text fontSize="12px" color="#7d8590">
+          Select a file to preview
+        </Text>
       </Flex>
     );
   }
@@ -565,7 +721,10 @@ function FilePreview({ file, content, loading }: { file: string | null; content:
     return (
       <Flex h="100%" align="center" justify="center">
         <span className="grove-sq-loader">
-          <span /><span /><span /><span />
+          <span />
+          <span />
+          <span />
+          <span />
         </span>
       </Flex>
     );
@@ -573,7 +732,9 @@ function FilePreview({ file, content, loading }: { file: string | null; content:
   if (content?.error) {
     return (
       <Flex h="100%" align="center" justify="center" px="4">
-        <Text fontSize="12px" color="#f85149">{content.error}</Text>
+        <Text fontSize="12px" color="#f85149">
+          {content.error}
+        </Text>
       </Flex>
     );
   }
@@ -646,17 +807,28 @@ function renderWithWhitespace(s: string): React.ReactNode {
   if (s.indexOf('\t') === -1 && s.indexOf(' ') === -1) return s;
   const parts: React.ReactNode[] = [];
   let buf = '';
-  const flush = () => { if (buf) { parts.push(buf); buf = ''; } };
+  const flush = () => {
+    if (buf) {
+      parts.push(buf);
+      buf = '';
+    }
+  };
   for (let i = 0; i < s.length; i++) {
     const c = s[i];
     if (c === '\t') {
       flush();
       parts.push(
-        <span key={`t${i}`} style={{ color: '#30363d' }}>→{'\t'}</span>,
+        <span key={`t${i}`} style={{ color: '#30363d' }}>
+          →{'\t'}
+        </span>,
       );
     } else if (c === ' ') {
       flush();
-      parts.push(<span key={`s${i}`} style={{ color: '#21262d' }}>·</span>);
+      parts.push(
+        <span key={`s${i}`} style={{ color: '#21262d' }}>
+          ·
+        </span>,
+      );
     } else {
       buf += c;
     }
@@ -673,7 +845,8 @@ function detectLanguage(file: string | null): Language {
   if (lower.endsWith('.tsx')) return 'tsx';
   if (lower.endsWith('.ts')) return 'typescript';
   if (lower.endsWith('.jsx')) return 'jsx';
-  if (lower.endsWith('.js') || lower.endsWith('.mjs') || lower.endsWith('.cjs')) return 'javascript';
+  if (lower.endsWith('.js') || lower.endsWith('.mjs') || lower.endsWith('.cjs'))
+    return 'javascript';
   if (lower.endsWith('.json')) return 'json';
   if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown';
   if (lower.endsWith('.py')) return 'python';
@@ -699,7 +872,9 @@ function detectLanguage(file: string | null): Language {
 }
 
 function FileRow({
-  entry, onClick, selected,
+  entry,
+  onClick,
+  selected,
 }: {
   entry: FileEntry;
   onClick?: () => void;
@@ -717,10 +892,24 @@ function FileRow({
       _hover={onClick ? { bg: selected ? '#1f6feb44' : '#161b22' } : undefined}
       onClick={onClick}
     >
-      <Box w="14px" h="14px" flexShrink={0} display="inline-flex" alignItems="center" justifyContent="center">
-        {entry.isDir
-          ? <FolderIcon />
-          : <Icon icon={iconNameForFile(entry.name)} width="14" height="14" style={{ display: 'block' }} />}
+      <Box
+        w="14px"
+        h="14px"
+        flexShrink={0}
+        display="inline-flex"
+        alignItems="center"
+        justifyContent="center"
+      >
+        {entry.isDir ? (
+          <FolderIcon />
+        ) : (
+          <Icon
+            icon={iconNameForFile(entry.name)}
+            width="14"
+            height="14"
+            style={{ display: 'block' }}
+          />
+        )}
       </Box>
       <Text
         flex="1"
@@ -736,10 +925,17 @@ function FileRow({
   );
 }
 
-
 function HeaderIconButton({
-  children, title, onClick, active,
-}: { children: React.ReactNode; title: string; onClick: () => void; active?: boolean }) {
+  children,
+  title,
+  onClick,
+  active,
+}: {
+  children: React.ReactNode;
+  title: string;
+  onClick: () => void;
+  active?: boolean;
+}) {
   const [hover, setHover] = useState(false);
   const bg = active ? '#30363d' : hover ? '#21262d' : 'transparent';
   return (
@@ -771,8 +967,19 @@ function HeaderIconButton({
 
 function FolderIcon() {
   return (
-    <svg width="14" height="12" viewBox="0 0 14 12" fill="none" stroke="#79c0ff" style={{ display: 'block' }}>
-      <path d="M1 2.5a1 1 0 0 1 1-1h3.5l1.5 1.5h5a1 1 0 0 1 1 1V10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2.5z" strokeWidth="1.1" strokeLinejoin="round" />
+    <svg
+      width="14"
+      height="12"
+      viewBox="0 0 14 12"
+      fill="none"
+      stroke="#79c0ff"
+      style={{ display: 'block' }}
+    >
+      <path
+        d="M1 2.5a1 1 0 0 1 1-1h3.5l1.5 1.5h5a1 1 0 0 1 1 1V10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2.5z"
+        strokeWidth="1.1"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
@@ -802,11 +1009,11 @@ function iconNameForFile(name: string): string {
     '.eslintrc.json': 'eslint',
     '.prettierrc': 'prettier',
     '.prettierrc.json': 'prettier',
-    'dockerfile': 'docker',
+    dockerfile: 'docker',
     '.dockerignore': 'docker',
     'docker-compose.yml': 'docker',
     'docker-compose.yaml': 'docker',
-    'makefile': 'makefile',
+    makefile: 'makefile',
     '.gitignore': 'git',
     '.gitattributes': 'git',
     '.gitmodules': 'git',
@@ -814,17 +1021,17 @@ function iconNameForFile(name: string): string {
     '.npmrc': 'npm',
     '.nvmrc': 'nodejs',
     'readme.md': 'readme',
-    'license': 'certificate',
+    license: 'certificate',
     'license.md': 'certificate',
     'cargo.toml': 'rust',
     'cargo.lock': 'rust',
     'go.mod': 'go',
     'go.sum': 'go',
-    'gemfile': 'ruby',
+    gemfile: 'ruby',
     'gemfile.lock': 'ruby',
     'pyproject.toml': 'python',
     'requirements.txt': 'python',
-    'pipfile': 'python',
+    pipfile: 'python',
     'pipfile.lock': 'python',
   };
   if (fullMap[lower]) return `material-icon-theme:${fullMap[lower]}`;
@@ -834,41 +1041,108 @@ function iconNameForFile(name: string): string {
 
   const ext = lower.includes('.') ? lower.slice(lower.lastIndexOf('.') + 1) : '';
   const extMap: Record<string, string> = {
-    ts: 'typescript', tsx: 'react-ts',
-    js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'react',
-    json: 'json', jsonl: 'json', json5: 'json',  // jsonl/json5 fall back to json
-    yaml: 'yaml', yml: 'yaml', toml: 'settings', ini: 'settings',
-    md: 'markdown', markdown: 'markdown', mdx: 'mdx',
-    py: 'python', pyc: 'python', pyi: 'python', ipynb: 'jupyter',
-    rb: 'ruby', erb: 'ruby',
+    ts: 'typescript',
+    tsx: 'react-ts',
+    js: 'javascript',
+    mjs: 'javascript',
+    cjs: 'javascript',
+    jsx: 'react',
+    json: 'json',
+    jsonl: 'json',
+    json5: 'json', // jsonl/json5 fall back to json
+    yaml: 'yaml',
+    yml: 'yaml',
+    toml: 'settings',
+    ini: 'settings',
+    md: 'markdown',
+    markdown: 'markdown',
+    mdx: 'mdx',
+    py: 'python',
+    pyc: 'python',
+    pyi: 'python',
+    ipynb: 'jupyter',
+    rb: 'ruby',
+    erb: 'ruby',
     go: 'go',
     rs: 'rust',
-    java: 'java', kt: 'kotlin', kts: 'kotlin', scala: 'scala',
+    java: 'java',
+    kt: 'kotlin',
+    kts: 'kotlin',
+    scala: 'scala',
     swift: 'swift',
-    cs: 'csharp', fs: 'fsharp', fsi: 'fsharp',
-    c: 'c', h: 'h',
-    cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'hpp',
-    php: 'php', blade: 'php',
+    cs: 'csharp',
+    fs: 'fsharp',
+    fsi: 'fsharp',
+    c: 'c',
+    h: 'h',
+    cpp: 'cpp',
+    cc: 'cpp',
+    cxx: 'cpp',
+    hpp: 'hpp',
+    php: 'php',
+    blade: 'php',
     lua: 'lua',
     dart: 'dart',
-    vue: 'vue', svelte: 'svelte', elm: 'elm',
-    ex: 'elixir', exs: 'elixir',
-    erl: 'erlang', hrl: 'erlang',
+    vue: 'vue',
+    svelte: 'svelte',
+    elm: 'elm',
+    ex: 'elixir',
+    exs: 'elixir',
+    erl: 'erlang',
+    hrl: 'erlang',
     r: 'r',
     sql: 'database',
-    graphql: 'graphql', gql: 'graphql',
-    html: 'html', htm: 'html', xml: 'xml', svg: 'svg',
-    css: 'css', scss: 'sass', sass: 'sass', less: 'less', postcss: 'postcss',
-    sh: 'console', bash: 'console', zsh: 'console', fish: 'console',
+    graphql: 'graphql',
+    gql: 'graphql',
+    html: 'html',
+    htm: 'html',
+    xml: 'xml',
+    svg: 'svg',
+    css: 'css',
+    scss: 'sass',
+    sass: 'sass',
+    less: 'less',
+    postcss: 'postcss',
+    sh: 'console',
+    bash: 'console',
+    zsh: 'console',
+    fish: 'console',
     ps1: 'powershell',
-    csv: 'table', tsv: 'table', xlsx: 'table', xls: 'table',
-    png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', webp: 'image', ico: 'image', avif: 'image', bmp: 'image',
-    mp3: 'audio', wav: 'audio', flac: 'audio', ogg: 'audio',
-    mp4: 'video', mov: 'video', webm: 'video', mkv: 'video',
+    csv: 'table',
+    tsv: 'table',
+    xlsx: 'table',
+    xls: 'table',
+    png: 'image',
+    jpg: 'image',
+    jpeg: 'image',
+    gif: 'image',
+    webp: 'image',
+    ico: 'image',
+    avif: 'image',
+    bmp: 'image',
+    mp3: 'audio',
+    wav: 'audio',
+    flac: 'audio',
+    ogg: 'audio',
+    mp4: 'video',
+    mov: 'video',
+    webm: 'video',
+    mkv: 'video',
     pdf: 'pdf',
-    zip: 'zip', tar: 'zip', gz: 'zip', bz2: 'zip', '7z': 'zip', rar: 'zip', dmg: 'zip',
-    woff: 'font', woff2: 'font', ttf: 'font', otf: 'font', eot: 'font',
-    txt: 'document', log: 'log',
+    zip: 'zip',
+    tar: 'zip',
+    gz: 'zip',
+    bz2: 'zip',
+    '7z': 'zip',
+    rar: 'zip',
+    dmg: 'zip',
+    woff: 'font',
+    woff2: 'font',
+    ttf: 'font',
+    otf: 'font',
+    eot: 'font',
+    txt: 'document',
+    log: 'log',
   };
   if (extMap[ext]) return `material-icon-theme:${extMap[ext]}`;
   return 'material-icon-theme:document';

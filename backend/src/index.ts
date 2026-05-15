@@ -21,8 +21,11 @@ const PORT = Number(process.env.GROVE_BACKEND_PORT ?? 4317);
 const parentPid = process.ppid;
 if (parentPid && parentPid !== 1) {
   setInterval(() => {
-    try { process.kill(parentPid, 0); }
-    catch { process.exit(0); }
+    try {
+      process.kill(parentPid, 0);
+    } catch {
+      process.exit(0);
+    }
   }, 2000).unref();
 }
 

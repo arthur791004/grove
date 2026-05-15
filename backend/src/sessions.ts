@@ -130,7 +130,10 @@ function emitWithClearDetect(session: Session, text: string) {
     }
     broadcast(session, { type: 'output', data: s });
   }
-  if (text.indexOf('\x1b') === -1) { pushOutput(text); return; }
+  if (text.indexOf('\x1b') === -1) {
+    pushOutput(text);
+    return;
+  }
   let rest = text;
   while (true) {
     const m = CLEAR_SEQ.exec(rest);
@@ -149,12 +152,22 @@ function emitWithClearDetect(session: Session, text: string) {
   pushOutput(sanitize(rest));
 }
 
-interface BlockPre { kind: 'pre'; cmd: string; cwd: string }
-interface BlockPost { kind: 'post'; exit: number; durationMs: number }
+interface BlockPre {
+  kind: 'pre';
+  cmd: string;
+  cwd: string;
+}
+interface BlockPost {
+  kind: 'post';
+  exit: number;
+  durationMs: number;
+}
 type BlockEvent = BlockPre | BlockPost;
 
 function send(ws: WSLike, payload: unknown) {
-  try { ws.send(JSON.stringify(payload)); } catch {}
+  try {
+    ws.send(JSON.stringify(payload));
+  } catch {}
 }
 
 // Coalesce burst pushes (OSC 7 + env + block-end can all fire in the same
@@ -205,16 +218,19 @@ function buildCtx(session: Session) {
 function pushCtx(session: Session) {
   const existing = ctxDebounce.get(session.tabId);
   if (existing) clearTimeout(existing);
-  ctxDebounce.set(session.tabId, setTimeout(() => {
-    ctxDebounce.delete(session.tabId);
-    if (!sessions.has(session.tabId)) return;
-    try {
-      const ctx = buildCtx(session);
-      broadcast(session, { type: 'ctx', ctx });
-    } catch (err) {
-      console.error('[grove] failed to build ctx', err);
-    }
-  }, 150));
+  ctxDebounce.set(
+    session.tabId,
+    setTimeout(() => {
+      ctxDebounce.delete(session.tabId);
+      if (!sessions.has(session.tabId)) return;
+      try {
+        const ctx = buildCtx(session);
+        broadcast(session, { type: 'ctx', ctx });
+      } catch (err) {
+        console.error('[grove] failed to build ctx', err);
+      }
+    }, 150),
+  );
 }
 
 function broadcast(session: Session, payload: unknown) {
@@ -226,13 +242,19 @@ function decodeMarker(kind: 'pre' | 'post', body: string): BlockEvent | null {
     const [b64, ...cwdParts] = body.split(';');
     const cwd = cwdParts.join(';');
     let cmd = '';
-    try { cmd = Buffer.from(b64, 'base64').toString('utf8'); } catch {}
+    try {
+      cmd = Buffer.from(b64, 'base64').toString('utf8');
+    } catch {}
     return { kind: 'pre', cmd, cwd };
   } else {
     const [exitStr, durStr] = body.split(';');
     const exit = parseInt(exitStr, 10);
     const dur = parseFloat(durStr) * 1000;
-    return { kind: 'post', exit: Number.isFinite(exit) ? exit : 0, durationMs: Number.isFinite(dur) ? dur : 0 };
+    return {
+      kind: 'post',
+      exit: Number.isFinite(exit) ? exit : 0,
+      durationMs: Number.isFinite(dur) ? dur : 0,
+    };
   }
 }
 
@@ -286,7 +308,13 @@ function processChunk(session: Session, chunk: string) {
     const event = decodeMarker(found[1] as 'pre' | 'post', found[2]);
     if (event) {
       if (event.kind === 'pre') {
-        const rec: BlockRecord = { cmd: event.cmd, cwd: event.cwd, output: '', exit: null, durationMs: null };
+        const rec: BlockRecord = {
+          cmd: event.cmd,
+          cwd: event.cwd,
+          output: '',
+          exit: null,
+          durationMs: null,
+        };
         session.blocks.push(rec);
         if (session.blocks.length > MAX_BLOCKS) session.blocks.shift();
         session.currentBlock = rec;
@@ -365,13 +393,18 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
 
   term.onData((data) => {
     session.rawBuffer += data;
-    if (session.rawBuffer.length > MAX_BUFFER) session.rawBuffer = session.rawBuffer.slice(-MAX_BUFFER);
+    if (session.rawBuffer.length > MAX_BUFFER)
+      session.rawBuffer = session.rawBuffer.slice(-MAX_BUFFER);
     broadcast(session, { type: 'raw', data });
     processChunk(session, data);
   });
 
   term.onExit(() => {
-    for (const sub of session.subscribers) { try { sub.close(); } catch {} }
+    for (const sub of session.subscribers) {
+      try {
+        sub.close();
+      } catch {}
+    }
     sessions.delete(tabId);
   });
 
@@ -387,20 +420,31 @@ const KILL_ESCALATE_MS = 500;
 
 export function destroySession(tabId: string): void {
   const s = sessions.get(tabId);
-  if (!s) { deleteBlocks(tabId); return; }
+  if (!s) {
+    deleteBlocks(tabId);
+    return;
+  }
   // Remove from the map first so the onExit handler we wired in
   // getOrCreateSession can't race with us and try to clean up twice.
   sessions.delete(tabId);
-  for (const sub of s.subscribers) { try { sub.close(); } catch {} }
+  for (const sub of s.subscribers) {
+    try {
+      sub.close();
+    } catch {}
+  }
   s.subscribers.clear();
-  try { s.pty.kill('SIGHUP'); } catch {}
+  try {
+    s.pty.kill('SIGHUP');
+  } catch {}
   setTimeout(() => {
     try {
       // kill -0 throws ESRCH if the process is already gone — in that case
       // there's nothing to escalate to and node-pty has already closed the
       // master fd via its own onExit.
       process.kill(s.pty.pid, 0);
-      try { s.pty.kill('SIGKILL'); } catch {}
+      try {
+        s.pty.kill('SIGKILL');
+      } catch {}
     } catch {}
   }, KILL_ESCALATE_MS).unref();
   deleteBlocks(tabId);
@@ -413,7 +457,11 @@ export function writeInput(tabId: string, data: string): void {
 export function resizeSession(tabId: string, cols: number, rows: number): void {
   const s = sessions.get(tabId);
   if (!s) return;
-  try { s.pty.resize(cols, rows); s.cols = cols; s.rows = rows; } catch {}
+  try {
+    s.pty.resize(cols, rows);
+    s.cols = cols;
+    s.rows = rows;
+  } catch {}
 }
 
 export function subscribe(tabId: string, ws: WSLike, cwd?: string): () => void {
@@ -423,7 +471,9 @@ export function subscribe(tabId: string, ws: WSLike, cwd?: string): () => void {
   } catch (err) {
     if (err instanceof SessionLimitError) {
       send(ws, { type: 'fatal', reason: 'session-limit', message: err.message, limit: err.limit });
-      try { ws.close(); } catch {}
+      try {
+        ws.close();
+      } catch {}
       return () => {};
     }
     throw err;
@@ -434,13 +484,16 @@ export function subscribe(tabId: string, ws: WSLike, cwd?: string): () => void {
   for (const b of s.blocks) {
     send(ws, { type: 'block-start', cmd: b.cmd, cwd: b.cwd });
     if (b.output) send(ws, { type: 'output', data: b.output });
-    if (b.exit !== null) send(ws, { type: 'block-end', exit: b.exit, durationMs: b.durationMs ?? 0 });
+    if (b.exit !== null)
+      send(ws, { type: 'block-end', exit: b.exit, durationMs: b.durationMs ?? 0 });
   }
   if (s.rawBuffer) send(ws, { type: 'raw', data: s.rawBuffer });
   // Send the current ctx (if any) so the new subscriber's chips populate
   // immediately instead of waiting for the next OSC 7 / env / block-end tick.
   if (s.env && Object.keys(s.env).length > 0) pushCtx(s);
-  return () => { s.subscribers.delete(ws); };
+  return () => {
+    s.subscribers.delete(ws);
+  };
 }
 
 export function sessionCwd(tabId: string): string | null {

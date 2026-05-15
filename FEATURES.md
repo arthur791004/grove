@@ -6,6 +6,7 @@ macOS only. Single window. Dark theme only. The granular tracking doc behind
 ## Done
 
 ### Terminal & layout
+
 - [x] Vertical sidebar with grouped tabs (named, drag between groups via dnd-kit)
 - [x] Sidebar toggle button + ⌘\ shortcut
 - [x] Draggable window region (titleBarStyle: hiddenInset)
@@ -21,6 +22,7 @@ macOS only. Single window. Dark theme only. The granular tracking doc behind
       block and capture exit code + duration without polling
 
 ### Blocks UI
+
 - [x] Each command + output renders as a block: header chips (node, cwd, branch, duration)
       then bolded command then ANSI-colored output
 - [x] Full ANSI SGR support: bold/italic/underline/inverse/strike, 8/16/256/RGB
@@ -32,6 +34,7 @@ macOS only. Single window. Dark theme only. The granular tracking doc behind
 - [x] `clear` and other CSI reset sequences wipe block list
 
 ### Clickable output
+
 - [x] OSC 8 hyperlinks rendered as clickable spans
 - [x] Path-like tokens (`src/App.tsx:10:5`, `./foo/bar`, `~/x`) auto-linkified, open
       in Files panel via `/file/resolve`
@@ -39,6 +42,7 @@ macOS only. Single window. Dark theme only. The granular tracking doc behind
 - [x] ⌘-click semantics so accidental drags don't navigate
 
 ### Right-side panels
+
 - [x] Three mutually-exclusive panels, ~40% of content width, toggled per tab:
       Browser / Files / Diff
 - [x] **Files** — virtualized browser, `git ls-files` aware in repos with a
@@ -50,6 +54,7 @@ macOS only. Single window. Dark theme only. The granular tracking doc behind
       recents, Chrome-style error page on connection failure
 
 ### Input ergonomics
+
 - [x] Inline ghost-text autocomplete (gray suggestion after cursor + Tab keycap chip)
 - [x] Suggestion sources, in priority: in-session history → server contextual → server defaults
 - [x] Contextual completions via backend `/complete`: `cd` dirs, `ls/cat/...` files,
@@ -61,6 +66,7 @@ macOS only. Single window. Dark theme only. The granular tracking doc behind
 - [x] Footer click-to-focus the prompt; auto-focus on tab switch
 
 ### Tab management
+
 - [x] CRUD (new/close/rename/reorder), drag between groups
 - [x] Tab colors (7-color palette)
 - [x] Keyboard shortcuts: ⌘T, ⌘W, ⌘1..9, ⌘⇧[/], ⌘P, ⌘\
@@ -69,6 +75,7 @@ macOS only. Single window. Dark theme only. The granular tracking doc behind
 - [x] PTY resize on tab/panel reflow (raw-mode TUIs see correct cols/rows)
 
 ### Persistence & infra
+
 - [x] Block history persisted to `~/.grove/blocks/{tabId}.json`, survives restarts
 - [x] Origin-independent UI state at `userData/grove-state.json` (tabs, panels,
       recents) — survives the dev (http://) → packaged (grove://) origin change
@@ -87,6 +94,7 @@ macOS only. Single window. Dark theme only. The granular tracking doc behind
 Mirrors the README — granular subtasks where useful.
 
 ### 🚧 Real embedded browser (WebContentsView)
+
 - [ ] Replace iframe with Electron `WebContentsView` per Browser-panel instance
 - [ ] WebAuthn / security-key support for 2FA on staging+prod
 - [ ] Chrome extensions via `electron-chrome-extensions` (1Password, etc.)
@@ -94,6 +102,7 @@ Mirrors the README — granular subtasks where useful.
 - [ ] Real `setZoomFactor` viewport scaling (replace CSS transform hack)
 
 ### 🚧 Git worktree as a first-class concept
+
 - [ ] Workspace == worktree: one repo, many branches checked out at once
 - [ ] `Cmd+T` on a repo tab → "new worktree from branch" flow (wraps `git worktree add`)
 - [ ] Per-worktree port range
@@ -101,6 +110,7 @@ Mirrors the README — granular subtasks where useful.
 - [ ] Cleanup prompt to prune worktrees whose branch is gone
 
 ### 🚧 Claude Code as the default shell
+
 - [ ] Tab launches into Claude Code agentic session by default
 - [ ] Preserve repo context + shell aliases
 - [ ] Drop to raw zsh with `⌘\`
@@ -108,11 +118,13 @@ Mirrors the README — granular subtasks where useful.
 - [ ] Decide: default vs. opt-in mode
 
 ### 🚧 Ask Claude on every block
+
 - [ ] Right-click → Ask Claude
 - [ ] Ships command + output + exit code + cwd + branch + env in one payload
 - [ ] First-class block-context schema (reused by block sharing below)
 
 ### 🚧 Block sharing
+
 - [ ] One-click "share" produces a paste-ready snippet
 - [ ] Bug-report-quality dump variant (full env, exit, full output)
 
@@ -138,6 +150,7 @@ Older Tier-2/3 items worth keeping on the list.
 - [ ] **Tab templates / workflows** — saved cmd snippets with `{{param}}` substitution
 
 ### Explicitly skipped
+
 Cloud sessions, Warp Drive, SSH first-class UI, GPU renderer, broadcast input,
 vim mode in the input field, multi-window, settings UI, light theme, theme
 picker, font picker, cross-platform (macOS only by design for now).

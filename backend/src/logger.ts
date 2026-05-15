@@ -14,13 +14,13 @@ function write(line: string) {
   try {
     fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
     fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${line}\n`);
-  } catch { /* logging must never throw */ }
+  } catch {
+    /* logging must never throw */
+  }
 }
 
 function format(args: unknown[]): string {
-  return args
-    .map((a) => (typeof a === 'string' ? a : inspect(a, { depth: 3 })))
-    .join(' ');
+  return args.map((a) => (typeof a === 'string' ? a : inspect(a, { depth: 3 }))).join(' ');
 }
 
 export function setupBackendLogging(): void {
@@ -29,7 +29,9 @@ export function setupBackendLogging(): void {
     if (fs.statSync(LOG_FILE).size > 5_000_000) {
       fs.renameSync(LOG_FILE, LOG_FILE + '.old');
     }
-  } catch { /* file may not exist yet */ }
+  } catch {
+    /* file may not exist yet */
+  }
   write(`--- backend session start (node ${process.versions.node}) ---`);
 
   for (const method of ['error', 'warn'] as const) {
@@ -45,6 +47,8 @@ export function setupBackendLogging(): void {
     process.exit(1);
   });
   process.on('unhandledRejection', (reason) => {
-    write(`[backend] unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}`);
+    write(
+      `[backend] unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}`,
+    );
   });
 }

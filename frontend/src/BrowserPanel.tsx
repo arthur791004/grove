@@ -35,7 +35,7 @@ export function BrowserPanel({
   // its own set of URLs.
   const groupCwd = useStore((s) => {
     const tab = s.tabs.find((t) => t.id === s.activeTabId);
-    return tab ? s.groups.find((g) => g.id === tab.groupId)?.cwd ?? '' : '';
+    return tab ? (s.groups.find((g) => g.id === tab.groupId)?.cwd ?? '') : '';
   });
   const history = useStore((s) => s.browserHistory.filter((h) => h.cwd === groupCwd));
 
@@ -49,11 +49,19 @@ export function BrowserPanel({
   const MOBILE_WIDTH = 390; // iPhone 14/15 logical width
   const DESKTOP_WIDTH = 1280; // logical desktop viewport kept regardless of panel width
 
-  const reload = () => { window.grove?.browser?.reload(); };
-  const goBack = () => { window.grove?.browser?.back(); };
-  const goForward = () => { window.grove?.browser?.forward(); };
+  const reload = () => {
+    window.grove?.browser?.reload();
+  };
+  const goBack = () => {
+    window.grove?.browser?.back();
+  };
+  const goForward = () => {
+    window.grove?.browser?.forward();
+  };
 
-  useEffect(() => { setAddr(url ?? ''); }, [url]);
+  useEffect(() => {
+    setAddr(url ?? '');
+  }, [url]);
 
   const [frameError, setFrameError] = useState<{ code: number; message: string } | null>(null);
   const [navState, setNavState] = useState({ canGoBack: false, canGoForward: false });
@@ -66,11 +74,21 @@ export function BrowserPanel({
   useEffect(() => {
     const b = window.grove?.browser;
     if (!b) return;
-    const offNav = b.onNav((u) => { setAddr(u); setFrameError(null); });
+    const offNav = b.onNav((u) => {
+      setAddr(u);
+      setFrameError(null);
+    });
     const offNavState = b.onNavState(setNavState);
     const offFail = b.onFail((info) => setFrameError({ code: info.code, message: info.message }));
-    const offLoading = b.onLoading((loading) => { if (loading) setFrameError(null); });
-    return () => { offNav(); offNavState(); offFail(); offLoading(); };
+    const offLoading = b.onLoading((loading) => {
+      if (loading) setFrameError(null);
+    });
+    return () => {
+      offNav();
+      offNavState();
+      offFail();
+      offLoading();
+    };
   }, []);
   useEffect(() => {
     setFrameError(null);
@@ -85,7 +103,12 @@ export function BrowserPanel({
     if (url) b.open(url);
     else b.close();
   }, [url]);
-  useEffect(() => () => { window.grove?.browser?.close(); }, []);
+  useEffect(
+    () => () => {
+      window.grove?.browser?.close();
+    },
+    [],
+  );
 
   // The view is an OS-compositor layer above the DOM — it can't be positioned
   // with CSS. Instead we mirror the placeholder Box's screen rect into the
@@ -108,9 +131,8 @@ export function BrowserPanel({
         const isMobile = viewport === 'mobile';
         const width = isMobile ? Math.min(MOBILE_WIDTH, r.width) : r.width;
         const x = r.left + (isMobile ? (r.width - width) / 2 : 0);
-        const zoom = !isMobile && r.width < DESKTOP_WIDTH && r.width > 0
-          ? r.width / DESKTOP_WIDTH
-          : 1;
+        const zoom =
+          !isMobile && r.width < DESKTOP_WIDTH && r.width > 0 ? r.width / DESKTOP_WIDTH : 1;
         const key = `${Math.round(x)}|${Math.round(r.top)}|${Math.round(width)}|${Math.round(r.height)}|${zoom.toFixed(3)}`;
         if (key !== lastKey) {
           lastKey = key;
@@ -142,7 +164,9 @@ export function BrowserPanel({
     }
   }, [activeTabId]);
 
-  useEffect(() => { fetchServices(); }, [fetchServices, refreshNonce]);
+  useEffect(() => {
+    fetchServices();
+  }, [fetchServices, refreshNonce]);
 
   // Re-scan every 4s while the list is showing so newly-started dev servers
   // appear without manual refresh.
@@ -179,7 +203,14 @@ export function BrowserPanel({
         {url ? (
           <>
             <HeaderIconButton title="Workspace services" onClick={() => setUrl(null)}>
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2">
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.2"
+              >
                 <rect x="1.5" y="1.5" width="3.5" height="3.5" rx="0.6" />
                 <rect x="7" y="1.5" width="3.5" height="3.5" rx="0.6" />
                 <rect x="1.5" y="7" width="3.5" height="3.5" rx="0.6" />
@@ -187,12 +218,30 @@ export function BrowserPanel({
               </svg>
             </HeaderIconButton>
             <HeaderIconButton title="Back" onClick={goBack} disabled={!navState.canGoBack}>
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
                 <path d="M7.5 2.5L4 6l3.5 3.5" />
               </svg>
             </HeaderIconButton>
             <HeaderIconButton title="Forward" onClick={goForward} disabled={!navState.canGoForward}>
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
                 <path d="M4.5 2.5L8 6l-3.5 3.5" />
               </svg>
             </HeaderIconButton>
@@ -219,14 +268,32 @@ export function BrowserPanel({
             >
               {viewport === 'mobile' ? (
                 // Desktop monitor — switching back to desktop layout
-                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 14 14"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.3"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
                   <rect x="1.5" y="2.5" width="11" height="7.5" rx="1" />
                   <path d="M5 12.5h4" />
                   <path d="M7 10v2.5" />
                 </svg>
               ) : (
                 // Phone — switching to mobile viewport
-                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 14 14"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.3"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
                   <rect x="4" y="1.5" width="6" height="11" rx="1.2" />
                   <path d="M5.75 3h2.5" />
                   <circle cx="7" cy="11" r="0.5" fill="currentColor" />
@@ -234,16 +301,36 @@ export function BrowserPanel({
               )}
             </HeaderIconButton>
             <HeaderIconButton title="Reload" onClick={reload}>
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
                 <path d="M9.5 3.5V2M9.5 3.5H8" />
                 <path d="M9.5 3.5A4 4 0 1 0 10 6.5" />
               </svg>
             </HeaderIconButton>
             <HeaderIconButton
               title="Open in system browser"
-              onClick={() => { if (url) window.grove?.openExternal?.(url); }}
+              onClick={() => {
+                if (url) window.grove?.openExternal?.(url);
+              }}
             >
-              <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 14 14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
                 <path d="M6.5 3H3v8h8V7.5" />
                 <path d="M8 3h3v3" />
                 <path d="M6 8L11 3" />
@@ -256,7 +343,16 @@ export function BrowserPanel({
         <Flex align="center" gap="1">
           {!url && (
             <HeaderIconButton title="Refresh" onClick={() => setRefreshNonce((n) => n + 1)}>
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
                 <path d="M9.5 3.5V2M9.5 3.5H8" />
                 <path d="M9.5 3.5A4 4 0 1 0 10 6.5" />
               </svg>
@@ -267,10 +363,25 @@ export function BrowserPanel({
               title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
               onClick={toggleFullscreen}
             >
-              {fullscreen
-                ? <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M10 2L6.5 5.5M6.5 5.5V2.5M6.5 5.5H9.5M2 10l3.5-3.5M5.5 6.5v3M5.5 6.5h-3" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                : <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M7 2h3v3M10 2L6.5 5.5M5 10H2V7M2 10l3.5-3.5" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>
-              }
+              {fullscreen ? (
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
+                  <path
+                    d="M10 2L6.5 5.5M6.5 5.5V2.5M6.5 5.5H9.5M2 10l3.5-3.5M5.5 6.5v3M5.5 6.5h-3"
+                    strokeWidth="1.3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              ) : (
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
+                  <path
+                    d="M7 2h3v3M10 2L6.5 5.5M5 10H2V7M2 10l3.5-3.5"
+                    strokeWidth="1.3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              )}
             </HeaderIconButton>
           )}
           <HeaderIconButton title="Close" onClick={togglePanel}>
@@ -288,9 +399,7 @@ export function BrowserPanel({
           // a load fails the view is parked offscreen and this DOM error
           // surface shows in its place.
           <Box ref={stageRef} position="absolute" inset="0" overflow="hidden" bg="#0d1117">
-            {frameError && (
-              <FrameErrorView url={url} info={frameError} onRetry={reload} />
-            )}
+            {frameError && <FrameErrorView url={url} info={frameError} onRetry={reload} />}
           </Box>
         ) : (
           <ServicesList
@@ -335,9 +444,21 @@ function ServicesList({
     <Flex direction="column" h="100%" overflow="hidden">
       <Box flex="1" overflowY="auto">
         {services === null ? (
-          <Flex h="100%" align="center" justify="center"><LoadingDots /></Flex>
+          <Flex h="100%" align="center" justify="center">
+            <LoadingDots />
+          </Flex>
         ) : services.length === 0 && recents.length === 0 ? (
-          <Flex h="100%" direction="column" align="center" justify="center" gap="2" color="#7d8590" fontSize="12px" px="6" textAlign="center">
+          <Flex
+            h="100%"
+            direction="column"
+            align="center"
+            justify="center"
+            gap="2"
+            color="#7d8590"
+            fontSize="12px"
+            px="6"
+            textAlign="center"
+          >
             <Text>No listening services in this workspace.</Text>
             <Text fontSize="11px">Start a dev server, then click Refresh.</Text>
           </Flex>
@@ -361,8 +482,12 @@ function ServicesList({
                   <Text fontFamily="var(--grove-mono)" fontSize="13px" color="#79c0ff">
                     {displayHost(s.host)}:{s.port}
                   </Text>
-                  <Text fontSize="12px" color="#c9d1d9">{s.cmd}</Text>
-                  <Text fontSize="11px" color="#7d8590">pid {s.pid}</Text>
+                  <Text fontSize="12px" color="#c9d1d9">
+                    {s.cmd}
+                  </Text>
+                  <Text fontSize="11px" color="#7d8590">
+                    pid {s.pid}
+                  </Text>
                 </HStack>
                 {s.cwd && (
                   <Text fontSize="11px" color="#7d8590" fontFamily="var(--grove-mono)" mt="0.5">
@@ -373,8 +498,19 @@ function ServicesList({
             ))}
             {recents.length > 0 && (
               <>
-                <Box px="3" py="1.5" bg="#0d1117" borderTop="1px solid #161b22" borderBottom="1px solid #161b22">
-                  <Text fontSize="10px" color="#7d8590" textTransform="uppercase" letterSpacing="0.06em">
+                <Box
+                  px="3"
+                  py="1.5"
+                  bg="#0d1117"
+                  borderTop="1px solid #161b22"
+                  borderBottom="1px solid #161b22"
+                >
+                  <Text
+                    fontSize="10px"
+                    color="#7d8590"
+                    textTransform="uppercase"
+                    letterSpacing="0.06em"
+                  >
                     Recent
                   </Text>
                 </Box>
@@ -403,7 +539,10 @@ function ServicesList({
                     <Box
                       as="button"
                       className="grove-recent-x"
-                      onClick={(e: React.MouseEvent) => { e.stopPropagation(); onRemoveHistory(h.url); }}
+                      onClick={(e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        onRemoveHistory(h.url);
+                      }}
                       opacity="0"
                       transition="opacity 0.12s"
                       cursor="pointer"
@@ -413,7 +552,15 @@ function ServicesList({
                       _hover={{ color: '#c9d1d9' }}
                       title="Remove"
                     >
-                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+                      <svg
+                        width="12"
+                        height="12"
+                        viewBox="0 0 12 12"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.4"
+                        strokeLinecap="round"
+                      >
                         <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" />
                       </svg>
                     </Box>
@@ -453,25 +600,46 @@ function displayHost(host: string): string {
   return host;
 }
 
-function FrameErrorView({ url, info, onRetry }: { url: string; info: { code: number; message: string }; onRetry: () => void }) {
+function FrameErrorView({
+  url,
+  info,
+  onRetry,
+}: {
+  url: string;
+  info: { code: number; message: string };
+  onRetry: () => void;
+}) {
   // Map common Chromium net error codes to a clearer "what went wrong" line.
   const reason = (() => {
     switch (info.code) {
-      case -7: return 'The connection timed out.';
-      case -21: return 'Network changed during the request.';
-      case -101: return 'The connection was reset.';
-      case -102: return 'The site refused to connect.';
-      case -105: return 'The server’s address could not be found.';
-      case -106: return 'No internet connection.';
-      case -109: return 'The address was unreachable.';
-      case -118: return 'The connection attempt timed out.';
-      case -137: return 'Could not resolve the host.';
-      case -201: return 'The server certificate is invalid.';
-      default: return info.message || 'The page failed to load.';
+      case -7:
+        return 'The connection timed out.';
+      case -21:
+        return 'Network changed during the request.';
+      case -101:
+        return 'The connection was reset.';
+      case -102:
+        return 'The site refused to connect.';
+      case -105:
+        return 'The server’s address could not be found.';
+      case -106:
+        return 'No internet connection.';
+      case -109:
+        return 'The address was unreachable.';
+      case -118:
+        return 'The connection attempt timed out.';
+      case -137:
+        return 'Could not resolve the host.';
+      case -201:
+        return 'The server certificate is invalid.';
+      default:
+        return info.message || 'The page failed to load.';
     }
   })();
   let host = url;
-  try { host = new URL(url).host; } catch {}
+  try {
+    host = new URL(url).host;
+  } catch {}
   return (
     <Flex
       position="absolute"
@@ -485,15 +653,27 @@ function FrameErrorView({ url, info, onRetry }: { url: string; info: { code: num
       maxW="640px"
     >
       <Box>
-        <svg width="36" height="36" viewBox="0 0 36 36" fill="none" stroke="#7d8590" strokeWidth="1.4">
+        <svg
+          width="36"
+          height="36"
+          viewBox="0 0 36 36"
+          fill="none"
+          stroke="#7d8590"
+          strokeWidth="1.4"
+        >
           <circle cx="18" cy="18" r="14" />
           <path d="M12 18l12 0M18 12c2.5 3.5 2.5 8.5 0 12M18 12c-2.5 3.5-2.5 8.5 0 12" />
           <path d="M9 27l18-18" stroke="#7d8590" strokeWidth="1.6" strokeLinecap="round" />
         </svg>
       </Box>
-      <Text fontSize="22px" color="#c9d1d9" fontWeight="600">This site can’t be reached</Text>
+      <Text fontSize="22px" color="#c9d1d9" fontWeight="600">
+        This site can’t be reached
+      </Text>
       <Text fontSize="13px" color="#7d8590">
-        <Box as="span" color="#c9d1d9">{host}</Box> {reason.toLowerCase().replace(/\.$/, '')}.
+        <Box as="span" color="#c9d1d9">
+          {host}
+        </Box>{' '}
+        {reason.toLowerCase().replace(/\.$/, '')}.
       </Text>
       <Text fontSize="12px" color="#6e7681" fontFamily="var(--grove-mono)">
         ERR_CODE {info.code}
@@ -538,14 +718,27 @@ function FrameErrorView({ url, info, onRetry }: { url: string; info: { code: num
 function LoadingDots() {
   return (
     <div className="grove-sq-loader">
-      <span /><span /><span /><span />
+      <span />
+      <span />
+      <span />
+      <span />
     </div>
   );
 }
 
 function HeaderIconButton({
-  children, title, onClick, active, disabled,
-}: { children: React.ReactNode; title: string; onClick: () => void; active?: boolean; disabled?: boolean }) {
+  children,
+  title,
+  onClick,
+  active,
+  disabled,
+}: {
+  children: React.ReactNode;
+  title: string;
+  onClick: () => void;
+  active?: boolean;
+  disabled?: boolean;
+}) {
   const [hover, setHover] = useState(false);
   const bg = disabled ? 'transparent' : active ? '#30363d' : hover ? '#21262d' : 'transparent';
   return (

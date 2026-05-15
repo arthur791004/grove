@@ -19,11 +19,14 @@
     "electron:dev": "npm run build && npm --workspace grove-app run build && npm --workspace grove-app run start",
     "dev:all": "npm run kill-ports && npm --workspace grove-app run build && npm-run-all -p dev:backend dev:frontend dev:electron",
     "dev:electron": "wait-on http://127.0.0.1:5173 && GROVE_DEV_URL=http://127.0.0.1:5173 npm --workspace grove-app run start",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,css,html}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,css,html}\"",
     "postinstall": "node scripts/patch-node-pty.mjs && chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true"
   },
   "devDependencies": {
     "electron-builder": "^26.8.1",
     "npm-run-all": "^4.1.5",
+    "prettier": "^3.8.3",
     "wait-on": "^7.2.0"
   },
   "dependencies": {

@@ -17,7 +17,11 @@ async function freshRegistry() {
 
 afterEach(() => {
   if (tmpDir) {
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* */ }
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* */
+    }
   }
   delete process.env.GROVE_WORKTREE_REGISTRY;
 });
@@ -33,7 +37,13 @@ describe('registry add/get/remove/list', () => {
     fs.rmdirSync(wtPath);
     execSync(`git worktree add -b grove/otter-test "${wtPath}" HEAD -q`, { cwd: repoRoot });
 
-    reg.add({ workspaceId: 'w1', repoRoot, branch: 'grove/otter-test', worktreePath: wtPath, createdAt: 1 });
+    reg.add({
+      workspaceId: 'w1',
+      repoRoot,
+      branch: 'grove/otter-test',
+      worktreePath: wtPath,
+      createdAt: 1,
+    });
 
     expect(reg.get('w1')?.branch).toBe('grove/otter-test');
     expect(reg.list().map((r) => r.workspaceId)).toEqual(['w1']);
@@ -49,9 +59,18 @@ describe('registry add/get/remove/list', () => {
 
   it('self-heals records whose worktree directory has been deleted', async () => {
     const reg = await freshRegistry();
-    fs.writeFileSync(process.env.GROVE_WORKTREE_REGISTRY!, JSON.stringify([
-      { workspaceId: 'ghost', repoRoot: '/nope', branch: 'grove/x', worktreePath: '/nope/x', createdAt: 1 },
-    ]));
+    fs.writeFileSync(
+      process.env.GROVE_WORKTREE_REGISTRY!,
+      JSON.stringify([
+        {
+          workspaceId: 'ghost',
+          repoRoot: '/nope',
+          branch: 'grove/x',
+          worktreePath: '/nope/x',
+          createdAt: 1,
+        },
+      ]),
+    );
     // First load drops the stale record and rewrites the file.
     expect(reg.list()).toEqual([]);
     const onDisk = JSON.parse(fs.readFileSync(process.env.GROVE_WORKTREE_REGISTRY!, 'utf8'));

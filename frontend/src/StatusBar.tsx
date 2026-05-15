@@ -15,7 +15,10 @@ export function StatusBar() {
   const [ctx, setCtx] = useState<Context | null>(null);
 
   useEffect(() => {
-    if (!activeTabId) { setCtx(null); return; }
+    if (!activeTabId) {
+      setCtx(null);
+      return;
+    }
     let cancelled = false;
 
     async function refresh() {
@@ -33,7 +36,10 @@ export function StatusBar() {
 
     refresh();
     const id = setInterval(refresh, 3000);
-    return () => { cancelled = true; clearInterval(id); };
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, [activeTabId]);
 
   if (!ctx) {
@@ -41,16 +47,12 @@ export function StatusBar() {
   }
 
   return (
-    <HStack
-      px="3"
-      py="1"
-      bg="#010409"
-      gap="2"
-      borderTop="1px solid #161b22"
-    >
+    <HStack px="3" py="1" bg="#010409" gap="2" borderTop="1px solid #161b22">
       {ctx.node && <Chip icon="⬢" iconColor="#3fb950" label={ctx.node} />}
       <Chip icon="" iconColor="" prefix="📁" label={ctx.shortCwd} />
-      {ctx.branch && <Chip icon="" iconColor="" prefix="⎇" label={ctx.branch} labelColor="#3fb950" />}
+      {ctx.branch && (
+        <Chip icon="" iconColor="" prefix="⎇" label={ctx.branch} labelColor="#3fb950" />
+      )}
       {ctx.diff && ctx.diff.files > 0 && (
         <Chip
           icon=""
@@ -64,7 +66,11 @@ export function StatusBar() {
 }
 
 function Chip({
-  icon, iconColor, prefix, label, labelColor,
+  icon,
+  iconColor,
+  prefix,
+  label,
+  labelColor,
 }: {
   icon: string;
   iconColor: string;
@@ -73,17 +79,24 @@ function Chip({
   labelColor?: string;
 }) {
   return (
-    <HStack
-      gap="1.5"
-      px="2"
-      py="1"
-      bg="#0d1117"
-      border="1px solid #21262d"
-      borderRadius="5px"
-    >
-      {icon && <Text color={iconColor} fontSize="12px" lineHeight="1">{icon}</Text>}
-      {prefix && <Text color="#7d8590" fontSize="12px" lineHeight="1">{prefix}</Text>}
-      <Text fontSize="12px" color={labelColor ?? '#c9d1d9'} lineHeight="1" fontFamily="Menlo, monospace" fontWeight="500">
+    <HStack gap="1.5" px="2" py="1" bg="#0d1117" border="1px solid #21262d" borderRadius="5px">
+      {icon && (
+        <Text color={iconColor} fontSize="12px" lineHeight="1">
+          {icon}
+        </Text>
+      )}
+      {prefix && (
+        <Text color="#7d8590" fontSize="12px" lineHeight="1">
+          {prefix}
+        </Text>
+      )}
+      <Text
+        fontSize="12px"
+        color={labelColor ?? '#c9d1d9'}
+        lineHeight="1"
+        fontFamily="Menlo, monospace"
+        fontWeight="500"
+      >
         {label}
       </Text>
     </HStack>

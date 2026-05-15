@@ -10,4 +10,12 @@ export const COLOR_HEX: Record<TabColor, string> = {
   cyan: '#39c5cf',
 };
 
-export const COLOR_ORDER: TabColor[] = ['default', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan'];
+export const COLOR_ORDER: TabColor[] = [
+  'default',
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+];

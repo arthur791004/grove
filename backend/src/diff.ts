@@ -38,9 +38,12 @@ function parseDiff(raw: string): DiffFile[] {
       if (l.startsWith('new file mode')) status = 'added';
       else if (l.startsWith('deleted file mode')) status = 'deleted';
       else if (l.startsWith('rename from')) status = 'renamed';
-      else if (l.startsWith('Binary files')) { binary = true; }
-      else if (l.startsWith('@@ ')) { inHunk = true; patchLines.push(l); }
-      else if (inHunk) {
+      else if (l.startsWith('Binary files')) {
+        binary = true;
+      } else if (l.startsWith('@@ ')) {
+        inHunk = true;
+        patchLines.push(l);
+      } else if (inHunk) {
         patchLines.push(l);
         if (l.startsWith('+') && !l.startsWith('+++')) added++;
         else if (l.startsWith('-') && !l.startsWith('---')) removed++;
@@ -70,7 +73,15 @@ function runGitDiff(repoRoot: string, extraArgs: string[] = []): string {
   try {
     const r = spawnSync(
       'git',
-      ['diff', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', 'HEAD', ...extraArgs],
+      [
+        'diff',
+        '--no-color',
+        '--no-ext-diff',
+        '--src-prefix=a/',
+        '--dst-prefix=b/',
+        'HEAD',
+        ...extraArgs,
+      ],
       { cwd: repoRoot, encoding: 'utf8', timeout: 4000, maxBuffer: 16 * 1024 * 1024 },
     );
     if (r.status === 0 || r.status === 1) return r.stdout;
@@ -92,14 +103,20 @@ export function getDiffFor(cwdRaw: string): DiffResponse {
   let branch: string | null = null;
   try {
     const r = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd: repoRoot, encoding: 'utf8', timeout: 1500,
+      cwd: repoRoot,
+      encoding: 'utf8',
+      timeout: 1500,
     });
     if (r.status === 0) branch = r.stdout.trim() || null;
   } catch {}
 
   const files = parseDiff(runGitDiff(repoRoot));
   const total = files.reduce(
-    (acc, f) => ({ added: acc.added + f.added, removed: acc.removed + f.removed, files: acc.files + 1 }),
+    (acc, f) => ({
+      added: acc.added + f.added,
+      removed: acc.removed + f.removed,
+      files: acc.files + 1,
+    }),
     { added: 0, removed: 0, files: 0 },
   );
   return { repoRoot, branch, files, total };
@@ -121,7 +138,10 @@ export function registerDiffRoutes(app: FastifyInstance) {
   app.get<{ Querystring: { tabId?: string; cwd?: string; path: string; context?: string } }>(
     '/diff/file',
     async (req) => {
-      const ctx = Math.max(0, parseInt(req.query.context ?? String(DEFAULT_FILE_CONTEXT), 10) || DEFAULT_FILE_CONTEXT);
+      const ctx = Math.max(
+        0,
+        parseInt(req.query.context ?? String(DEFAULT_FILE_CONTEXT), 10) || DEFAULT_FILE_CONTEXT,
+      );
       const file = getFileDiffFor(resolveCwd(req.query.cwd, req.query.tabId), req.query.path, ctx);
       return { file };
     },

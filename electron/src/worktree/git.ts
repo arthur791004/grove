@@ -83,7 +83,12 @@ export function listWorktreePaths(repoRoot: string): string[] {
   return out;
 }
 
-export function addWorktree(repoRoot: string, branch: string, worktreePath: string, fromSha: string): RunResult {
+export function addWorktree(
+  repoRoot: string,
+  branch: string,
+  worktreePath: string,
+  fromSha: string,
+): RunResult {
   return runGit(['worktree', 'add', '-b', branch, worktreePath, fromSha], repoRoot);
 }
 
@@ -97,7 +102,10 @@ export function removeWorktree(repoRoot: string, worktreePath: string, force: bo
 export function listGroveBranches(repoRoot: string): string[] {
   const r = runGit(['for-each-ref', '--format=%(refname:short)', 'refs/heads/grove/'], repoRoot);
   if (!r.ok) return [];
-  return r.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+  return r.stdout
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 export function deleteBranch(repoRoot: string, branch: string): RunResult {

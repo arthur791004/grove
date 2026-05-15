@@ -13,7 +13,9 @@ export interface BlockRecord {
 const DIR = path.join(os.homedir(), '.grove', 'blocks');
 
 function ensureDir() {
-  try { fs.mkdirSync(DIR, { recursive: true }); } catch {}
+  try {
+    fs.mkdirSync(DIR, { recursive: true });
+  } catch {}
 }
 
 function fileFor(tabId: string): string {
@@ -35,21 +37,29 @@ const pending = new Map<string, NodeJS.Timeout>();
 export function saveBlocks(tabId: string, blocks: BlockRecord[]): void {
   const existing = pending.get(tabId);
   if (existing) clearTimeout(existing);
-  pending.set(tabId, setTimeout(() => {
-    pending.delete(tabId);
-    ensureDir();
-    try {
-      const tmp = fileFor(tabId) + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify(blocks), 'utf8');
-      fs.renameSync(tmp, fileFor(tabId));
-    } catch (err) {
-      console.error('[grove] failed to persist blocks for', tabId, err);
-    }
-  }, 250));
+  pending.set(
+    tabId,
+    setTimeout(() => {
+      pending.delete(tabId);
+      ensureDir();
+      try {
+        const tmp = fileFor(tabId) + '.tmp';
+        fs.writeFileSync(tmp, JSON.stringify(blocks), 'utf8');
+        fs.renameSync(tmp, fileFor(tabId));
+      } catch (err) {
+        console.error('[grove] failed to persist blocks for', tabId, err);
+      }
+    }, 250),
+  );
 }
 
 export function deleteBlocks(tabId: string): void {
   const existing = pending.get(tabId);
-  if (existing) { clearTimeout(existing); pending.delete(tabId); }
-  try { fs.unlinkSync(fileFor(tabId)); } catch {}
+  if (existing) {
+    clearTimeout(existing);
+    pending.delete(tabId);
+  }
+  try {
+    fs.unlinkSync(fileFor(tabId));
+  } catch {}
 }

@@ -11,10 +11,10 @@ import { API_BASE, WS_BASE } from './api';
 import { TerminalOutput } from './TerminalOutput';
 import { BranchIcon, DiffIcon, FileIcon, FolderIcon, NodeIcon, PrIcon, ScriptIcon } from './icons';
 
-const ALT_ON   = /\x1b\[\?(?:1049|47|1047)h/g;
-const ALT_OFF  = /\x1b\[\?(?:1049|47|1047)l/g;
+const ALT_ON = /\x1b\[\?(?:1049|47|1047)h/g;
+const ALT_OFF = /\x1b\[\?(?:1049|47|1047)l/g;
 const CURS_OFF = /\x1b\[\?25l/g;
-const CURS_ON  = /\x1b\[\?25h/g;
+const CURS_ON = /\x1b\[\?25h/g;
 const ENTER_RAW = /\x1b\[\?(?:1049|47|1047)h|\x1b\[\?25l/;
 
 // When a single PTY chunk carries both the shell's echo of the command line
@@ -28,7 +28,10 @@ function sliceFromRawEnter(data: string): string {
 }
 
 type RawKind = 'alt' | 'cursor';
-interface RawTransition { on: boolean; kind: RawKind }
+interface RawTransition {
+  on: boolean;
+  kind: RawKind;
+}
 
 // Scan for the LAST h/l toggle of a given pair. Returns null if neither appears.
 function lastToggle(text: string, onRe: RegExp, offRe: RegExp): boolean | null {
@@ -37,16 +40,25 @@ function lastToggle(text: string, onRe: RegExp, offRe: RegExp): boolean | null {
   let m: RegExpExecArray | null;
   onRe.lastIndex = 0;
   while ((m = onRe.exec(text))) {
-    if (m.index > lastIdx) { lastIdx = m.index; val = true; }
+    if (m.index > lastIdx) {
+      lastIdx = m.index;
+      val = true;
+    }
   }
   offRe.lastIndex = 0;
   while ((m = offRe.exec(text))) {
-    if (m.index > lastIdx) { lastIdx = m.index; val = false; }
+    if (m.index > lastIdx) {
+      lastIdx = m.index;
+      val = false;
+    }
   }
   return val;
 }
 
-interface RawScan { alt: boolean | null; cursor: boolean | null }
+interface RawScan {
+  alt: boolean | null;
+  cursor: boolean | null;
+}
 
 function detectRawScan(text: string): RawScan {
   return {
@@ -55,7 +67,10 @@ function detectRawScan(text: string): RawScan {
   };
 }
 
-interface Props { tabId: string; active: boolean }
+interface Props {
+  tabId: string;
+  active: boolean;
+}
 
 const BACKEND_WS = (tabId: string, cwd?: string) =>
   `${WS_BASE}/pty/${tabId}${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''}`;
@@ -91,13 +106,19 @@ function isInteractiveCmd(cmd: string): boolean {
   return INTERACTIVE_CMD_RE.test(cmd.trim());
 }
 
-interface CompletionItem { value: string; label: string; kind: 'dir' | 'file' | 'branch' | 'script' }
+interface CompletionItem {
+  value: string;
+  label: string;
+  kind: 'dir' | 'file' | 'branch' | 'script';
+}
 
 let serverCompletionsCache: string[] = [];
 let shellHistoryCache: string[] = [];
 let serverCompletionsFetchedAt = 0;
 const completionsListeners = new Set<(h: string[]) => void>();
-async function fetchServerCompletions(force = false): Promise<{ completions: string[]; history: string[] }> {
+async function fetchServerCompletions(
+  force = false,
+): Promise<{ completions: string[]; history: string[] }> {
   if (!force && Date.now() - serverCompletionsFetchedAt < 30_000 && serverCompletionsCache.length) {
     return { completions: serverCompletionsCache, history: shellHistoryCache };
   }
@@ -128,7 +149,8 @@ async function appendShellHistory(cmd: string) {
 }
 
 const MAX_BLOCK_OUTPUT = 200_000;
-const capOutput = (s: string): string => s.length > MAX_BLOCK_OUTPUT ? s.slice(-MAX_BLOCK_OUTPUT) : s;
+const capOutput = (s: string): string =>
+  s.length > MAX_BLOCK_OUTPUT ? s.slice(-MAX_BLOCK_OUTPUT) : s;
 
 function useCmdHeld(): boolean {
   const [down, setDown] = useState(false);
@@ -167,7 +189,12 @@ function applyCarriageReturns(prev: string, incoming: string): string {
 
   let result = prev;
   let pending = '';
-  const flush = () => { if (pending) { result += pending; pending = ''; } };
+  const flush = () => {
+    if (pending) {
+      result += pending;
+      pending = '';
+    }
+  };
   const killCurrentLine = () => {
     flush();
     const nl = result.lastIndexOf('\n');
@@ -194,14 +221,26 @@ function applyCarriageReturns(prev: string, incoming: string): string {
   while (i < incoming.length) {
     const ch = incoming[i];
     if (ch === '\r') {
-      if (incoming[i + 1] === '\n') { flush(); result += '\n'; i += 2; }
-      else { killCurrentLine(); i++; }
+      if (incoming[i + 1] === '\n') {
+        flush();
+        result += '\n';
+        i += 2;
+      } else {
+        killCurrentLine();
+        i++;
+      }
     } else if (ch === '\n') {
-      flush(); result += '\n'; i++;
+      flush();
+      result += '\n';
+      i++;
     } else if (ch === '\x1b' && incoming[i + 1] === '[') {
       let j = i + 2;
       while (j < incoming.length && /[0-9;?]/.test(incoming[j])) j++;
-      if (j >= incoming.length) { pending += ch; i++; continue; }
+      if (j >= incoming.length) {
+        pending += ch;
+        i++;
+        continue;
+      }
       const param = incoming.slice(i + 2, j);
       const fin = incoming[j];
       const seq = incoming.slice(i, j + 1);
@@ -257,7 +296,9 @@ export function TerminalView({ tabId, active }: Props) {
   const rawKind: RawKind = altScreen || forcedRaw ? 'alt' : 'cursor';
   const rawModeRef = useRef(false);
   const activeRef = useRef(active);
-  useEffect(() => { activeRef.current = active; }, [active]);
+  useEffect(() => {
+    activeRef.current = active;
+  }, [active]);
   const inPromptRef = useRef(true);
   const xtermHostRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
@@ -289,11 +330,11 @@ export function TerminalView({ tabId, active }: Props) {
     const cur = currentBlockRef.current;
     setBlocks((bs) => {
       if (cur !== null) {
-        return bs.map((b) => b.id === cur ? { ...b, output: capOutput(text) } : b);
+        return bs.map((b) => (b.id === cur ? { ...b, output: capOutput(text) } : b));
       }
       for (let i = bs.length - 1; i >= 0; i--) {
         if (bs[i].interactive) {
-          return bs.map((b, idx) => idx === i ? { ...b, output: capOutput(text) } : b);
+          return bs.map((b, idx) => (idx === i ? { ...b, output: capOutput(text) } : b));
         }
       }
       return bs;
@@ -307,11 +348,13 @@ export function TerminalView({ tabId, active }: Props) {
     pendingOutputRef.current = new Map();
     // The updater must be pure — React 18 StrictMode double-invokes it in
     // dev, so we can't mutate `snapshot` (e.g. .delete) here.
-    setBlocks((bs) => bs.map((b) => {
-      const chunk = snapshot.get(b.id);
-      if (!chunk) return b;
-      return { ...b, output: capOutput(applyCarriageReturns(b.output, chunk)) };
-    }));
+    setBlocks((bs) =>
+      bs.map((b) => {
+        const chunk = snapshot.get(b.id);
+        if (!chunk) return b;
+        return { ...b, output: capOutput(applyCarriageReturns(b.output, chunk)) };
+      }),
+    );
   }
   function scheduleFlush() {
     if (flushRafRef.current !== null) return;
@@ -339,20 +382,30 @@ export function TerminalView({ tabId, active }: Props) {
         ws.send(JSON.stringify({ type: 'resize', cols: 200, rows: 50 }));
         // Clear any stale readline buffer pollution (Ctrl-U = kill-whole-line)
         ws.send(JSON.stringify({ type: 'input', data: '\x15' }));
-        stableTimer = setTimeout(() => { attempt = 0; stableTimer = null; }, 3000);
+        stableTimer = setTimeout(() => {
+          attempt = 0;
+          stableTimer = null;
+        }, 3000);
       };
       ws.onclose = () => {
-        if (stableTimer) { clearTimeout(stableTimer); stableTimer = null; }
+        if (stableTimer) {
+          clearTimeout(stableTimer);
+          stableTimer = null;
+        }
         if (closed) return;
         attempt += 1;
         const delay = Math.min(2000, 200 * 2 ** Math.min(attempt - 1, 4));
         if (attempt > 8) {
-          console.error(`[grove] failed to connect to backend at ${WS_BASE} after multiple attempts`);
+          console.error(
+            `[grove] failed to connect to backend at ${WS_BASE} after multiple attempts`,
+          );
           return;
         }
         reconnectTimer = setTimeout(connect, delay);
       };
-      ws.onerror = () => { /* handled in onclose */ };
+      ws.onerror = () => {
+        /* handled in onclose */
+      };
       ws.onmessage = (ev) => {
         // Drop events from a stale socket. React 18 StrictMode runs the effect
         // twice in dev: the first WS subscribes and the backend immediately
@@ -377,7 +430,7 @@ export function TerminalView({ tabId, active }: Props) {
             const scan = altCarryRef.current + msg.data;
             const result = detectRawScan(scan);
             const willEnterRaw =
-              ((result.alt === true) || (result.cursor === true)) && !rawModeRef.current;
+              (result.alt === true || result.cursor === true) && !rawModeRef.current;
             // Compute whether this scan ends raw mode. forcedRaw is handled at
             // block-end, not here, so it's excluded from the projection.
             const nextAlt = result.alt !== null ? result.alt : altScreen;
@@ -418,9 +471,9 @@ export function TerminalView({ tabId, active }: Props) {
             if (willEnterRaw) {
               const cur = currentBlockRef.current;
               if (cur !== null) {
-                setBlocks((bs) => bs.map((b) =>
-                  b.id === cur ? { ...b, interactive: true, output: '' } : b,
-                ));
+                setBlocks((bs) =>
+                  bs.map((b) => (b.id === cur ? { ...b, interactive: true, output: '' } : b)),
+                );
               }
             }
             altCarryRef.current = scan.slice(-16);
@@ -491,9 +544,11 @@ export function TerminalView({ tabId, active }: Props) {
             const snapshot = rawModeRef.current ? snapshotXtermBuffer() : null;
             const cur = currentBlockRef.current;
             if (cur !== null) {
-              setBlocks((bs) => bs.map((b) =>
-                b.id === cur ? { ...b, exit: msg.exit, durationMs: msg.durationMs } : b,
-              ));
+              setBlocks((bs) =>
+                bs.map((b) =>
+                  b.id === cur ? { ...b, exit: msg.exit, durationMs: msg.durationMs } : b,
+                ),
+              );
             }
             if (snapshot) applySnapshotToInteractiveBlock(snapshot);
             // Clear xterm so the next interactive command — including ones
@@ -585,7 +640,9 @@ export function TerminalView({ tabId, active }: Props) {
       if (!activeRef.current) return;
       const host = xtermHostRef.current;
       if (!host || host.clientWidth === 0 || host.clientHeight === 0) return;
-      try { fit.fit(); } catch {}
+      try {
+        fit.fit();
+      } catch {}
       // After a resize the viewport may sit above the new bottom row, leaving
       // a gap that wheel-down can't cross. Re-pin while in raw mode.
       if (rawModeRef.current) xtermRef.current?.scrollToBottom();
@@ -599,13 +656,14 @@ export function TerminalView({ tabId, active }: Props) {
 
     // Re-measure after fonts load (xterm caches cell width on open).
     const fontsReady = (document as Document & { fonts?: { ready: Promise<void> } }).fonts?.ready;
-    if (fontsReady) fontsReady.then(() => {
-      // Touching fontFamily forces xterm to flush its cached metrics.
-      const fam = term.options.fontFamily;
-      term.options.fontFamily = 'monospace';
-      term.options.fontFamily = fam;
-      doFitAndResize();
-    });
+    if (fontsReady)
+      fontsReady.then(() => {
+        // Touching fontFamily forces xterm to flush its cached metrics.
+        const fam = term.options.fontFamily;
+        term.options.fontFamily = 'monospace';
+        term.options.fontFamily = fam;
+        doFitAndResize();
+      });
     const t1 = setTimeout(doFitAndResize, 100);
     const t2 = setTimeout(doFitAndResize, 500);
 
@@ -628,7 +686,11 @@ export function TerminalView({ tabId, active }: Props) {
     const term = xtermRef.current;
     if (!term) return;
     term.options.fontSize = prefFontSize;
-    try { fitRef.current?.fit(); } catch { /* xterm not yet sized */ }
+    try {
+      fitRef.current?.fit();
+    } catch {
+      /* xterm not yet sized */
+    }
   }, [prefFontSize]);
   useEffect(() => {
     const term = xtermRef.current;
@@ -637,10 +699,16 @@ export function TerminalView({ tabId, active }: Props) {
     const fam = term.options.fontFamily;
     term.options.fontFamily = 'monospace';
     term.options.fontFamily = fam;
-    try { fitRef.current?.fit(); } catch { /* xterm not yet sized */ }
+    try {
+      fitRef.current?.fit();
+    } catch {
+      /* xterm not yet sized */
+    }
   }, [prefFontFamily]);
 
-  useEffect(() => { rawModeRef.current = rawMode; }, [rawMode]);
+  useEffect(() => {
+    rawModeRef.current = rawMode;
+  }, [rawMode]);
 
   useEffect(() => {
     if (active) {
@@ -654,7 +722,9 @@ export function TerminalView({ tabId, active }: Props) {
         const ws = wsRef.current;
         const host = xtermHostRef.current;
         if (t && f && host && host.clientWidth > 0 && host.clientHeight > 0) {
-          try { f.fit(); } catch {}
+          try {
+            f.fit();
+          } catch {}
           if (ws?.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
           }
@@ -669,7 +739,8 @@ export function TerminalView({ tabId, active }: Props) {
     const c = document.createElement('canvas');
     const ctx = c.getContext('2d');
     if (ctx) {
-      const fam = getComputedStyle(document.documentElement).getPropertyValue('--grove-mono') || 'monospace';
+      const fam =
+        getComputedStyle(document.documentElement).getPropertyValue('--grove-mono') || 'monospace';
       ctx.font = `13px ${fam}`;
       const w = ctx.measureText('M').width;
       if (w > 0) charWidthRef.current = w;
@@ -683,7 +754,9 @@ export function TerminalView({ tabId, active }: Props) {
     setCaretLeft(pos * charWidthRef.current);
   }
 
-  useEffect(() => { updateCaret(); }, [input]);
+  useEffect(() => {
+    updateCaret();
+  }, [input]);
 
   // Keep the prompt input focused while this tab is active so the user can
   // just start typing without ever clicking. Triggered on a real "typing" key,
@@ -728,13 +801,21 @@ export function TerminalView({ tabId, active }: Props) {
       setShellHistory(history);
     });
     // Subscribe so a command submitted in any tab refreshes this tab's history.
-    const onUpdate = (h: string[]) => { if (!cancelled) setShellHistory(h); };
+    const onUpdate = (h: string[]) => {
+      if (!cancelled) setShellHistory(h);
+    };
     completionsListeners.add(onUpdate);
-    return () => { cancelled = true; completionsListeners.delete(onUpdate); };
+    return () => {
+      cancelled = true;
+      completionsListeners.delete(onUpdate);
+    };
   }, []);
 
   useEffect(() => {
-    if (!input.trim()) { setContextual([]); return; }
+    if (!input.trim()) {
+      setContextual([]);
+      return;
+    }
     let cancelled = false;
     const timer = setTimeout(async () => {
       try {
@@ -752,7 +833,10 @@ export function TerminalView({ tabId, active }: Props) {
         if (!cancelled) setContextual([]);
       }
     }, 80);
-    return () => { cancelled = true; clearTimeout(timer); };
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [input, tabId]);
 
   const showDropdown = dropdownOpen && contextual.length > 0 && input.trim().length > 0;
@@ -766,7 +850,10 @@ export function TerminalView({ tabId, active }: Props) {
   // feedback as expected.
   const [showRunning, setShowRunning] = useState(false);
   useEffect(() => {
-    if (!runningBlock) { setShowRunning(false); return; }
+    if (!runningBlock) {
+      setShowRunning(false);
+      return;
+    }
     const t = setTimeout(() => setShowRunning(true), 250);
     return () => clearTimeout(t);
   }, [runningBlock?.id]);
@@ -793,7 +880,9 @@ export function TerminalView({ tabId, active }: Props) {
     return '';
   }, [input, history, serverCompletions, contextual, dropdownIndex]);
 
-  function acceptSuggestion() { if (suggestion) setInput(suggestion); }
+  function acceptSuggestion() {
+    if (suggestion) setInput(suggestion);
+  }
 
   function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     if (e.ctrlKey && e.key === 'c') {
@@ -806,8 +895,16 @@ export function TerminalView({ tabId, active }: Props) {
       }
       return;
     }
-    if (e.ctrlKey && e.key === 'd') { e.preventDefault(); send('\x04'); return; }
-    if (e.ctrlKey && e.key === 'l') { e.preventDefault(); setBlocks([]); return; }
+    if (e.ctrlKey && e.key === 'd') {
+      e.preventDefault();
+      send('\x04');
+      return;
+    }
+    if (e.ctrlKey && e.key === 'l') {
+      e.preventDefault();
+      setBlocks([]);
+      return;
+    }
     if (e.key === 'Escape' && showDropdown) {
       e.preventDefault();
       setDropdownOpen(false);
@@ -829,7 +926,9 @@ export function TerminalView({ tabId, active }: Props) {
     if (e.key === 'ArrowRight') {
       const el = e.currentTarget;
       if (suggestion && el.selectionStart === input.length) {
-        e.preventDefault(); acceptSuggestion(); return;
+        e.preventDefault();
+        acceptSuggestion();
+        return;
       }
     }
     if (e.key === 'ArrowUp') {
@@ -910,7 +1009,15 @@ export function TerminalView({ tabId, active }: Props) {
   }
 
   return (
-    <Box display="flex" flexDirection="column" w="100%" h="100%" bg="#010409" overflow="hidden" position="relative">
+    <Box
+      display="flex"
+      flexDirection="column"
+      w="100%"
+      h="100%"
+      bg="#010409"
+      overflow="hidden"
+      position="relative"
+    >
       {/* xterm overlay — visible only in raw mode. Horizontal padding matches
           BlockCard's px="4" (16px) so ssh / claude / gum prompts line up with
           the surrounding block content. Vertical buffer stays small — just
@@ -948,7 +1055,9 @@ export function TerminalView({ tabId, active }: Props) {
               ctxNode={ctx?.node ?? null}
               cmdHeld={cmdHeld}
               onDelete={() => setBlocks((bs) => bs.filter((x) => x.id !== b.id))}
-              onRerun={() => { if (b.cmd) send(b.cmd + '\r'); }}
+              onRerun={() => {
+                if (b.cmd) send(b.cmd + '\r');
+              }}
             />
           ))}
         </Box>
@@ -974,7 +1083,16 @@ export function TerminalView({ tabId, active }: Props) {
             _hover={{ bg: '#21262d', transform: 'translateY(-1px)' }}
             title="Scroll to bottom"
           >
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 14 14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               <path d="M3 6l4 4 4-4" />
             </svg>
           </Box>
@@ -989,153 +1107,213 @@ export function TerminalView({ tabId, active }: Props) {
           // element. Hoisted up from the input row so a click on a chip or the
           // chip strip's empty space also focuses the input.
           const target = e.target as HTMLElement;
-          if (target.closest('button, a, input, textarea, select, [role="button"], [data-clickable]')) return;
+          if (
+            target.closest('button, a, input, textarea, select, [role="button"], [data-clickable]')
+          )
+            return;
           e.preventDefault();
           inputRef.current?.focus();
         }}
       >
         {showDropdown && (
-          <Box position="absolute" bottom="100%" left="0" right="0" zIndex={20} pointerEvents="auto">
+          <Box
+            position="absolute"
+            bottom="100%"
+            left="0"
+            right="0"
+            zIndex={20}
+            pointerEvents="auto"
+          >
             <CompletionDropdown
               items={contextual}
               selectedIndex={dropdownIndex}
-              onPick={(i) => { setInput(contextual[i].value); setDropdownOpen(false); inputRef.current?.focus(); }}
+              onPick={(i) => {
+                setInput(contextual[i].value);
+                setDropdownOpen(false);
+                inputRef.current?.focus();
+              }}
               onHover={setDropdownIndex}
             />
           </Box>
         )}
 
-      {forkLockHint && (
+        {forkLockHint && (
+          <Box
+            mx="4"
+            mb="1"
+            px="2.5"
+            py="1.5"
+            bg="#3d2a1a"
+            border="1px solid #7d4a1a"
+            borderRadius="4px"
+            color="#f0d9a8"
+            fontSize="11px"
+            fontFamily="var(--grove-mono)"
+            display="flex"
+            alignItems="center"
+            gap="2"
+          >
+            <Box flex="1">
+              <Text as="span" color="#f8c468" fontWeight="600">
+                {forkLockHint.branch}
+              </Text>
+              {
+                ' is checked out in another workspace. Switch that workspace to a different branch first.'
+              }
+            </Box>
+            <button
+              onClick={() => setForkLockHint(null)}
+              title="Dismiss"
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#f0d9a8',
+                cursor: 'pointer',
+                padding: '2px 4px',
+                borderRadius: 3,
+                fontSize: 12,
+                lineHeight: 1,
+              }}
+            >
+              ✕
+            </button>
+          </Box>
+        )}
+
+        <ChipStrip ctx={ctx} tabId={tabId} />
+
         <Box
-          mx="4"
-          mb="1"
-          px="2.5"
-          py="1.5"
-          bg="#3d2a1a"
-          border="1px solid #7d4a1a"
-          borderRadius="4px"
-          color="#f0d9a8"
-          fontSize="11px"
-          fontFamily="var(--grove-mono)"
+          bg="#010409"
+          px="4"
+          pt="1"
+          pb="4"
           display="flex"
           alignItems="center"
           gap="2"
+          position="relative"
         >
-          <Box flex="1">
-            <Text as="span" color="#f8c468" fontWeight="600">{forkLockHint.branch}</Text>
-            {' is checked out in another workspace. Switch that workspace to a different branch first.'}
-          </Box>
-          <button
-            onClick={() => setForkLockHint(null)}
-            title="Dismiss"
-            style={{
-              background: 'transparent', border: 'none', color: '#f0d9a8',
-              cursor: 'pointer', padding: '2px 4px', borderRadius: 3, fontSize: 12, lineHeight: 1,
-            }}
-          >
-            ✕
-          </button>
-        </Box>
-      )}
-
-      <ChipStrip ctx={ctx} tabId={tabId} />
-
-      <Box
-        bg="#010409" px="4" pt="1" pb="4" display="flex" alignItems="center" gap="2" position="relative"
-      >
-        {runningBlock && showRunning && <RunningBadge cmd={runningBlock.cmd} onStop={() => send('\x03')} />}
-        <Box flex="1" position="relative" h="22px">
-          {suggestion && !runningBlock && (
-            <Box position="absolute" inset="0" pointerEvents="none"
-              fontFamily="var(--grove-mono)" fontSize="var(--grove-mono-size)" lineHeight="22px" color="#484f58"
+          {runningBlock && showRunning && (
+            <RunningBadge cmd={runningBlock.cmd} onStop={() => send('\x03')} />
+          )}
+          <Box flex="1" position="relative" h="22px">
+            {suggestion && !runningBlock && (
+              <Box
+                position="absolute"
+                inset="0"
+                pointerEvents="none"
+                fontFamily="var(--grove-mono)"
+                fontSize="var(--grove-mono-size)"
+                lineHeight="22px"
+                color="#484f58"
+                style={{
+                  whiteSpace: 'pre',
+                  letterSpacing: 0,
+                  wordSpacing: 0,
+                  fontFeatureSettings: '"liga" 0, "calt" 0',
+                  fontVariantLigatures: 'none',
+                  textRendering: 'geometricPrecision',
+                  boxSizing: 'border-box',
+                  padding: 0,
+                  margin: 0,
+                }}
+              >
+                <span style={{ color: 'transparent' }}>{input}</span>
+                <span>{suggestion.slice(input.length)}</span>
+                {suggestion.slice(input.length).length > 0 && (
+                  <Box
+                    as="span"
+                    ml="3"
+                    display="inline-flex"
+                    alignItems="center"
+                    gap="1"
+                    px="1.5"
+                    h="16px"
+                    border="1px solid #30363d"
+                    borderTopColor="#3d444d"
+                    borderBottomColor="#22272e"
+                    borderRadius="4px"
+                    bg="#161b22"
+                    color="#7d8590"
+                    verticalAlign="middle"
+                    fontSize="12px"
+                    fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+                    fontWeight="600"
+                    letterSpacing="0.06em"
+                    textTransform="uppercase"
+                    style={{ boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.35)' }}
+                  >
+                    <span>tab</span>
+                  </Box>
+                )}
+              </Box>
+            )}
+            <input
+              ref={inputRef}
+              value={input}
+              readOnly={!!runningBlock}
+              onChange={(e) => {
+                setInput(e.target.value);
+                setHistoryIndex(null);
+              }}
+              onKeyDown={(e) => {
+                if (runningBlock) return;
+                onKeyDown(e);
+                requestAnimationFrame(updateCaret);
+              }}
+              onKeyUp={updateCaret}
+              onClick={updateCaret}
+              onSelect={updateCaret}
+              onFocus={() => {
+                setCaretVisible(true);
+                updateCaret();
+              }}
+              onBlur={() => setCaretVisible(false)}
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
               style={{
-                whiteSpace: 'pre',
+                width: '100%',
+                height: '22px',
+                background: 'transparent',
+                border: 'none',
+                outline: 'none',
+                padding: 0,
+                margin: 0,
+                textIndent: 0,
+                boxSizing: 'border-box',
+                display: 'block',
+                verticalAlign: 'top',
+                appearance: 'none',
+                WebkitAppearance: 'none',
                 letterSpacing: 0,
                 wordSpacing: 0,
+                fontFamily: 'var(--grove-mono)',
+                fontSize: 'var(--grove-mono-size)',
+                lineHeight: '22px',
+                color: '#c9d1d9',
+                caretColor: 'transparent',
+                position: 'relative',
+                zIndex: 1,
                 fontFeatureSettings: '"liga" 0, "calt" 0',
                 fontVariantLigatures: 'none',
                 textRendering: 'geometricPrecision',
-                boxSizing: 'border-box',
-                padding: 0,
-                margin: 0,
               }}
-            >
-              <span style={{ color: 'transparent' }}>{input}</span>
-              <span>{suggestion.slice(input.length)}</span>
-              {suggestion.slice(input.length).length > 0 && (
-                <Box
-                  as="span"
-                  ml="3"
-                  display="inline-flex"
-                  alignItems="center"
-                  gap="1"
-                  px="1.5"
-                  h="16px"
-                  border="1px solid #30363d"
-                  borderTopColor="#3d444d"
-                  borderBottomColor="#22272e"
-                  borderRadius="4px"
-                  bg="#161b22"
-                  color="#7d8590"
-                  verticalAlign="middle"
-                  fontSize="12px"
-                  fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
-                  fontWeight="600"
-                  letterSpacing="0.06em"
-                  textTransform="uppercase"
-                  style={{ boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.35)' }}
-                >
-                  <span>tab</span>
-                </Box>
-              )}
-            </Box>
-          )}
-          <input
-            ref={inputRef}
-            value={input}
-            readOnly={!!runningBlock}
-            onChange={(e) => { setInput(e.target.value); setHistoryIndex(null); }}
-            onKeyDown={(e) => { if (runningBlock) return; onKeyDown(e); requestAnimationFrame(updateCaret); }}
-            onKeyUp={updateCaret}
-            onClick={updateCaret}
-            onSelect={updateCaret}
-            onFocus={() => { setCaretVisible(true); updateCaret(); }}
-            onBlur={() => setCaretVisible(false)}
-            autoComplete="off" autoCorrect="off" spellCheck={false}
-            style={{
-              width: '100%', height: '22px', background: 'transparent',
-              border: 'none', outline: 'none',
-              padding: 0, margin: 0, textIndent: 0,
-              boxSizing: 'border-box',
-              display: 'block',
-              verticalAlign: 'top',
-              appearance: 'none',
-              WebkitAppearance: 'none',
-              letterSpacing: 0,
-              wordSpacing: 0,
-              fontFamily: 'var(--grove-mono)', fontSize: 'var(--grove-mono-size)', lineHeight: '22px',
-              color: '#c9d1d9', caretColor: 'transparent',
-              position: 'relative', zIndex: 1,
-              fontFeatureSettings: '"liga" 0, "calt" 0',
-              fontVariantLigatures: 'none',
-              textRendering: 'geometricPrecision',
-            }}
-          />
-          {caretVisible && !runningBlock && (
-            <Box
-              className="grove-caret"
-              position="absolute"
-              left={`${caretLeft}px`}
-              top="4.5px"
-              w="2px"
-              h="13px"
-              bg="#83C2D7"
-              pointerEvents="none"
-              zIndex={2}
             />
-          )}
+            {caretVisible && !runningBlock && (
+              <Box
+                className="grove-caret"
+                position="absolute"
+                left={`${caretLeft}px`}
+                top="4.5px"
+                w="2px"
+                h="13px"
+                bg="#83C2D7"
+                pointerEvents="none"
+                zIndex={2}
+              />
+            )}
+          </Box>
         </Box>
-      </Box>
       </Box>
     </Box>
   );
@@ -1152,18 +1330,46 @@ function formatDuration(ms: number | null, running: boolean): string {
 
 function DiffLabel({ added, removed }: { added: number; removed: number }) {
   if (added === 0 && removed === 0) {
-    return <Text as="span" fontSize="12px" color="#7d8590" fontFamily="var(--grove-mono)">0</Text>;
+    return (
+      <Text as="span" fontSize="12px" color="#7d8590" fontFamily="var(--grove-mono)">
+        0
+      </Text>
+    );
   }
   return (
     <Text as="span" fontSize="12px" fontFamily="var(--grove-mono)" lineHeight="1">
-      {added > 0 && <Text as="span" color="#7ee787">+{added}</Text>}
-      {added > 0 && removed > 0 && <Text as="span" color="#7d8590">{' '}</Text>}
-      {removed > 0 && <Text as="span" color="#ff7b72">-{removed}</Text>}
+      {added > 0 && (
+        <Text as="span" color="#7ee787">
+          +{added}
+        </Text>
+      )}
+      {added > 0 && removed > 0 && (
+        <Text as="span" color="#7d8590">
+          {' '}
+        </Text>
+      )}
+      {removed > 0 && (
+        <Text as="span" color="#ff7b72">
+          -{removed}
+        </Text>
+      )}
     </Text>
   );
 }
 
-function BlockCard({ block, ctxNode, cmdHeld, onDelete, onRerun }: { block: Block; ctxNode: string | null; cmdHeld: boolean; onDelete: () => void; onRerun: () => void }) {
+function BlockCard({
+  block,
+  ctxNode,
+  cmdHeld,
+  onDelete,
+  onRerun,
+}: {
+  block: Block;
+  ctxNode: string | null;
+  cmdHeld: boolean;
+  onDelete: () => void;
+  onRerun: () => void;
+}) {
   const running = block.exit === null;
   const failed = block.exit !== null && block.exit !== 0;
   const durStr = formatDuration(block.durationMs, running);
@@ -1187,9 +1393,7 @@ function BlockCard({ block, ctxNode, cmdHeld, onDelete, onRerun }: { block: Bloc
       >
         {block.cwd && <Text color="#79c0ff">{shortPath(block.cwd)}</Text>}
         {ctxNode && <Text color="#7ee787">{ctxNode}</Text>}
-        {block.exit !== null && block.exit !== 0 && (
-          <Text color="#f85149">✗ {block.exit}</Text>
-        )}
+        {block.exit !== null && block.exit !== 0 && <Text color="#f85149">✗ {block.exit}</Text>}
         {durStr && <Text color="#7d8590">({durStr})</Text>}
         {block.interactive && (
           <Text
@@ -1211,12 +1415,7 @@ function BlockCard({ block, ctxNode, cmdHeld, onDelete, onRerun }: { block: Bloc
           </Text>
         )}
         <Box flex="1" />
-        <Box
-          className="block-actions"
-          opacity="0"
-          transition="opacity 0.12s"
-          color="#7d8590"
-        >
+        <Box className="block-actions" opacity="0" transition="opacity 0.12s" color="#7d8590">
           <BlockMenu
             onRerun={block.cmd ? onRerun : undefined}
             onCopyCmd={() => navigator.clipboard.writeText(block.cmd || '').catch(() => {})}
@@ -1265,7 +1464,17 @@ function BlockCard({ block, ctxNode, cmdHeld, onDelete, onRerun }: { block: Bloc
   );
 }
 
-function BlockMenu({ onRerun, onCopyCmd, onCopyOutput, onDelete }: { onRerun?: () => void; onCopyCmd: () => void; onCopyOutput: () => void; onDelete: () => void }) {
+function BlockMenu({
+  onRerun,
+  onCopyCmd,
+  onCopyOutput,
+  onDelete,
+}: {
+  onRerun?: () => void;
+  onCopyCmd: () => void;
+  onCopyOutput: () => void;
+  onDelete: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -1333,8 +1542,14 @@ function BlockMenu({ onRerun, onCopyCmd, onCopyOutput, onDelete }: { onRerun?: (
         title="More"
         onClick={openMenu}
         style={{
-          background: 'transparent', border: 'none', cursor: 'pointer',
-          color: 'inherit', padding: 2, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'transparent',
+          border: 'none',
+          cursor: 'pointer',
+          color: 'inherit',
+          padding: 2,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
           borderRadius: 3,
         }}
       >
@@ -1344,41 +1559,57 @@ function BlockMenu({ onRerun, onCopyCmd, onCopyOutput, onDelete }: { onRerun?: (
           <circle cx="12.5" cy="8" r="1.2" />
         </svg>
       </button>
-      {open && pos && createPortal(
-        <Box
-          ref={menuRef}
-          position="fixed"
-          top={pos.top !== undefined ? `${pos.top}px` : undefined}
-          bottom={pos.bottom !== undefined ? `${pos.bottom}px` : undefined}
-          right={`${pos.right}px`}
-          minW="160px"
-          bg="#161b22"
-          border="1px solid #30363d"
-          borderRadius="6px"
-          py="1"
-          zIndex={1000}
-          boxShadow="0 8px 24px rgba(0,0,0,0.4)"
-        >
-          {onRerun && item('Rerun command', onRerun)}
-          {item('Copy command', onCopyCmd)}
-          {item('Copy output', onCopyOutput)}
-          <Box my="1" h="1px" bg="#30363d" />
-          {item('Delete', onDelete, true)}
-        </Box>,
-        document.body,
-      )}
+      {open &&
+        pos &&
+        createPortal(
+          <Box
+            ref={menuRef}
+            position="fixed"
+            top={pos.top !== undefined ? `${pos.top}px` : undefined}
+            bottom={pos.bottom !== undefined ? `${pos.bottom}px` : undefined}
+            right={`${pos.right}px`}
+            minW="160px"
+            bg="#161b22"
+            border="1px solid #30363d"
+            borderRadius="6px"
+            py="1"
+            zIndex={1000}
+            boxShadow="0 8px 24px rgba(0,0,0,0.4)"
+          >
+            {onRerun && item('Rerun command', onRerun)}
+            {item('Copy command', onCopyCmd)}
+            {item('Copy output', onCopyOutput)}
+            <Box my="1" h="1px" bg="#30363d" />
+            {item('Delete', onDelete, true)}
+          </Box>,
+          document.body,
+        )}
     </>
   );
 }
 
-function BlockActionIcon({ title, onClick, children }: { title: string; onClick?: () => void; children: React.ReactNode }) {
+function BlockActionIcon({
+  title,
+  onClick,
+  children,
+}: {
+  title: string;
+  onClick?: () => void;
+  children: React.ReactNode;
+}) {
   return (
     <button
       title={title}
       onClick={onClick}
       style={{
-        background: 'transparent', border: 'none', cursor: 'pointer',
-        color: 'inherit', padding: 2, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'transparent',
+        border: 'none',
+        cursor: 'pointer',
+        color: 'inherit',
+        padding: 2,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
         borderRadius: 3,
       }}
     >
@@ -1403,9 +1634,14 @@ function RunningBadge({ cmd, onStop }: { cmd: string; onStop: () => void }) {
       minW="0"
     >
       <Box className="grove-sq-loader" aria-label="running">
-        <span /><span /><span /><span />
+        <span />
+        <span />
+        <span />
+        <span />
       </Box>
-      <Box as="span" truncate maxW="360px">{truncated}</Box>
+      <Box as="span" truncate maxW="360px">
+        {truncated}
+      </Box>
       <Box
         as="button"
         onClick={onStop}
@@ -1454,17 +1690,29 @@ function ChipStrip({ ctx, tabId }: { ctx: ReturnType<typeof useTabContext>; tabI
     <HStack px="4" pt="4" pb="0" gap="2" bg="#010409" flexWrap="wrap">
       <Chip
         icon={<FolderIcon size={12} />}
-        label={cwdLoading
-          ? <Text as="span" color="#484f58" style={{ filter: 'blur(5px)', opacity: 0.5, userSelect: 'none' }}>loading…</Text>
-          : cwd}
+        label={
+          cwdLoading ? (
+            <Text
+              as="span"
+              color="#484f58"
+              style={{ filter: 'blur(5px)', opacity: 0.5, userSelect: 'none' }}
+            >
+              loading…
+            </Text>
+          ) : (
+            cwd
+          )
+        }
       />
-      {ctx?.node && (
-        <Chip icon={<NodeIcon />} label={ctx.node} labelColor="#7ee787" />
-      )}
+      {ctx?.node && <Chip icon={<NodeIcon />} label={ctx.node} labelColor="#7ee787" />}
       {ctx?.branch && (
         <Chip
           icon={<BranchIcon size={12} />}
-          label={isFork && ctx.branch.startsWith('grove/') ? ctx.branch.slice('grove/'.length) : ctx.branch}
+          label={
+            isFork && ctx.branch.startsWith('grove/')
+              ? ctx.branch.slice('grove/'.length)
+              : ctx.branch
+          }
           labelColor="#7ee787"
         />
       )}
@@ -1483,8 +1731,16 @@ function ChipStrip({ ctx, tabId }: { ctx: ReturnType<typeof useTabContext>; tabI
   );
 }
 
-function Chip({ icon, prefix, label, labelColor }: {
-  icon?: React.ReactNode; prefix?: string; label: React.ReactNode; labelColor?: string;
+function Chip({
+  icon,
+  prefix,
+  label,
+  labelColor,
+}: {
+  icon?: React.ReactNode;
+  prefix?: string;
+  label: React.ReactNode;
+  labelColor?: string;
 }) {
   return (
     <HStack
@@ -1510,11 +1766,24 @@ function Chip({ icon, prefix, label, labelColor }: {
         </Box>
       )}
       {prefix && (
-        <Text fontSize="12px" color="#7d8590" fontFamily="var(--grove-mono)" fontWeight="600" lineHeight="1" textTransform="lowercase">
+        <Text
+          fontSize="12px"
+          color="#7d8590"
+          fontFamily="var(--grove-mono)"
+          fontWeight="600"
+          lineHeight="1"
+          textTransform="lowercase"
+        >
           {prefix}
         </Text>
       )}
-      <Text fontSize="12px" color={labelColor ?? '#c9d1d9'} fontFamily="var(--grove-mono)" fontWeight="500" lineHeight="1">
+      <Text
+        fontSize="12px"
+        color={labelColor ?? '#c9d1d9'}
+        fontFamily="var(--grove-mono)"
+        fontWeight="500"
+        lineHeight="1"
+      >
         {label}
       </Text>
     </HStack>
@@ -1522,7 +1791,10 @@ function Chip({ icon, prefix, label, labelColor }: {
 }
 
 function CompletionDropdown({
-  items, selectedIndex, onPick, onHover,
+  items,
+  selectedIndex,
+  onPick,
+  onHover,
 }: {
   items: CompletionItem[];
   selectedIndex: number;
@@ -1530,7 +1802,10 @@ function CompletionDropdown({
   onHover: (i: number) => void;
 }) {
   const kindLabel: Record<CompletionItem['kind'], string> = {
-    dir: 'Directory', file: 'File', branch: 'Branch', script: 'Script',
+    dir: 'Directory',
+    file: 'File',
+    branch: 'Branch',
+    script: 'Script',
   };
   return (
     <Box
@@ -1559,7 +1834,10 @@ function CompletionDropdown({
             alignItems="center"
             gap="2"
             onMouseEnter={() => onHover(i)}
-            onMouseDown={(e) => { e.preventDefault(); onPick(i); }}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              onPick(i);
+            }}
           >
             <Box color={isSel ? '#ffffff' : '#7d8590'} display="flex" alignItems="center">
               {item.kind === 'dir' && <FolderIcon size={12} />}
@@ -1567,10 +1845,20 @@ function CompletionDropdown({
               {item.kind === 'branch' && <BranchIcon size={12} />}
               {item.kind === 'script' && <ScriptIcon />}
             </Box>
-            <Text fontFamily="var(--grove-mono)" fontSize="var(--grove-mono-size)" fontWeight={isSel ? '600' : '500'} flex="1" truncate>
+            <Text
+              fontFamily="var(--grove-mono)"
+              fontSize="var(--grove-mono-size)"
+              fontWeight={isSel ? '600' : '500'}
+              flex="1"
+              truncate
+            >
               {item.label}
             </Text>
-            <Text fontFamily="var(--grove-mono)" fontSize="12px" color={isSel ? '#cce0ff' : '#7d8590'}>
+            <Text
+              fontFamily="var(--grove-mono)"
+              fontSize="12px"
+              color={isSel ? '#cce0ff' : '#7d8590'}
+            >
               {kindLabel[item.kind]}
             </Text>
           </Box>
@@ -1583,9 +1871,11 @@ function CompletionDropdown({
 function PrChip({ pr }: { pr: NonNullable<TabContext['pr']> }) {
   const color = pr.draft
     ? '#8b949e'
-    : pr.state === 'MERGED' ? '#d2a8ff'
-    : pr.state === 'CLOSED' ? '#f85149'
-    : '#79c0ff';
+    : pr.state === 'MERGED'
+      ? '#d2a8ff'
+      : pr.state === 'CLOSED'
+        ? '#f85149'
+        : '#79c0ff';
   return (
     <Box
       as="button"
@@ -1608,4 +1898,3 @@ function PrChip({ pr }: { pr: NonNullable<TabContext['pr']> }) {
     </Box>
   );
 }
-

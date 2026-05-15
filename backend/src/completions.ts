@@ -4,29 +4,77 @@ import os from 'node:os';
 import path from 'node:path';
 
 const DEFAULTS = [
-  'ls', 'ls -la', 'ls -lah',
-  'cd ', 'cd ..', 'cd -',
-  'pwd', 'clear', 'history',
-  'cat ', 'less ', 'tail -f ', 'head ',
-  'mkdir ', 'rm ', 'rm -rf ', 'mv ', 'cp ', 'touch ',
+  'ls',
+  'ls -la',
+  'ls -lah',
+  'cd ',
+  'cd ..',
+  'cd -',
+  'pwd',
+  'clear',
+  'history',
+  'cat ',
+  'less ',
+  'tail -f ',
+  'head ',
+  'mkdir ',
+  'rm ',
+  'rm -rf ',
+  'mv ',
+  'cp ',
+  'touch ',
   'echo ',
-  'grep ', 'find ', 'which ',
-  'git status', 'git pull', 'git push', 'git log', 'git log --oneline',
-  'git diff', 'git diff --stat',
-  'git commit -m ""', 'git commit --amend',
-  'git checkout ', 'git checkout -b ', 'git branch',
-  'git stash', 'git stash pop',
-  'git add .', 'git add -p',
-  'npm install', 'npm i ', 'npm run dev', 'npm run build',
-  'npm start', 'npm test', 'npm run',
-  'yarn', 'yarn install', 'yarn dev', 'yarn build',
-  'pnpm install', 'pnpm dev', 'pnpm build',
-  'docker ps', 'docker compose up', 'docker compose down', 'docker logs ',
-  'kubectl get pods', 'kubectl logs ', 'kubectl describe ',
-  'curl ', 'ssh ', 'code .', 'open .',
+  'grep ',
+  'find ',
+  'which ',
+  'git status',
+  'git pull',
+  'git push',
+  'git log',
+  'git log --oneline',
+  'git diff',
+  'git diff --stat',
+  'git commit -m ""',
+  'git commit --amend',
+  'git checkout ',
+  'git checkout -b ',
+  'git branch',
+  'git stash',
+  'git stash pop',
+  'git add .',
+  'git add -p',
+  'npm install',
+  'npm i ',
+  'npm run dev',
+  'npm run build',
+  'npm start',
+  'npm test',
+  'npm run',
+  'yarn',
+  'yarn install',
+  'yarn dev',
+  'yarn build',
+  'pnpm install',
+  'pnpm dev',
+  'pnpm build',
+  'docker ps',
+  'docker compose up',
+  'docker compose down',
+  'docker logs ',
+  'kubectl get pods',
+  'kubectl logs ',
+  'kubectl describe ',
+  'curl ',
+  'ssh ',
+  'code .',
+  'open .',
 ];
 
-interface CacheEntry { ts: number; list: string[]; history: string[] }
+interface CacheEntry {
+  ts: number;
+  list: string[];
+  history: string[];
+}
 const CACHE_TTL = 10_000;
 let cache: CacheEntry | null = null;
 
@@ -84,7 +132,10 @@ export function registerCompletionRoutes(app: FastifyInstance) {
       const seen = new Set<string>(history);
       const merged = [...history];
       for (const cmd of DEFAULTS) {
-        if (!seen.has(cmd)) { merged.push(cmd); seen.add(cmd); }
+        if (!seen.has(cmd)) {
+          merged.push(cmd);
+          seen.add(cmd);
+        }
       }
       cache = { ts: now, list: merged, history };
     }

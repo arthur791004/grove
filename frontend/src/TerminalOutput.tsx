@@ -30,7 +30,15 @@ interface SgrState {
   bg: ColorSpec | null;
 }
 
-const EMPTY_SGR: SgrState = { bold: false, italic: false, underline: false, inverse: false, strike: false, fg: null, bg: null };
+const EMPTY_SGR: SgrState = {
+  bold: false,
+  italic: false,
+  underline: false,
+  inverse: false,
+  strike: false,
+  fg: null,
+  bg: null,
+};
 
 // xterm 256-color cube: 16-231 are a 6x6x6 cube, 232-255 are grayscale.
 function index256ToRgb(n: number): { r: number; g: number; b: number } {
@@ -38,10 +46,22 @@ function index256ToRgb(n: number): { r: number; g: number; b: number } {
     // 0-7 basic, 8-15 bright. Caller handles these via class names normally;
     // this fallback is only used if 38;5;0-15 slips through.
     const basic = [
-      [0, 0, 0], [205, 49, 49], [13, 188, 121], [229, 229, 16],
-      [36, 114, 200], [188, 63, 188], [17, 168, 205], [229, 229, 229],
-      [102, 102, 102], [255, 123, 114], [126, 231, 135], [227, 179, 65],
-      [121, 192, 255], [210, 168, 255], [86, 212, 221], [240, 246, 252],
+      [0, 0, 0],
+      [205, 49, 49],
+      [13, 188, 121],
+      [229, 229, 16],
+      [36, 114, 200],
+      [188, 63, 188],
+      [17, 168, 205],
+      [229, 229, 229],
+      [102, 102, 102],
+      [255, 123, 114],
+      [126, 231, 135],
+      [227, 179, 65],
+      [121, 192, 255],
+      [210, 168, 255],
+      [86, 212, 221],
+      [240, 246, 252],
     ];
     const [r, g, b] = basic[n];
     return { r, g, b };
@@ -88,8 +108,9 @@ function applySgr(prev: SgrState, params: string): SgrState {
   const out: SgrState = { ...prev };
   for (let i = 0; i < codes.length; i++) {
     const c = codes[i];
-    if (c === 0) { Object.assign(out, EMPTY_SGR); }
-    else if (c === 1) out.bold = true;
+    if (c === 0) {
+      Object.assign(out, EMPTY_SGR);
+    } else if (c === 1) out.bold = true;
     else if (c === 3) out.italic = true;
     else if (c === 4) out.underline = true;
     else if (c === 7) out.inverse = true;
@@ -106,35 +127,44 @@ function applySgr(prev: SgrState, params: string): SgrState {
       if (sub === 5 && i + 2 < codes.length) {
         const n = codes[i + 2];
         if (n < 16) out.fg = { kind: 'basic', idx: n & 7, bright: n >= 8 };
-        else { const { r, g, b } = index256ToRgb(n); out.fg = { kind: 'rgb', r, g, b }; }
+        else {
+          const { r, g, b } = index256ToRgb(n);
+          out.fg = { kind: 'rgb', r, g, b };
+        }
         i += 2;
       } else if (sub === 2 && i + 4 < codes.length) {
         out.fg = { kind: 'rgb', r: codes[i + 2], g: codes[i + 3], b: codes[i + 4] };
         i += 4;
       }
-    }
-    else if (c === 39) out.fg = null;
+    } else if (c === 39) out.fg = null;
     else if (c >= 40 && c <= 47) out.bg = { kind: 'basic', idx: c - 40, bright: false };
     else if (c === 48) {
       const sub = codes[i + 1];
       if (sub === 5 && i + 2 < codes.length) {
         const n = codes[i + 2];
         if (n < 16) out.bg = { kind: 'basic', idx: n & 7, bright: n >= 8 };
-        else { const { r, g, b } = index256ToRgb(n); out.bg = { kind: 'rgb', r, g, b }; }
+        else {
+          const { r, g, b } = index256ToRgb(n);
+          out.bg = { kind: 'rgb', r, g, b };
+        }
         i += 2;
       } else if (sub === 2 && i + 4 < codes.length) {
         out.bg = { kind: 'rgb', r: codes[i + 2], g: codes[i + 3], b: codes[i + 4] };
         i += 4;
       }
-    }
-    else if (c === 49) out.bg = null;
+    } else if (c === 49) out.bg = null;
     else if (c >= 90 && c <= 97) out.fg = { kind: 'basic', idx: c - 90, bright: true };
     else if (c >= 100 && c <= 107) out.bg = { kind: 'basic', idx: c - 100, bright: true };
   }
   return out;
 }
 
-interface Seg { cls: string; style: React.CSSProperties | undefined; text: string; url: string | null }
+interface Seg {
+  cls: string;
+  style: React.CSSProperties | undefined;
+  text: string;
+  url: string | null;
+}
 
 function parseSegments(raw: string): Seg[] {
   const segs: Seg[] = [];
@@ -184,9 +214,16 @@ function parseSegments(raw: string): Seg[] {
       const belIdx = raw.indexOf('\x07', i + 4);
       let end: number;
       let termLen: number;
-      if (stIdx !== -1 && (belIdx === -1 || stIdx < belIdx)) { end = stIdx; termLen = 2; }
-      else if (belIdx !== -1) { end = belIdx; termLen = 1; }
-      else { i++; continue; }
+      if (stIdx !== -1 && (belIdx === -1 || stIdx < belIdx)) {
+        end = stIdx;
+        termLen = 2;
+      } else if (belIdx !== -1) {
+        end = belIdx;
+        termLen = 1;
+      } else {
+        i++;
+        continue;
+      }
       const inner = raw.slice(i + 4, end);
       const semi = inner.indexOf(';');
       const nextUrl = semi >= 0 ? inner.slice(semi + 1) : '';
@@ -198,10 +235,20 @@ function parseSegments(raw: string): Seg[] {
       // through ST (ESC \) or BEL.
       const stIdx = raw.indexOf('\x1b\\', i + 2);
       const belIdx = raw.indexOf('\x07', i + 2);
-      let end = -1; let termLen = 0;
-      if (stIdx !== -1 && (belIdx === -1 || stIdx < belIdx)) { end = stIdx; termLen = 2; }
-      else if (belIdx !== -1) { end = belIdx; termLen = 1; }
-      if (end === -1) { i++; } else { i = end + termLen; }
+      let end = -1;
+      let termLen = 0;
+      if (stIdx !== -1 && (belIdx === -1 || stIdx < belIdx)) {
+        end = stIdx;
+        termLen = 2;
+      } else if (belIdx !== -1) {
+        end = belIdx;
+        termLen = 1;
+      }
+      if (end === -1) {
+        i++;
+      } else {
+        i = end + termLen;
+      }
     } else if (ch === '\x1b' && raw[i + 1] === 'P') {
       // DCS (Device Control String) — terminated by ST.
       const stIdx = raw.indexOf('\x1b\\', i + 2);
@@ -239,7 +286,9 @@ function stripLineCol(p: string): string {
 function urlToPath(url: string): string {
   if (url.startsWith('file://')) {
     let p = url.replace(/^file:\/\/[^/]*/, '');
-    try { p = decodeURIComponent(p); } catch {}
+    try {
+      p = decodeURIComponent(p);
+    } catch {}
     return p;
   }
   return url;
@@ -281,7 +330,19 @@ async function openLink(rawTarget: string, blockCwd: string) {
 }
 
 // Detected-as-path tokens: always-on dotted underline so they read as links.
-function PathLink({ href, cls, style, cwd, children }: { href: string; cls: string; style?: React.CSSProperties; cwd: string; children: React.ReactNode }) {
+function PathLink({
+  href,
+  cls,
+  style,
+  cwd,
+  children,
+}: {
+  href: string;
+  cls: string;
+  style?: React.CSSProperties;
+  cwd: string;
+  children: React.ReactNode;
+}) {
   return (
     <span
       className={`${cls} grove-output-link`}
@@ -302,7 +363,19 @@ function PathLink({ href, cls, style, cwd, children }: { href: string; cls: stri
 
 // Plain words: no decoration at rest, but light up on ⌘-hover so the user
 // sees what they're about to verify+open.
-function WordCandidate({ word, cls, style, cwd, children }: { word: string; cls: string; style?: React.CSSProperties; cwd: string; children: React.ReactNode }) {
+function WordCandidate({
+  word,
+  cls,
+  style,
+  cwd,
+  children,
+}: {
+  word: string;
+  cls: string;
+  style?: React.CSSProperties;
+  cwd: string;
+  children: React.ReactNode;
+}) {
   return (
     <span
       className={`${cls} grove-output-word`}
@@ -325,7 +398,11 @@ function onLinkClick(e: React.MouseEvent, href: string, cwd: string) {
 
 // One styled slice of a word. Multiple pieces with differing SGR may make up
 // a single logical word when SerializeAddon split the URL across cells.
-interface Piece { cls: string; style: React.CSSProperties | undefined; text: string }
+interface Piece {
+  cls: string;
+  style: React.CSSProperties | undefined;
+  text: string;
+}
 
 export function TerminalOutput({ text, cwd }: { text: string; cwd: string }) {
   const nodes = useMemo(() => {
@@ -342,15 +419,27 @@ export function TerminalOutput({ text, cwd }: { text: string; cwd: string }) {
       const stripped = cleanToken(joined);
       if (stripped && (PATH_LIKE_WORD.test(stripped) || HTTP_URL_WORD.test(stripped))) {
         for (const p of wordPieces) {
-          out.push(<PathLink key={key++} href={stripped} cls={p.cls} style={p.style} cwd={cwd}>{p.text}</PathLink>);
+          out.push(
+            <PathLink key={key++} href={stripped} cls={p.cls} style={p.style} cwd={cwd}>
+              {p.text}
+            </PathLink>,
+          );
         }
       } else if (stripped) {
         for (const p of wordPieces) {
-          out.push(<WordCandidate key={key++} word={stripped} cls={p.cls} style={p.style} cwd={cwd}>{p.text}</WordCandidate>);
+          out.push(
+            <WordCandidate key={key++} word={stripped} cls={p.cls} style={p.style} cwd={cwd}>
+              {p.text}
+            </WordCandidate>,
+          );
         }
       } else {
         for (const p of wordPieces) {
-          out.push(<span key={key++} className={p.cls} style={p.style}>{p.text}</span>);
+          out.push(
+            <span key={key++} className={p.cls} style={p.style}>
+              {p.text}
+            </span>,
+          );
         }
       }
       wordPieces = [];
@@ -375,7 +464,11 @@ export function TerminalOutput({ text, cwd }: { text: string; cwd: string }) {
         const chunk = s.text.slice(i, j);
         if (isWs) {
           flushWord();
-          out.push(<span key={key++} className={s.cls} style={s.style}>{chunk}</span>);
+          out.push(
+            <span key={key++} className={s.cls} style={s.style}>
+              {chunk}
+            </span>,
+          );
         } else {
           wordPieces.push({ cls: s.cls, style: s.style, text: chunk });
         }

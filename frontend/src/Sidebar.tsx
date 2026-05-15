@@ -1,5 +1,13 @@
 import { Box, Flex, HStack, Input, Text } from '@chakra-ui/react';
-import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { createPortal } from 'react-dom';
 import {
   DndContext,
@@ -27,7 +35,14 @@ import { Tooltip } from './Tooltip';
 import { shortPath } from './paths';
 import { GitFork } from 'lucide-react';
 import {
-  BranchIcon, ChevronIcon, CloseIcon, FolderIcon, KebabIcon, PlusIcon, StopIcon, TerminalIcon,
+  BranchIcon,
+  ChevronIcon,
+  CloseIcon,
+  FolderIcon,
+  KebabIcon,
+  PlusIcon,
+  StopIcon,
+  TerminalIcon,
 } from './icons';
 
 // Returns the current branch of a workspace's cwd. Seeded by a single
@@ -35,9 +50,15 @@ import {
 // WebSocket ctx pushes — any tab in the same worktree (matching repoRoot)
 // reports the same branch as the workspace itself.
 function useWorkspaceBranch(groupId: string, cwd: string, enabled: boolean): string | null {
-  const [state, setState] = useState<{ branch: string | null; repoRoot: string | null }>({ branch: null, repoRoot: null });
+  const [state, setState] = useState<{ branch: string | null; repoRoot: string | null }>({
+    branch: null,
+    repoRoot: null,
+  });
   useEffect(() => {
-    if (!enabled || !cwd) { setState({ branch: null, repoRoot: null }); return; }
+    if (!enabled || !cwd) {
+      setState({ branch: null, repoRoot: null });
+      return;
+    }
     let cancelled = false;
     // One-shot seed: gives us the initial branch + the workspace's repoRoot
     // so subsequent tab pushes can be matched.
@@ -48,7 +69,9 @@ function useWorkspaceBranch(groupId: string, cwd: string, enabled: boolean): str
         setState({ branch: data.branch ?? null, repoRoot: data.repoRoot ?? null });
       })
       .catch(() => {});
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [cwd, enabled]);
 
   useEffect(() => {
@@ -148,16 +171,16 @@ export function Sidebar() {
   const collisionDetection: CollisionDetection = (args) => {
     const activeId = String(args.active.id);
     if (activeId.startsWith('group:')) {
-      const groupsOnly = args.droppableContainers.filter((c) =>
-        String(c.id).startsWith('group:'),
-      );
+      const groupsOnly = args.droppableContainers.filter((c) => String(c.id).startsWith('group:'));
       return closestCenter({ ...args, droppableContainers: groupsOnly });
     }
     return closestCenter(args);
   };
 
   return (
-    <ColorPopupContext.Provider value={{ openTabId: colorPopupTabId, setOpenTabId: setColorPopupTabId }}>
+    <ColorPopupContext.Provider
+      value={{ openTabId: colorPopupTabId, setOpenTabId: setColorPopupTabId }}
+    >
       <Box h="100%" display="flex" flexDirection="column" bg="#0d1117">
         <Box flex="1" overflowY="auto" px="2" pt="2" pb="2">
           <DndContext
@@ -180,13 +203,20 @@ export function Sidebar() {
             </DragOverlay>
           </DndContext>
         </Box>
-
       </Box>
     </ColorPopupContext.Provider>
   );
 }
 
-function SidebarIconButton({ children, title, onClick }: { children: React.ReactNode; title: string; onClick: () => void }) {
+function SidebarIconButton({
+  children,
+  title,
+  onClick,
+}: {
+  children: React.ReactNode;
+  title: string;
+  onClick: () => void;
+}) {
   return (
     <button
       title={title}
@@ -212,9 +242,10 @@ function SidebarIconButton({ children, title, onClick }: { children: React.React
 }
 
 function GroupSection({ group }: { group: Group }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging, isSorting } = useSortable({
-    id: `group:${group.id}`,
-  });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging, isSorting } =
+    useSortable({
+      id: `group:${group.id}`,
+    });
   const tabs = useStore((s) => s.tabs);
   const tabOrderByGroup = useStore((s) => s.tabOrderByGroup);
   const toggleGroup = useStore((s) => s.toggleGroup);
@@ -223,7 +254,7 @@ function GroupSection({ group }: { group: Group }) {
   const forkGroup = useStore((s) => s.forkGroup);
   const closeFork = useStore((s) => s.closeFork);
   const sourceName = useStore((s) =>
-    group.forkedFromId ? s.groups.find((g) => g.id === group.forkedFromId)?.name ?? null : null,
+    group.forkedFromId ? (s.groups.find((g) => g.id === group.forkedFromId)?.name ?? null) : null,
   );
   // Show a repo badge next to fork names when the user has forks across more
   // than one repo — otherwise the badge would be redundant clutter. Slug is
@@ -236,15 +267,18 @@ function GroupSection({ group }: { group: Group }) {
   const justDraggedRef = useRef(false);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   const [hovered, setHovered] = useState(false);
-  const [confirmDialog, setConfirmDialog] = useState<{ message: string; danger: boolean } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ message: string; danger: boolean } | null>(
+    null,
+  );
   const isFork = !!group.forkedFromId;
   // The workspace owns its branch; tabs that match this branch suppress their
   // chip so the sidebar isn't repeating the same `main` four times.
   const workspaceBranch = useWorkspaceBranch(group.id, group.cwd, !group.collapsed);
   // grove/ is implicit when the workspace itself is a fork.
-  const workspaceBranchShort = workspaceBranch && isFork && workspaceBranch.startsWith('grove/')
-    ? workspaceBranch.slice('grove/'.length)
-    : workspaceBranch;
+  const workspaceBranchShort =
+    workspaceBranch && isFork && workspaceBranch.startsWith('grove/')
+      ? workspaceBranch.slice('grove/'.length)
+      : workspaceBranch;
   // Suppress the chip when it would just echo the workspace name — common for
   // forks sitting on their original grove/<slug> branch.
   const showWorkspaceBranchChip = !!workspaceBranchShort && workspaceBranchShort !== group.name;
@@ -258,11 +292,15 @@ function GroupSection({ group }: { group: Group }) {
     window.grove?.workspace?.isGitRepo({ cwd: group.cwd }).then((ok) => {
       if (!cancelled) setIsGit(!!ok);
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [menuPos, isGit, group.cwd]);
 
   // Re-evaluate if the cwd changes (user edited the folder).
-  useEffect(() => { if (!isFork) setIsGit(null); }, [group.cwd, isFork]);
+  useEffect(() => {
+    if (!isFork) setIsGit(null);
+  }, [group.cwd, isFork]);
 
   // Current branch lookup for the menu's Copy branch entry. Forks use their
   // recorded forkBranch so the menu shows the grove/* slug even after the
@@ -277,14 +315,20 @@ function GroupSection({ group }: { group: Group }) {
       if (!r.ok) return null;
       const data = await r.json();
       return data?.branch ?? null;
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   }
 
   useEffect(() => {
     if (!menuPos || isFork) return;
     let cancelled = false;
-    fetchBranch().then((b) => { if (!cancelled) setMenuBranch(b); });
-    return () => { cancelled = true; };
+    fetchBranch().then((b) => {
+      if (!cancelled) setMenuBranch(b);
+    });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [menuPos, isFork, group.cwd]);
 
@@ -319,7 +363,10 @@ function GroupSection({ group }: { group: Group }) {
     setMenuPos(null);
     // Non-forks are pure renderer state — Grove never wrote anything to git on
     // their behalf, so removing them needs no main-process round trip.
-    if (!isFork) { removeGroup(group.id); return; }
+    if (!isFork) {
+      removeGroup(group.id);
+      return;
+    }
     const res = await closeFork(group.id, force);
     if ('error' in res) {
       // eslint-disable-next-line no-alert
@@ -334,7 +381,10 @@ function GroupSection({ group }: { group: Group }) {
       if (dirty) {
         const parts: string[] = [];
         if (status.hasUncommitted) parts.push('uncommitted changes');
-        if (status.hasUnpushed) parts.push(`${status.unpushedCount} unpushed commit${status.unpushedCount === 1 ? '' : 's'}`);
+        if (status.hasUnpushed)
+          parts.push(
+            `${status.unpushedCount} unpushed commit${status.unpushedCount === 1 ? '' : 's'}`,
+          );
         msg = `This workspace has ${parts.join(' and ')}${branchInfo}. The worktree directory and the grove/* branch will be deleted — this work cannot be recovered.`;
       } else {
         msg = `No uncommitted changes${branchInfo}. The worktree directory and its grove/* branch will be removed.`;
@@ -373,7 +423,9 @@ function GroupSection({ group }: { group: Group }) {
   useEffect(() => {
     if (wasDragging.current && !isDragging) {
       justDraggedRef.current = true;
-      const t = setTimeout(() => { justDraggedRef.current = false; }, 250);
+      const t = setTimeout(() => {
+        justDraggedRef.current = false;
+      }, 250);
       return () => clearTimeout(t);
     }
     wasDragging.current = isDragging;
@@ -394,12 +446,7 @@ function GroupSection({ group }: { group: Group }) {
   };
 
   return (
-    <Box
-      ref={setNodeRef}
-      style={style}
-      mb="2"
-      position="relative"
-    >
+    <Box ref={setNodeRef} style={style} mb="2" position="relative">
       <Flex
         align="center"
         px="1.5"
@@ -454,9 +501,15 @@ function GroupSection({ group }: { group: Group }) {
               autoFocus
               placeholder="~/path/to/folder"
               onClick={(e) => e.stopPropagation()}
-              onBlur={(e) => { setGroupCwd(group.id, e.target.value || group.cwd); setEditingCwd(false); }}
+              onBlur={(e) => {
+                setGroupCwd(group.id, e.target.value || group.cwd);
+                setEditingCwd(false);
+              }}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') { setGroupCwd(group.id, (e.target as HTMLInputElement).value || group.cwd); setEditingCwd(false); }
+                if (e.key === 'Enter') {
+                  setGroupCwd(group.id, (e.target as HTMLInputElement).value || group.cwd);
+                  setEditingCwd(false);
+                }
                 if (e.key === 'Escape') setEditingCwd(false);
               }}
               color="#c9d1d9"
@@ -468,13 +521,7 @@ function GroupSection({ group }: { group: Group }) {
             />
           ) : (
             <Tooltip label={shortPath(group.cwd)}>
-              <Text
-                fontSize="12px"
-                color="#c9d1d9"
-                fontWeight="500"
-                truncate
-                lineHeight="1.4"
-              >
+              <Text fontSize="12px" color="#c9d1d9" fontWeight="500" truncate lineHeight="1.4">
                 {group.name}
               </Text>
             </Tooltip>
@@ -503,7 +550,9 @@ function GroupSection({ group }: { group: Group }) {
               <Box flexShrink={0} display="inline-flex" alignItems="center">
                 <BranchIcon />
               </Box>
-              <Box truncate minW="0">{workspaceBranchShort}</Box>
+              <Box truncate minW="0">
+                {workspaceBranchShort}
+              </Box>
             </Box>
           </Tooltip>
         )}
@@ -520,38 +569,54 @@ function GroupSection({ group }: { group: Group }) {
           opacity="0"
           transition="opacity 0.12s"
         >
-        <button
-          title="New tab in group"
-          onPointerDown={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); newTab(group.id); }}
-          style={{
-            background: 'transparent', border: 'none',
-            color: '#7d8590', cursor: 'pointer',
-            width: 20, height: 20,
-            borderRadius: 4,
-            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            padding: 0,
-          }}
-        >
-          <PlusIcon />
-        </button>
-        <button
-          title={isFork ? 'Close workspace' : 'Delete workspace'}
-          onPointerDown={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); handleCloseWorkspace(false); }}
-          style={{
-            background: 'transparent', border: 'none',
-            color: '#7d8590', cursor: 'pointer',
-            width: 20, height: 20,
-            borderRadius: 4,
-            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            padding: 0,
-          }}
-        >
-          <CloseIcon />
-        </button>
+          <button
+            title="New tab in group"
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              newTab(group.id);
+            }}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#7d8590',
+              cursor: 'pointer',
+              width: 20,
+              height: 20,
+              borderRadius: 4,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 0,
+            }}
+          >
+            <PlusIcon />
+          </button>
+          <button
+            title={isFork ? 'Close workspace' : 'Delete workspace'}
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleCloseWorkspace(false);
+            }}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#7d8590',
+              cursor: 'pointer',
+              width: 20,
+              height: 20,
+              borderRadius: 4,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 0,
+            }}
+          >
+            <CloseIcon />
+          </button>
         </HStack>
       </Flex>
 
@@ -572,115 +637,145 @@ function GroupSection({ group }: { group: Group }) {
       {isFork && groupTabs.length === 0 && !group.collapsed && (
         <Box pt="1" pb="1" pl="8" pr="2">
           <Text fontSize="11px" color="#7d8590" lineHeight="1.5">
-            Fresh workspace{sourceName ? ` from ${sourceName}` : ''}. Hover this row and click + to add a tab.
+            Fresh workspace{sourceName ? ` from ${sourceName}` : ''}. Hover this row and click + to
+            add a tab.
           </Text>
         </Box>
       )}
-      {confirmDialog && createPortal(
-        <Box
-          position="fixed"
-          inset="0"
-          bg="rgba(0,0,0,0.5)"
-          zIndex={2000}
-          display="flex"
-          alignItems="center"
-          justifyContent="center"
-          onClick={() => setConfirmDialog(null)}
-        >
+      {confirmDialog &&
+        createPortal(
           <Box
+            position="fixed"
+            inset="0"
+            bg="rgba(0,0,0,0.5)"
+            zIndex={2000}
+            display="flex"
+            alignItems="center"
+            justifyContent="center"
+            onClick={() => setConfirmDialog(null)}
+          >
+            <Box
+              bg="#161b22"
+              border="1px solid #30363d"
+              borderRadius="8px"
+              boxShadow="0 20px 60px rgba(0,0,0,0.6)"
+              w="440px"
+              p="4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Text fontSize="14px" color="#f0f6fc" fontWeight="600" mb="2">
+                Close {group.name}?
+              </Text>
+              <Text fontSize="12px" color="#c9d1d9" mb="4" lineHeight="1.5" whiteSpace="pre-wrap">
+                {confirmDialog.message}
+              </Text>
+              <Flex justify="flex-end" gap="2">
+                <button
+                  onClick={() => setConfirmDialog(null)}
+                  style={{
+                    background: 'transparent',
+                    border: '1px solid #30363d',
+                    color: '#c9d1d9',
+                    cursor: 'pointer',
+                    padding: '6px 14px',
+                    borderRadius: 4,
+                    fontSize: 12,
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    setConfirmDialog(null);
+                    handleCloseWorkspace(true);
+                  }}
+                  style={
+                    confirmDialog.danger
+                      ? {
+                          background: '#da3633',
+                          border: '1px solid #f85149',
+                          color: '#fff',
+                          cursor: 'pointer',
+                          padding: '6px 14px',
+                          borderRadius: 4,
+                          fontSize: 12,
+                          fontWeight: 600,
+                        }
+                      : {
+                          background: '#1f6feb',
+                          border: '1px solid #388bfd',
+                          color: '#fff',
+                          cursor: 'pointer',
+                          padding: '6px 14px',
+                          borderRadius: 4,
+                          fontSize: 12,
+                          fontWeight: 600,
+                        }
+                  }
+                >
+                  {confirmDialog.danger ? 'Discard and close' : 'Close workspace'}
+                </button>
+              </Flex>
+            </Box>
+          </Box>,
+          document.body,
+        )}
+      {menuPos &&
+        createPortal(
+          <Box
+            data-group-menu
+            position="fixed"
+            top={`${menuPos.top}px`}
+            left={`${menuPos.left}px`}
             bg="#161b22"
             border="1px solid #30363d"
-            borderRadius="8px"
-            boxShadow="0 20px 60px rgba(0,0,0,0.6)"
-            w="440px"
-            p="4"
+            borderRadius="6px"
+            py="1"
+            zIndex={1000}
+            minW="220px"
+            boxShadow="0 10px 30px rgba(0,0,0,0.5)"
             onClick={(e) => e.stopPropagation()}
           >
-            <Text fontSize="14px" color="#f0f6fc" fontWeight="600" mb="2">
-              Close {group.name}?
-            </Text>
-            <Text fontSize="12px" color="#c9d1d9" mb="4" lineHeight="1.5" whiteSpace="pre-wrap">
-              {confirmDialog.message}
-            </Text>
-            <Flex justify="flex-end" gap="2">
-              <button
-                onClick={() => setConfirmDialog(null)}
-                style={{
-                  background: 'transparent', border: '1px solid #30363d', color: '#c9d1d9',
-                  cursor: 'pointer', padding: '6px 14px', borderRadius: 4, fontSize: 12,
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => { setConfirmDialog(null); handleCloseWorkspace(true); }}
-                style={confirmDialog.danger
-                  ? { background: '#da3633', border: '1px solid #f85149', color: '#fff', cursor: 'pointer', padding: '6px 14px', borderRadius: 4, fontSize: 12, fontWeight: 600 }
-                  : { background: '#1f6feb', border: '1px solid #388bfd', color: '#fff', cursor: 'pointer', padding: '6px 14px', borderRadius: 4, fontSize: 12, fontWeight: 600 }
-                }
-              >
-                {confirmDialog.danger ? 'Discard and close' : 'Close workspace'}
-              </button>
-            </Flex>
-          </Box>
-        </Box>,
-        document.body,
-      )}
-      {menuPos && createPortal(
-        <Box
-          data-group-menu
-          position="fixed"
-          top={`${menuPos.top}px`}
-          left={`${menuPos.left}px`}
-          bg="#161b22"
-          border="1px solid #30363d"
-          borderRadius="6px"
-          py="1"
-          zIndex={1000}
-          minW="220px"
-          boxShadow="0 10px 30px rgba(0,0,0,0.5)"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <TabMenuItem
-            onClick={isGit === false ? () => {} : handleFork}
-            disabled={isGit === false}
-            hint={isGit === false ? 'Not a git repository' : undefined}
-          >
-            Fork workspace
-          </TabMenuItem>
-          <Box borderTop="1px solid #30363d" my="1" />
-          <TabMenuItem
-            onClick={() => {
-              navigator.clipboard.writeText(group.cwd);
-              setMenuPos(null);
-            }}
-          >
-            Copy working directory
-          </TabMenuItem>
-          {isGit !== false && (
             <TabMenuItem
-              onClick={copyBranchBusy ? () => {} : handleCopyBranch}
-              disabled={copyBranchBusy}
+              onClick={isGit === false ? () => {} : handleFork}
+              disabled={isGit === false}
+              hint={isGit === false ? 'Not a git repository' : undefined}
             >
-              {copyBranchBusy ? 'Copying branch…' : 'Copy branch'}
+              Fork workspace
             </TabMenuItem>
-          )}
-          <Box borderTop="1px solid #30363d" my="1" />
-          <TabMenuItem
-            onClick={() => {
-              if (window.grove?.revealPath) window.grove.revealPath(group.cwd);
-              setMenuPos(null);
-            }}
-          >
-            Open in Finder
-          </TabMenuItem>
-          <Box borderTop="1px solid #30363d" my="1" />
-          <TabMenuItem onClick={() => handleCloseWorkspace(false)} danger>
-            Close workspace
-          </TabMenuItem>
-        </Box>,
-        document.body,
-      )}
+            <Box borderTop="1px solid #30363d" my="1" />
+            <TabMenuItem
+              onClick={() => {
+                navigator.clipboard.writeText(group.cwd);
+                setMenuPos(null);
+              }}
+            >
+              Copy working directory
+            </TabMenuItem>
+            {isGit !== false && (
+              <TabMenuItem
+                onClick={copyBranchBusy ? () => {} : handleCopyBranch}
+                disabled={copyBranchBusy}
+              >
+                {copyBranchBusy ? 'Copying branch…' : 'Copy branch'}
+              </TabMenuItem>
+            )}
+            <Box borderTop="1px solid #30363d" my="1" />
+            <TabMenuItem
+              onClick={() => {
+                if (window.grove?.revealPath) window.grove.revealPath(group.cwd);
+                setMenuPos(null);
+              }}
+            >
+              Open in Finder
+            </TabMenuItem>
+            <Box borderTop="1px solid #30363d" my="1" />
+            <TabMenuItem onClick={() => handleCloseWorkspace(false)} danger>
+              Close workspace
+            </TabMenuItem>
+          </Box>,
+          document.body,
+        )}
     </Box>
   );
 }
@@ -704,7 +799,14 @@ function DragPreview({ id }: { id: string }) {
         opacity={0.9}
       >
         <Box w="10px" />
-        <Box w="20px" h="20px" color="#7d8590" display="flex" alignItems="center" justifyContent="center">
+        <Box
+          w="20px"
+          h="20px"
+          color="#7d8590"
+          display="flex"
+          alignItems="center"
+          justifyContent="center"
+        >
           <FolderIcon />
         </Box>
         <Text fontSize="12px" color="#c9d1d9" fontWeight="500" lineHeight="1.4" truncate>
@@ -744,7 +846,12 @@ function DragPreview({ id }: { id: string }) {
         >
           <TerminalIcon />
         </Box>
-        <Text fontSize="12px" color={isDefault ? '#f0f6fc' : COLOR_HEX[t.color]} truncate lineHeight="1.4">
+        <Text
+          fontSize="12px"
+          color={isDefault ? '#f0f6fc' : COLOR_HEX[t.color]}
+          truncate
+          lineHeight="1.4"
+        >
           {t.title}
         </Text>
       </Flex>
@@ -799,13 +906,17 @@ function TabCard({ tab, workspaceBranch }: { tab: Tab; workspaceBranch: string |
   const isFork = !!group?.forkedFromId;
   // Inside a fork the `grove/` prefix is implied by the workspace itself,
   // so the chip drops it to leave room for the slug (otter-a3f2).
-  const branch = isFork && rawBranch?.startsWith('grove/') ? rawBranch.slice('grove/'.length) : rawBranch;
+  const branch =
+    isFork && rawBranch?.startsWith('grove/') ? rawBranch.slice('grove/'.length) : rawBranch;
   const isDefault = tab.color === 'default';
   const flexElRef = useRef<HTMLElement | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
 
   useLayoutEffect(() => {
-    if (!showColors) { setMenuPos(null); return; }
+    if (!showColors) {
+      setMenuPos(null);
+      return;
+    }
     const el = flexElRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
@@ -814,222 +925,297 @@ function TabCard({ tab, workspaceBranch }: { tab: Tab; workspaceBranch: string |
 
   return (
     <>
-    <Flex
-      ref={(el) => { setNodeRef(el); ref.current = el; flexElRef.current = el; }}
-      style={style}
-      align="center"
-      gap="1.5"
-      px="1.5"
-      h="32px"
-      borderRadius="6px"
-      bg={active ? '#21262d' : 'transparent'}
-      _hover={{ bg: active ? '#21262d' : '#161b22' }}
-      cursor="pointer"
-      onClick={() => setActive(tab.id)}
-      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setOpenTabId(tab.id); }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      position="relative"
-      {...attributes}
-      {...listeners}
-    >
-      <Box w="10px" h="20px" flexShrink={0} />
-      <Box
-        as={runningCmd ? 'button' : 'div'}
-        w="20px"
-        h="20px"
-        borderRadius="4px"
-        bg={isDefault ? '#161b22' : COLOR_HEX[tab.color] + '33'}
-        border="1px solid"
-        borderColor={isDefault ? '#21262d' : COLOR_HEX[tab.color] + '66'}
-        display="flex"
-        alignItems="center"
-        justifyContent="center"
-        flexShrink={0}
-        color={isDefault ? '#7d8590' : COLOR_HEX[tab.color]}
-        cursor={runningCmd ? 'pointer' : 'default'}
-        title={runningCmd ? `Stop "${runningCmd}" (send ⌃C)` : undefined}
-        onPointerDown={runningCmd ? (e: React.PointerEvent) => e.stopPropagation() : undefined}
-        onMouseDown={runningCmd ? (e: React.MouseEvent) => e.stopPropagation() : undefined}
-        onClick={runningCmd ? (e: React.MouseEvent) => {
-          e.stopPropagation();
-          fetch(`${API_BASE}/session/${tab.id}/input`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ data: '\x03' }),
-          }).catch(() => {});
-        } : undefined}
-        _hover={runningCmd ? { color: '#f85149' } : undefined}
-      >
-        {runningCmd ? <StopIcon /> : <TerminalIcon />}
-      </Box>
-
-      <Box flex="1" minW="0">
-        {editing ? (
-          <Input
-            size="xs"
-            defaultValue={tab.title}
-            autoFocus
-            onClick={(e) => e.stopPropagation()}
-            onBlur={(e) => { renameTab(tab.id, e.target.value || tab.title); setEditing(false); }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') { renameTab(tab.id, (e.target as HTMLInputElement).value || tab.title); setEditing(false); }
-              if (e.key === 'Escape') setEditing(false);
-            }}
-            color="#c9d1d9"
-            bg="#0d1117"
-            borderColor="#30363d"
-          />
-        ) : runningCmd ? (
-          <Text
-            fontSize="12px"
-            color="#7d8590"
-            fontFamily="var(--grove-mono)"
-            truncate
-            lineHeight="1.4"
-            title={runningCmd}
-          >
-            {runningCmd}
-          </Text>
-        ) : (
-          <Text
-            fontSize="12px"
-            color={isDefault ? (active ? '#f0f6fc' : '#c9d1d9') : COLOR_HEX[tab.color]}
-            fontWeight={active ? '500' : '400'}
-            onDoubleClick={(e) => { e.stopPropagation(); setEditing(true); }}
-            truncate
-            lineHeight="1.4"
-          >
-            {tab.title}
-          </Text>
-        )}
-      </Box>
-      {branch && rawBranch !== workspaceBranch && !hovered && !showColors && !runningCmd && (
-        <Tooltip label={branch}>
-          <Box
-            flexShrink={0}
-            px="1.5"
-            py="0.5"
-            maxW="80px"
-            bg="#161b22"
-            border="1px solid #21262d"
-            borderRadius="4px"
-            color="#7ee787"
-            fontSize="10px"
-            fontFamily="var(--grove-mono)"
-            lineHeight="1"
-            display="inline-flex"
-            alignItems="center"
-            gap="1"
-            minW="0"
-            overflow="hidden"
-          >
-            <Box flexShrink={0} display="inline-flex" alignItems="center">
-              <BranchIcon />
-            </Box>
-            <Box truncate minW="0">{branch}</Box>
-          </Box>
-        </Tooltip>
-      )}
-
-      {(hovered || showColors) && (
-        <HStack
-          gap="1"
-          position="absolute"
-          right="4px"
-          top="50%"
-          transform="translateY(-50%)"
-          bg={active ? '#21262d' : '#161b22'}
-          pl="6px"
-          borderRadius="4px"
-        >
-          <button
-            data-color-popup-host
-            title="More"
-            onPointerDown={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => { e.stopPropagation(); toggleColors(); }}
-            style={{
-              background: 'transparent', border: 'none',
-              color: '#7d8590', cursor: 'pointer',
-              width: 20, height: 20,
-              borderRadius: 4,
-              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              padding: 0,
-            }}
-          >
-            <KebabIcon />
-          </button>
-          <button
-            title="Close"
-            onPointerDown={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
-            style={{
-              background: 'transparent', border: 'none',
-              color: '#7d8590', cursor: 'pointer',
-              width: 20, height: 20,
-              borderRadius: 4,
-              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              padding: 0,
-            }}
-          >
-            <CloseIcon />
-          </button>
-        </HStack>
-      )}
-
-    </Flex>
-    {showColors && menuPos && createPortal(
-      <Box
-        data-color-popup-host
-        position="fixed"
-        top={`${menuPos.top}px`}
-        left={`${menuPos.left}px`}
-        bg="#161b22"
-        border="1px solid #30363d"
+      <Flex
+        ref={(el) => {
+          setNodeRef(el);
+          ref.current = el;
+          flexElRef.current = el;
+        }}
+        style={style}
+        align="center"
+        gap="1.5"
+        px="1.5"
+        h="32px"
         borderRadius="6px"
-        py="1"
-        zIndex={1000}
-        minW="220px"
-        boxShadow="0 10px 30px rgba(0,0,0,0.5)"
-        onClick={(e) => e.stopPropagation()}
+        bg={active ? '#21262d' : 'transparent'}
+        _hover={{ bg: active ? '#21262d' : '#161b22' }}
+        cursor="pointer"
+        onClick={() => setActive(tab.id)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setOpenTabId(tab.id);
+        }}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        position="relative"
+        {...attributes}
+        {...listeners}
       >
-        <TabMenuItem onClick={() => { navigator.clipboard.writeText(ctx?.shortCwd || group?.cwd || ''); setOpenTabId(null); }}>
-          Copy working directory
-        </TabMenuItem>
-        {branch && (
-          <TabMenuItem onClick={() => { navigator.clipboard.writeText(branch); setOpenTabId(null); }}>
-            Copy branch
-          </TabMenuItem>
-        )}
-        <Box borderTop="1px solid #30363d" my="1" />
-        <TabMenuItem onClick={() => { closeTab(tab.id); setOpenTabId(null); }} danger>
-          Close
-        </TabMenuItem>
-        <Box borderTop="1px solid #30363d" my="1" />
-        <Flex gap="1" px="2" py="1" justify="space-between">
-          {COLOR_ORDER.map((c) => (
-            <button
-              key={c}
-              title={c}
-              onClick={(e) => { e.stopPropagation(); setColor(tab.id, c); setOpenTabId(null); }}
-              style={{
-                width: 16, height: 16, borderRadius: 8, background: COLOR_HEX[c],
-                border: tab.color === c ? '2px solid #c9d1d9' : '1px solid #30363d',
-                cursor: 'pointer',
+        <Box w="10px" h="20px" flexShrink={0} />
+        <Box
+          as={runningCmd ? 'button' : 'div'}
+          w="20px"
+          h="20px"
+          borderRadius="4px"
+          bg={isDefault ? '#161b22' : COLOR_HEX[tab.color] + '33'}
+          border="1px solid"
+          borderColor={isDefault ? '#21262d' : COLOR_HEX[tab.color] + '66'}
+          display="flex"
+          alignItems="center"
+          justifyContent="center"
+          flexShrink={0}
+          color={isDefault ? '#7d8590' : COLOR_HEX[tab.color]}
+          cursor={runningCmd ? 'pointer' : 'default'}
+          title={runningCmd ? `Stop "${runningCmd}" (send ⌃C)` : undefined}
+          onPointerDown={runningCmd ? (e: React.PointerEvent) => e.stopPropagation() : undefined}
+          onMouseDown={runningCmd ? (e: React.MouseEvent) => e.stopPropagation() : undefined}
+          onClick={
+            runningCmd
+              ? (e: React.MouseEvent) => {
+                  e.stopPropagation();
+                  fetch(`${API_BASE}/session/${tab.id}/input`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ data: '\x03' }),
+                  }).catch(() => {});
+                }
+              : undefined
+          }
+          _hover={runningCmd ? { color: '#f85149' } : undefined}
+        >
+          {runningCmd ? <StopIcon /> : <TerminalIcon />}
+        </Box>
+
+        <Box flex="1" minW="0">
+          {editing ? (
+            <Input
+              size="xs"
+              defaultValue={tab.title}
+              autoFocus
+              onClick={(e) => e.stopPropagation()}
+              onBlur={(e) => {
+                renameTab(tab.id, e.target.value || tab.title);
+                setEditing(false);
               }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  renameTab(tab.id, (e.target as HTMLInputElement).value || tab.title);
+                  setEditing(false);
+                }
+                if (e.key === 'Escape') setEditing(false);
+              }}
+              color="#c9d1d9"
+              bg="#0d1117"
+              borderColor="#30363d"
             />
-          ))}
-        </Flex>
-      </Box>,
-      document.body,
-    )}
+          ) : runningCmd ? (
+            <Text
+              fontSize="12px"
+              color="#7d8590"
+              fontFamily="var(--grove-mono)"
+              truncate
+              lineHeight="1.4"
+              title={runningCmd}
+            >
+              {runningCmd}
+            </Text>
+          ) : (
+            <Text
+              fontSize="12px"
+              color={isDefault ? (active ? '#f0f6fc' : '#c9d1d9') : COLOR_HEX[tab.color]}
+              fontWeight={active ? '500' : '400'}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                setEditing(true);
+              }}
+              truncate
+              lineHeight="1.4"
+            >
+              {tab.title}
+            </Text>
+          )}
+        </Box>
+        {branch && rawBranch !== workspaceBranch && !hovered && !showColors && !runningCmd && (
+          <Tooltip label={branch}>
+            <Box
+              flexShrink={0}
+              px="1.5"
+              py="0.5"
+              maxW="80px"
+              bg="#161b22"
+              border="1px solid #21262d"
+              borderRadius="4px"
+              color="#7ee787"
+              fontSize="10px"
+              fontFamily="var(--grove-mono)"
+              lineHeight="1"
+              display="inline-flex"
+              alignItems="center"
+              gap="1"
+              minW="0"
+              overflow="hidden"
+            >
+              <Box flexShrink={0} display="inline-flex" alignItems="center">
+                <BranchIcon />
+              </Box>
+              <Box truncate minW="0">
+                {branch}
+              </Box>
+            </Box>
+          </Tooltip>
+        )}
+
+        {(hovered || showColors) && (
+          <HStack
+            gap="1"
+            position="absolute"
+            right="4px"
+            top="50%"
+            transform="translateY(-50%)"
+            bg={active ? '#21262d' : '#161b22'}
+            pl="6px"
+            borderRadius="4px"
+          >
+            <button
+              data-color-popup-host
+              title="More"
+              onPointerDown={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleColors();
+              }}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#7d8590',
+                cursor: 'pointer',
+                width: 20,
+                height: 20,
+                borderRadius: 4,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 0,
+              }}
+            >
+              <KebabIcon />
+            </button>
+            <button
+              title="Close"
+              onPointerDown={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                closeTab(tab.id);
+              }}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#7d8590',
+                cursor: 'pointer',
+                width: 20,
+                height: 20,
+                borderRadius: 4,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 0,
+              }}
+            >
+              <CloseIcon />
+            </button>
+          </HStack>
+        )}
+      </Flex>
+      {showColors &&
+        menuPos &&
+        createPortal(
+          <Box
+            data-color-popup-host
+            position="fixed"
+            top={`${menuPos.top}px`}
+            left={`${menuPos.left}px`}
+            bg="#161b22"
+            border="1px solid #30363d"
+            borderRadius="6px"
+            py="1"
+            zIndex={1000}
+            minW="220px"
+            boxShadow="0 10px 30px rgba(0,0,0,0.5)"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <TabMenuItem
+              onClick={() => {
+                navigator.clipboard.writeText(ctx?.shortCwd || group?.cwd || '');
+                setOpenTabId(null);
+              }}
+            >
+              Copy working directory
+            </TabMenuItem>
+            {branch && (
+              <TabMenuItem
+                onClick={() => {
+                  navigator.clipboard.writeText(branch);
+                  setOpenTabId(null);
+                }}
+              >
+                Copy branch
+              </TabMenuItem>
+            )}
+            <Box borderTop="1px solid #30363d" my="1" />
+            <TabMenuItem
+              onClick={() => {
+                closeTab(tab.id);
+                setOpenTabId(null);
+              }}
+              danger
+            >
+              Close
+            </TabMenuItem>
+            <Box borderTop="1px solid #30363d" my="1" />
+            <Flex gap="1" px="2" py="1" justify="space-between">
+              {COLOR_ORDER.map((c) => (
+                <button
+                  key={c}
+                  title={c}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setColor(tab.id, c);
+                    setOpenTabId(null);
+                  }}
+                  style={{
+                    width: 16,
+                    height: 16,
+                    borderRadius: 8,
+                    background: COLOR_HEX[c],
+                    border: tab.color === c ? '2px solid #c9d1d9' : '1px solid #30363d',
+                    cursor: 'pointer',
+                  }}
+                />
+              ))}
+            </Flex>
+          </Box>,
+          document.body,
+        )}
     </>
   );
 }
 
-function TabMenuItem({ children, onClick, danger, disabled, hint }: { children: React.ReactNode; onClick: () => void; danger?: boolean; disabled?: boolean; hint?: string }) {
+function TabMenuItem({
+  children,
+  onClick,
+  danger,
+  disabled,
+  hint,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  danger?: boolean;
+  disabled?: boolean;
+  hint?: string;
+}) {
   return (
     <Box
       px="3"
@@ -1040,9 +1226,14 @@ function TabMenuItem({ children, onClick, danger, disabled, hint }: { children: 
       opacity={disabled ? 0.5 : 1}
       title={hint}
     >
-      <Text fontSize="12px" color={danger ? '#f85149' : '#f0f6fc'}>{children}</Text>
-      {hint && disabled && <Text fontSize="11px" color="#7d8590" mt="0.5">{hint}</Text>}
+      <Text fontSize="12px" color={danger ? '#f85149' : '#f0f6fc'}>
+        {children}
+      </Text>
+      {hint && disabled && (
+        <Text fontSize="11px" color="#7d8590" mt="0.5">
+          {hint}
+        </Text>
+      )}
     </Box>
   );
 }
-

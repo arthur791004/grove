@@ -92,7 +92,9 @@ export function DiffPanel({ forcedFullscreen = false }: { forcedFullscreen?: boo
   // value's `signature` tracks the polled patch it was derived from so we
   // can drop stale entries after the user edits the file and the polled
   // patch shifts.
-  const [fullPatches, setFullPatches] = useState<Record<string, { signature: string; patch: string }>>({});
+  const [fullPatches, setFullPatches] = useState<
+    Record<string, { signature: string; patch: string }>
+  >({});
   const [expandedGaps, setExpandedGaps] = useState<Set<string>>(new Set());
   const [loadingGap, setLoadingGap] = useState<string | null>(null);
   const inFlightFullPatch = useRef<Map<string, Promise<string | null>>>(new Map());
@@ -209,12 +211,17 @@ export function DiffPanel({ forcedFullscreen = false }: { forcedFullscreen?: boo
         const res = await fetch(`${API_BASE}/diff?tabId=${encodeURIComponent(activeTabId!)}`);
         const json: DiffResponse = await res.json();
         if (!cancelled) setData(json);
-      } catch {}
-      finally { if (!cancelled) setLoading(false); }
+      } catch {
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
     refresh();
     const id = setInterval(refresh, 4000);
-    return () => { cancelled = true; clearInterval(id); };
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, [activeTabId]);
 
   function scrollToFile(path: string) {
@@ -234,7 +241,9 @@ export function DiffPanel({ forcedFullscreen = false }: { forcedFullscreen?: boo
         >
           <FileListIcon />
         </HeaderIconButton>
-        <Text fontSize="12px" color="#c9d1d9" fontWeight="600" flexShrink={0}>Code review</Text>
+        <Text fontSize="12px" color="#c9d1d9" fontWeight="600" flexShrink={0}>
+          Code review
+        </Text>
         {data?.branch && (
           <Text
             fontSize="12px"
@@ -284,7 +293,9 @@ export function DiffPanel({ forcedFullscreen = false }: { forcedFullscreen?: boo
         >
           <Box w={`${FILE_LIST_W}px`} h="100%" overflowY="auto">
             {!data && loading && (
-              <Text px="3" py="2" fontSize="12px" color="#7d8590">Loading…</Text>
+              <Text px="3" py="2" fontSize="12px" color="#7d8590">
+                Loading…
+              </Text>
             )}
             {data && data.files.length === 0 && (
               <Text px="3" py="2" fontSize="12px" color="#7d8590">
@@ -299,20 +310,28 @@ export function DiffPanel({ forcedFullscreen = false }: { forcedFullscreen?: boo
 
         <Box ref={scrollRef} flex="1" overflowY="auto" minW="0">
           {!data && loading && (
-            <Text px="3" py="3" fontSize="12px" color="#7d8590">Loading…</Text>
+            <Text px="3" py="3" fontSize="12px" color="#7d8590">
+              Loading…
+            </Text>
           )}
           {data && !data.repoRoot && (
-            <Text px="3" py="3" fontSize="12px" color="#7d8590">Not a git repository.</Text>
+            <Text px="3" py="3" fontSize="12px" color="#7d8590">
+              Not a git repository.
+            </Text>
           )}
           {data && data.repoRoot && data.files.length === 0 && (
-            <Text px="3" py="3" fontSize="12px" color="#7d8590">No uncommitted changes.</Text>
+            <Text px="3" py="3" fontSize="12px" color="#7d8590">
+              No uncommitted changes.
+            </Text>
           )}
           {data?.files.map((f) => {
             const isCollapsed = collapsed.has(f.path);
             const fileHunkCount = parseHunks(f.patch).length;
-            const fileAllExpanded = fileHunkCount > 0 &&
-              Array.from({ length: fileHunkCount + 1 }, (_, i) => `${f.path}:${i}`)
-                .some((k) => expandedGaps.has(k));
+            const fileAllExpanded =
+              fileHunkCount > 0 &&
+              Array.from({ length: fileHunkCount + 1 }, (_, i) => `${f.path}:${i}`).some((k) =>
+                expandedGaps.has(k),
+              );
             const fileExpandLoading = loadingGap === `${f.path}:*`;
             return (
               <Box key={f.path} id={fileAnchorId(f.path)}>
@@ -352,7 +371,13 @@ export function DiffPanel({ forcedFullscreen = false }: { forcedFullscreen?: boo
                     onClick={() => toggleAllGapsForFile(f.path, f.patch, fileHunkCount)}
                   />
                   <CopyFileButton path={f.path} />
-                  <HStack gap="1.5" fontSize="12px" fontFamily="var(--grove-mono)" flexShrink={0} lineHeight="1">
+                  <HStack
+                    gap="1.5"
+                    fontSize="12px"
+                    fontFamily="var(--grove-mono)"
+                    flexShrink={0}
+                    lineHeight="1"
+                  >
                     {f.added > 0 && <Text color="#7ee787">+{f.added}</Text>}
                     {f.removed > 0 && <Text color="#ff7b72">-{f.removed}</Text>}
                   </HStack>
@@ -400,7 +425,13 @@ function FileRow({ file, onClick }: { file: DiffFile; onClick: () => void }) {
           >
             <FileGlyph />
           </Box>
-          <Text fontFamily="var(--grove-mono)" fontSize="12px" color="#c9d1d9" truncate title={file.path}>
+          <Text
+            fontFamily="var(--grove-mono)"
+            fontSize="12px"
+            color="#c9d1d9"
+            truncate
+            title={file.path}
+          >
             {name}
           </Text>
         </Flex>
@@ -420,11 +451,16 @@ function FileRow({ file, onClick }: { file: DiffFile; onClick: () => void }) {
 
 function statusColor(s: DiffFile['status']): string {
   switch (s) {
-    case 'added': return '#7ee787';
-    case 'deleted': return '#ff7b72';
-    case 'modified': return '#e3b341';
-    case 'renamed': return '#79c0ff';
-    default: return '#7d8590';
+    case 'added':
+      return '#7ee787';
+    case 'deleted':
+      return '#ff7b72';
+    case 'modified':
+      return '#e3b341';
+    case 'renamed':
+      return '#79c0ff';
+    default:
+      return '#7d8590';
   }
 }
 function statusLabel(s: DiffFile['status']): string {
@@ -434,7 +470,13 @@ function statusLabel(s: DiffFile['status']): string {
 const HEADER_ROW_H = '36px';
 
 function HeaderRow({
-  children, sticky, px = '3', gap = '2', cursor, onClick, _hover,
+  children,
+  sticky,
+  px = '3',
+  gap = '2',
+  cursor,
+  onClick,
+  _hover,
 }: {
   children: React.ReactNode;
   sticky?: boolean;
@@ -477,7 +519,10 @@ function HeaderRow({
 }
 
 function IconSlot({
-  children, color, title, style,
+  children,
+  color,
+  title,
+  style,
 }: {
   children: React.ReactNode;
   color?: string;
@@ -501,7 +546,9 @@ function IconSlot({
 }
 
 function ExpandAllButton({
-  isExpanded, isLoading, onClick,
+  isExpanded,
+  isLoading,
+  onClick,
 }: {
   isExpanded: boolean;
   isLoading: boolean;
@@ -510,7 +557,10 @@ function ExpandAllButton({
   const [hover, setHover] = useState(false);
   return (
     <button
-      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
       disabled={isLoading}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
@@ -534,14 +584,28 @@ function ExpandAllButton({
       <Box w="14px" h="14px" display="inline-flex" alignItems="center" justifyContent="center">
         {isLoading ? (
           <span className="grove-sq-loader">
-            <span /><span /><span /><span />
+            <span />
+            <span />
+            <span />
+            <span />
           </span>
         ) : (
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
-            {isExpanded
-              ? <path d="M3.5 2L6 4.5L8.5 2M3.5 10L6 7.5L8.5 10" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-              : <path d="M3.5 4L6 1.5L8.5 4M3.5 8L6 10.5L8.5 8" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-            }
+            {isExpanded ? (
+              <path
+                d="M3.5 2L6 4.5L8.5 2M3.5 10L6 7.5L8.5 10"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            ) : (
+              <path
+                d="M3.5 4L6 1.5L8.5 4M3.5 8L6 10.5L8.5 8"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            )}
           </svg>
         )}
       </Box>
@@ -559,10 +623,13 @@ function CopyFileButton({ path }: { path: string }) {
       onMouseLeave={() => setHover(false)}
       onClick={(e) => {
         e.stopPropagation();
-        navigator.clipboard.writeText(path).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1200);
-        }).catch(() => {});
+        navigator.clipboard
+          .writeText(path)
+          .then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1200);
+          })
+          .catch(() => {});
       }}
       style={{
         background: hover ? '#21262d' : 'transparent',
@@ -587,8 +654,20 @@ function CopyFileButton({ path }: { path: string }) {
 
 function ChevronIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" style={{ display: 'block' }}>
-      <path d="M3.5 5.5L7 9L10.5 5.5" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      style={{ display: 'block' }}
+    >
+      <path
+        d="M3.5 5.5L7 9L10.5 5.5"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
@@ -610,14 +689,26 @@ function CopyIcon() {
 function CheckIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor">
-      <path d="M3 8.5L6.5 12L13 4.5" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path
+        d="M3 8.5L6.5 12L13 4.5"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
 
 function FileGlyph() {
   return (
-    <svg width="11" height="12" viewBox="0 0 11 13" fill="none" stroke="currentColor" style={{ display: 'block' }}>
+    <svg
+      width="11"
+      height="12"
+      viewBox="0 0 11 13"
+      fill="none"
+      stroke="currentColor"
+      style={{ display: 'block' }}
+    >
       <path
         d="M2 0.5h4.5l3 3v8a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V1.5a1 1 0 0 1 1-1z"
         strokeWidth="1"
@@ -628,10 +719,17 @@ function FileGlyph() {
   );
 }
 
-interface Gap { from: number; to: number | null }
+interface Gap {
+  from: number;
+  to: number | null;
+}
 
 function FileDiffView({
-  file, fullPatch, expandedGaps, loadingGap, onToggleGap,
+  file,
+  fullPatch,
+  expandedGaps,
+  loadingGap,
+  onToggleGap,
 }: {
   file: DiffFile;
   fullPatch: string | null;
@@ -654,7 +752,11 @@ function FileDiffView({
   }, [hunks]);
 
   if (file.binary) {
-    return <Text px="3" py="2" fontSize="12px" color="#7d8590">Binary file — diff hidden.</Text>;
+    return (
+      <Text px="3" py="2" fontSize="12px" color="#7d8590">
+        Binary file — diff hidden.
+      </Text>
+    );
   }
   if (!file.patch) return null;
 
@@ -675,12 +777,15 @@ function FileDiffView({
           const gap = gaps[i];
           const isExpanded = expandedGaps.has(key);
           const expandable = isExpanded || gap.to === null || gap.from <= gap.to;
-          const expandedLines = isExpanded && fullHunk
-            ? sliceHunkBody(fullHunk, gap.from, gap.to ?? Number.MAX_SAFE_INTEGER)
-            : null;
+          const expandedLines =
+            isExpanded && fullHunk
+              ? sliceHunkBody(fullHunk, gap.from, gap.to ?? Number.MAX_SAFE_INTEGER)
+              : null;
           return (
             <Fragment key={i}>
-              {expandedLines?.map((line, j) => <DiffLine key={j} line={line} />)}
+              {expandedLines?.map((line, j) => (
+                <DiffLine key={j} line={line} />
+              ))}
               <HunkHeaderLine
                 text={h.headerLine}
                 isExpandable={expandable}
@@ -688,35 +793,45 @@ function FileDiffView({
                 isLoading={loadingGap === key}
                 onToggle={() => onToggleGap(i)}
               />
-              {h.body.map((line, j) => <DiffLine key={j} line={line} />)}
+              {h.body.map((line, j) => (
+                <DiffLine key={j} line={line} />
+              ))}
             </Fragment>
           );
         })}
-        {hunks.length > 0 && (() => {
-          const i = hunks.length;
-          const key = `${file.path}:${i}`;
-          const isExpanded = expandedGaps.has(key);
-          const expandedLines = isExpanded && fullHunk
-            ? sliceHunkBody(fullHunk, gaps[i].from, Number.MAX_SAFE_INTEGER)
-            : null;
-          return (
-            <>
-              {expandedLines?.map((line, j) => <DiffLine key={j} line={line} />)}
-              <HunkToggleRow
-                isExpanded={isExpanded}
-                isLoading={loadingGap === key}
-                onToggle={() => onToggleGap(i)}
-              />
-            </>
-          );
-        })()}
+        {hunks.length > 0 &&
+          (() => {
+            const i = hunks.length;
+            const key = `${file.path}:${i}`;
+            const isExpanded = expandedGaps.has(key);
+            const expandedLines =
+              isExpanded && fullHunk
+                ? sliceHunkBody(fullHunk, gaps[i].from, Number.MAX_SAFE_INTEGER)
+                : null;
+            return (
+              <>
+                {expandedLines?.map((line, j) => (
+                  <DiffLine key={j} line={line} />
+                ))}
+                <HunkToggleRow
+                  isExpanded={isExpanded}
+                  isLoading={loadingGap === key}
+                  onToggle={() => onToggleGap(i)}
+                />
+              </>
+            );
+          })()}
       </Box>
     </Box>
   );
 }
 
 function HunkHeaderLine({
-  text, isExpandable, isExpanded, isLoading, onToggle,
+  text,
+  isExpandable,
+  isExpanded,
+  isLoading,
+  onToggle,
 }: {
   text: string;
   isExpandable: boolean;
@@ -749,25 +864,43 @@ function HunkHeaderLine({
         >
           {isLoading ? (
             <span className="grove-sq-loader">
-              <span /><span /><span /><span />
+              <span />
+              <span />
+              <span />
+              <span />
             </span>
           ) : (
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
-              {isExpanded
-                ? <path d="M3.5 2L6 4.5L8.5 2M3.5 10L6 7.5L8.5 10" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-                : <path d="M3.5 4L6 1.5L8.5 4M3.5 8L6 10.5L8.5 8" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-              }
+              {isExpanded ? (
+                <path
+                  d="M3.5 2L6 4.5L8.5 2M3.5 10L6 7.5L8.5 10"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              ) : (
+                <path
+                  d="M3.5 4L6 1.5L8.5 4M3.5 8L6 10.5L8.5 8"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              )}
             </svg>
           )}
         </Box>
       )}
-      <Box as="span" whiteSpace="pre" flex="1" minW="0">{text || ' '}</Box>
+      <Box as="span" whiteSpace="pre" flex="1" minW="0">
+        {text || ' '}
+      </Box>
     </Flex>
   );
 }
 
 function HunkToggleRow({
-  isExpanded, isLoading, onToggle,
+  isExpanded,
+  isLoading,
+  onToggle,
 }: {
   isExpanded: boolean;
   isLoading: boolean;
@@ -802,14 +935,28 @@ function HunkToggleRow({
       >
         {isLoading ? (
           <span className="grove-sq-loader">
-            <span /><span /><span /><span />
+            <span />
+            <span />
+            <span />
+            <span />
           </span>
         ) : (
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
-            {isExpanded
-              ? <path d="M3.5 2L6 4.5L8.5 2M3.5 10L6 7.5L8.5 10" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-              : <path d="M3.5 4L6 1.5L8.5 4M3.5 8L6 10.5L8.5 8" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-            }
+            {isExpanded ? (
+              <path
+                d="M3.5 2L6 4.5L8.5 2M3.5 10L6 7.5L8.5 10"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            ) : (
+              <path
+                d="M3.5 4L6 1.5L8.5 4M3.5 8L6 10.5L8.5 8"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            )}
           </svg>
         )}
       </Box>
@@ -845,14 +992,24 @@ function DiffLine({ line }: { line: string }) {
       align="center"
       style={{ borderLeft: `3px solid ${gutter}` }}
     >
-      <Box as="span" whiteSpace="pre" flex="1" minW="0">{line || ' '}</Box>
+      <Box as="span" whiteSpace="pre" flex="1" minW="0">
+        {line || ' '}
+      </Box>
     </Flex>
   );
 }
 
 function HeaderIconButton({
-  children, title, onClick, active,
-}: { children: React.ReactNode; title: string; onClick: () => void; active?: boolean }) {
+  children,
+  title,
+  onClick,
+  active,
+}: {
+  children: React.ReactNode;
+  title: string;
+  onClick: () => void;
+  active?: boolean;
+}) {
   const [hover, setHover] = useState(false);
   const bg = active ? '#30363d' : hover ? '#21262d' : 'transparent';
   return (
@@ -894,7 +1051,12 @@ function FileListIcon() {
 function ExpandIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
-      <path d="M7 2h3v3M10 2L6.5 5.5M5 10H2V7M2 10l3.5-3.5" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+      <path
+        d="M7 2h3v3M10 2L6.5 5.5M5 10H2V7M2 10l3.5-3.5"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
@@ -902,7 +1064,12 @@ function ExpandIcon() {
 function ContractIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
-      <path d="M10 2L6.5 5.5M6.5 5.5V2.5M6.5 5.5H9.5M2 10l3.5-3.5M5.5 6.5v3M5.5 6.5h-3" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+      <path
+        d="M10 2L6.5 5.5M6.5 5.5V2.5M6.5 5.5H9.5M2 10l3.5-3.5M5.5 6.5v3M5.5 6.5h-3"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

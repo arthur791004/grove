@@ -19,16 +19,26 @@ declare global {
           displayName: string;
           worktreePath: string;
         }>;
-        close(req: { workspaceId: string; force?: boolean }): Promise<{ removed: boolean; branchDeleted: boolean }>;
+        close(req: {
+          workspaceId: string;
+          force?: boolean;
+        }): Promise<{ removed: boolean; branchDeleted: boolean }>;
         status(req: { workspaceId: string }): Promise<WorktreeStatus | null>;
         isGitRepo(req: { cwd: string }): Promise<boolean>;
-        listGroveBranches(req: { liveWorkspaceIds: string[]; cwds?: string[] }): Promise<Array<{ repoRoot: string; branch: string; worktreePath?: string }>>;
-        deleteBranches(req: { entries: Array<{ repoRoot: string; branch: string; worktreePath?: string }> }): Promise<{ deleted: number; errors: Array<{ branch: string; message: string }> }>;
+        listGroveBranches(req: {
+          liveWorkspaceIds: string[];
+          cwds?: string[];
+        }): Promise<Array<{ repoRoot: string; branch: string; worktreePath?: string }>>;
+        deleteBranches(req: {
+          entries: Array<{ repoRoot: string; branch: string; worktreePath?: string }>;
+        }): Promise<{ deleted: number; errors: Array<{ branch: string; message: string }> }>;
       };
       browser: {
         open(url: string): Promise<void>;
         close(): Promise<void>;
-        setBounds(bounds: { x: number; y: number; width: number; height: number; zoom?: number } | null): Promise<void>;
+        setBounds(
+          bounds: { x: number; y: number; width: number; height: number; zoom?: number } | null,
+        ): Promise<void>;
         navigate(url: string): Promise<void>;
         reload(): Promise<void>;
         back(): Promise<void>;

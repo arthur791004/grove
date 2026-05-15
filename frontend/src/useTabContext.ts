@@ -8,7 +8,13 @@ export interface TabContext {
   branch: string | null;
   node: string | null;
   diff: { added: number; removed: number; files: number } | null;
-  pr: { number: number; title: string; state: 'OPEN' | 'CLOSED' | 'MERGED'; draft: boolean; url: string } | null;
+  pr: {
+    number: number;
+    title: string;
+    state: 'OPEN' | 'CLOSED' | 'MERGED';
+    draft: boolean;
+    url: string;
+  } | null;
   env: Record<string, string>;
   cwdReady: boolean;
 }
@@ -24,7 +30,9 @@ const globalListeners = new Set<(tabId: string, ctx: TabContext) => void>();
 
 export function subscribeAllTabContexts(fn: (tabId: string, ctx: TabContext) => void): () => void {
   globalListeners.add(fn);
-  return () => { globalListeners.delete(fn); };
+  return () => {
+    globalListeners.delete(fn);
+  };
 }
 
 export function getCachedTabContext(tabId: string): TabContext | null {
@@ -35,17 +43,20 @@ function sameCtx(a: TabContext, b: TabContext): boolean {
   if (a.shortCwd !== b.shortCwd || a.branch !== b.branch || a.node !== b.node) return false;
   if (a.repoRoot !== b.repoRoot) return false;
   if (a.cwdReady !== b.cwdReady) return false;
-  const ad = a.diff, bd = b.diff;
+  const ad = a.diff,
+    bd = b.diff;
   if (ad !== bd) {
     if (!ad || !bd) return false;
     if (ad.added !== bd.added || ad.removed !== bd.removed || ad.files !== bd.files) return false;
   }
-  const ap = a.pr, bp = b.pr;
+  const ap = a.pr,
+    bp = b.pr;
   if (ap !== bp) {
     if (!ap || !bp) return false;
     if (ap.number !== bp.number || ap.state !== bp.state || ap.draft !== bp.draft) return false;
   }
-  const aks = Object.keys(a.env), bks = Object.keys(b.env);
+  const aks = Object.keys(a.env),
+    bks = Object.keys(b.env);
   if (aks.length !== bks.length) return false;
   for (const k of aks) if (a.env[k] !== b.env[k]) return false;
   return true;
@@ -66,7 +77,10 @@ function toCtx(data: Partial<TabContext> & Record<string, unknown>): TabContext 
 }
 
 /** Backend-pushed ctx (from the per-tab WebSocket) flows in through here. */
-export function setTabContext(tabId: string, data: Partial<TabContext> & Record<string, unknown>): void {
+export function setTabContext(
+  tabId: string,
+  data: Partial<TabContext> & Record<string, unknown>,
+): void {
   const next = toCtx(data);
   const prev = cache.get(tabId);
   if (prev && sameCtx(prev, next)) return;
@@ -87,7 +101,10 @@ export function useTabContext(
   useEffect(() => {
     if (!tabId) return;
     let subs = listeners.get(tabId);
-    if (!subs) { subs = new Set(); listeners.set(tabId, subs); }
+    if (!subs) {
+      subs = new Set();
+      listeners.set(tabId, subs);
+    }
     const fn = (c: TabContext) => setCtx(c);
     subs.add(fn);
     const cached = cache.get(tabId);
@@ -101,10 +118,14 @@ export function useTabContext(
       fetch(`${API_BASE}/context?tabId=${encodeURIComponent(tabId)}`)
         .then((r) => r.json())
         .then((data) => setTabContext(tabId, data))
-        .catch(() => { oneShotFetched.delete(tabId); });
+        .catch(() => {
+          oneShotFetched.delete(tabId);
+        });
     }
 
-    return () => { subs!.delete(fn); };
+    return () => {
+      subs!.delete(fn);
+    };
   }, [tabId, enabled]);
 
   return ctx;

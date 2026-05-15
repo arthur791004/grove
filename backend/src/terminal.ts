@@ -17,9 +17,7 @@ interface WSLike {
   on(event: 'error', cb: (err: Error) => void): void;
 }
 
-type ClientMsg =
-  | { type: 'input'; data: string }
-  | { type: 'resize'; cols: number; rows: number };
+type ClientMsg = { type: 'input'; data: string } | { type: 'resize'; cols: number; rows: number };
 
 export function registerTerminalRoutes(app: FastifyInstance) {
   app.get<{ Params: { tabId: string }; Querystring: { cwd?: string } }>(
@@ -33,19 +31,29 @@ export function registerTerminalRoutes(app: FastifyInstance) {
         unsubscribe = subscribe(tabId, socket, cwd);
       } catch (err) {
         console.error('[grove] subscribe failed for', tabId, err);
-        try { socket.close(); } catch {}
+        try {
+          socket.close();
+        } catch {}
         return;
       }
 
       socket.on('message', (raw: Buffer) => {
         let msg: ClientMsg;
-        try { msg = JSON.parse(raw.toString()); } catch { return; }
+        try {
+          msg = JSON.parse(raw.toString());
+        } catch {
+          return;
+        }
         if (msg.type === 'input') writeInput(tabId, msg.data);
         else if (msg.type === 'resize') resizeSession(tabId, msg.cols, msg.rows);
       });
 
-      socket.on('close', () => { unsubscribe(); });
-      socket.on('error', (err) => { console.error('[grove] ws error', tabId, err); });
+      socket.on('close', () => {
+        unsubscribe();
+      });
+      socket.on('error', (err) => {
+        console.error('[grove] ws error', tabId, err);
+      });
     },
   );
 

@@ -6,3 +6,6 @@ release
 .env
 .env.local
 *.log
+
+# Per-user Claude harness state
+.claude/

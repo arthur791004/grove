@@ -14,7 +14,9 @@ const groveStorage = createJSONStorage(() => ({
     if (fromFile != null) return fromFile;
     const legacy = localStorage.getItem(name);
     if (legacy) {
-      try { await window.grove.stateSet(legacy); } catch {}
+      try {
+        await window.grove.stateSet(legacy);
+      } catch {}
       return legacy;
     }
     return null;
@@ -93,7 +95,10 @@ interface Actions {
   removeGroup(id: string): void;
   toggleGroup(id: string): void;
   forkGroup(sourceGroupId: string): Promise<{ id: string } | { error: string }>;
-  closeFork(id: string, force?: boolean): Promise<{ ok: true } | { needsConfirm: true; status: WorktreeStatus } | { error: string }>;
+  closeFork(
+    id: string,
+    force?: boolean,
+  ): Promise<{ ok: true } | { needsConfirm: true; status: WorktreeStatus } | { error: string }>;
   _dropGroup(id: string): void;
   newTab(groupId?: string, title?: string): string;
   closeTab(id: string): void;
@@ -159,7 +164,8 @@ export const useStore = create<State & Actions>()(
 
       newGroup(name, cwd = '~') {
         const id = uid();
-        const resolvedName = name && name !== 'workspace' && name !== 'group' ? name : defaultGroupName(cwd);
+        const resolvedName =
+          name && name !== 'workspace' && name !== 'group' ? name : defaultGroupName(cwd);
         set((s) => ({
           groups: [...s.groups, { id, name: resolvedName, cwd, collapsed: false }],
           groupOrder: [...s.groupOrder, id],
@@ -231,7 +237,10 @@ export const useStore = create<State & Actions>()(
         if (!window.grove?.workspace) return { error: 'Forking requires the desktop app.' };
         const newId = uid();
         try {
-          const res = await window.grove.workspace.fork({ workspaceId: newId, sourceCwd: source.cwd });
+          const res = await window.grove.workspace.fork({
+            workspaceId: newId,
+            sourceCwd: source.cwd,
+          });
           set((s) => {
             // Slot the fork right after its source so the relationship is
             // visible in the sidebar; if the source is missing for some reason,
@@ -241,14 +250,17 @@ export const useStore = create<State & Actions>()(
             if (sourceIdx >= 0) order.splice(sourceIdx + 1, 0, newId);
             else order.push(newId);
             return {
-              groups: [...s.groups, {
-                id: newId,
-                name: res.displayName,
-                cwd: res.worktreePath,
-                collapsed: false,
-                forkBranch: res.branch,
-                forkedFromId: sourceGroupId,
-              }],
+              groups: [
+                ...s.groups,
+                {
+                  id: newId,
+                  name: res.displayName,
+                  cwd: res.worktreePath,
+                  collapsed: false,
+                  forkBranch: res.branch,
+                  forkedFromId: sourceGroupId,
+                },
+              ],
               groupOrder: order,
               tabOrderByGroup: { ...s.tabOrderByGroup, [newId]: [] },
             };
@@ -269,7 +281,15 @@ export const useStore = create<State & Actions>()(
         // verify even when nothing is dirty.
         if (!force) {
           const status = await window.grove.workspace.status({ workspaceId: id });
-          return { needsConfirm: true, status: status ?? { hasUncommitted: false, hasUnpushed: false, unpushedCount: 0, currentBranch: null } };
+          return {
+            needsConfirm: true,
+            status: status ?? {
+              hasUncommitted: false,
+              hasUnpushed: false,
+              unpushedCount: 0,
+              currentBranch: null,
+            },
+          };
         }
         try {
           await window.grove.workspace.close({ workspaceId: id, force });
@@ -282,9 +302,16 @@ export const useStore = create<State & Actions>()(
 
       newTab(groupId, title) {
         const s = get();
-        const gid = groupId ?? s.groups.find((g) => g.id === (s.activeTabId
-          ? s.tabs.find((t) => t.id === s.activeTabId)?.groupId
-          : s.groupOrder[0]))?.id ?? s.groupOrder[0];
+        const gid =
+          groupId ??
+          s.groups.find(
+            (g) =>
+              g.id ===
+              (s.activeTabId
+                ? s.tabs.find((t) => t.id === s.activeTabId)?.groupId
+                : s.groupOrder[0]),
+          )?.id ??
+          s.groupOrder[0];
         const id = uid();
         const tab: Tab = { id, title: title ?? 'shell', color: pickRandomColor(), groupId: gid };
         set((st) => ({
@@ -333,7 +360,9 @@ export const useStore = create<State & Actions>()(
         }));
       },
 
-      setActiveTab(id) { set({ activeTabId: id }); },
+      setActiveTab(id) {
+        set({ activeTabId: id });
+      },
 
       moveTab(tabId, targetGroupId, targetIndex) {
         set((s) => {
@@ -341,9 +370,8 @@ export const useStore = create<State & Actions>()(
           if (!tab) return s;
           const oldGroup = tab.groupId;
           const oldOrder = (s.tabOrderByGroup[oldGroup] ?? []).filter((t) => t !== tabId);
-          const targetOrder = oldGroup === targetGroupId
-            ? oldOrder
-            : [...(s.tabOrderByGroup[targetGroupId] ?? [])];
+          const targetOrder =
+            oldGroup === targetGroupId ? oldOrder : [...(s.tabOrderByGroup[targetGroupId] ?? [])];
           targetOrder.splice(targetIndex, 0, tabId);
           return {
             tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, groupId: targetGroupId } : t)),
@@ -356,42 +384,64 @@ export const useStore = create<State & Actions>()(
         });
       },
 
-      reorderGroups(newOrder) { set({ groupOrder: newOrder }); },
+      reorderGroups(newOrder) {
+        set({ groupOrder: newOrder });
+      },
 
-      toggleSidebar() { set((s) => ({ sidebarOpen: !s.sidebarOpen })); },
+      toggleSidebar() {
+        set((s) => ({ sidebarOpen: !s.sidebarOpen }));
+      },
 
       // Right-side panels (diff, file browser, web browser) are mutually
       // exclusive — only one occupies the slot at a time so the workspace
       // never has to compete with more than one sibling pane.
       toggleDiffPanel() {
-        set((s) => s.diffPanelOpen
-          ? { diffPanelOpen: false }
-          : { diffPanelOpen: true, fileBrowserOpen: false, browserPanelOpen: false });
+        set((s) =>
+          s.diffPanelOpen
+            ? { diffPanelOpen: false }
+            : { diffPanelOpen: true, fileBrowserOpen: false, browserPanelOpen: false },
+        );
       },
 
-      toggleDiffPanelFullscreen() { set((s) => ({ diffPanelFullscreen: !s.diffPanelFullscreen })); },
+      toggleDiffPanelFullscreen() {
+        set((s) => ({ diffPanelFullscreen: !s.diffPanelFullscreen }));
+      },
 
-      toggleDiffFileList() { set((s) => ({ diffFileListOpen: !s.diffFileListOpen })); },
+      toggleDiffFileList() {
+        set((s) => ({ diffFileListOpen: !s.diffFileListOpen }));
+      },
 
       toggleFileBrowser() {
-        set((s) => s.fileBrowserOpen
-          ? { fileBrowserOpen: false }
-          : { fileBrowserOpen: true, diffPanelOpen: false, browserPanelOpen: false });
+        set((s) =>
+          s.fileBrowserOpen
+            ? { fileBrowserOpen: false }
+            : { fileBrowserOpen: true, diffPanelOpen: false, browserPanelOpen: false },
+        );
       },
 
-      toggleFileBrowserFullscreen() { set((s) => ({ fileBrowserFullscreen: !s.fileBrowserFullscreen })); },
+      toggleFileBrowserFullscreen() {
+        set((s) => ({ fileBrowserFullscreen: !s.fileBrowserFullscreen }));
+      },
 
-      toggleFileBrowserList() { set((s) => ({ fileBrowserListOpen: !s.fileBrowserListOpen })); },
+      toggleFileBrowserList() {
+        set((s) => ({ fileBrowserListOpen: !s.fileBrowserListOpen }));
+      },
 
       toggleBrowserPanel() {
-        set((s) => s.browserPanelOpen
-          ? { browserPanelOpen: false }
-          : { browserPanelOpen: true, diffPanelOpen: false, fileBrowserOpen: false });
+        set((s) =>
+          s.browserPanelOpen
+            ? { browserPanelOpen: false }
+            : { browserPanelOpen: true, diffPanelOpen: false, fileBrowserOpen: false },
+        );
       },
 
-      toggleBrowserPanelFullscreen() { set((s) => ({ browserPanelFullscreen: !s.browserPanelFullscreen })); },
+      toggleBrowserPanelFullscreen() {
+        set((s) => ({ browserPanelFullscreen: !s.browserPanelFullscreen }));
+      },
 
-      toggleBrowserPanelList() { set((s) => ({ browserPanelListOpen: !s.browserPanelListOpen })); },
+      toggleBrowserPanelList() {
+        set((s) => ({ browserPanelListOpen: !s.browserPanelListOpen }));
+      },
 
       setBrowserPanelUrl(url) {
         set((s) => {
@@ -399,7 +449,9 @@ export const useStore = create<State & Actions>()(
           // Normalize for the recents key only — strip a trailing slash on
           // the path (but never the slash that immediately follows the host)
           // so "http://x:3000/" and "http://x:3000" don't both pile up.
-          const normalized = url.replace(/(.+?:\/\/[^/]+\/.+?)\/$/, '$1').replace(/(.+?:\/\/[^/]+)\/$/, '$1');
+          const normalized = url
+            .replace(/(.+?:\/\/[^/]+\/.+?)\/$/, '$1')
+            .replace(/(.+?:\/\/[^/]+)\/$/, '$1');
           // Scope recents by the active tab's workspace cwd so each project
           // gets its own history. Falls back to '' when no active tab.
           const active = s.tabs.find((t) => t.id === s.activeTabId);
@@ -432,10 +484,16 @@ export const useStore = create<State & Actions>()(
         set({ fileBrowserRequest: null });
       },
 
-      setAutoEditCwdGroupId(id) { set({ autoEditCwdGroupId: id }); },
+      setAutoEditCwdGroupId(id) {
+        set({ autoEditCwdGroupId: id });
+      },
 
-      setMonoFontFamily(v) { set({ monoFontFamily: v }); },
-      setMonoFontSize(n) { set({ monoFontSize: Math.max(8, Math.min(28, Math.round(n))) }); },
+      setMonoFontFamily(v) {
+        set({ monoFontFamily: v });
+      },
+      setMonoFontSize(n) {
+        set({ monoFontSize: Math.max(8, Math.min(28, Math.round(n))) });
+      },
 
       setRunningCmd(tabId, cmd) {
         set((s) => {

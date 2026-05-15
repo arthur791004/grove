@@ -4,7 +4,10 @@ import Fuse from 'fuse.js';
 import { useStore } from './store';
 import { COLOR_HEX } from './colors';
 
-interface Props { open: boolean; onClose: () => void }
+interface Props {
+  open: boolean;
+  onClose: () => void;
+}
 
 export function CommandPalette({ open, onClose }: Props) {
   const tabs = useStore((s) => s.tabs);
@@ -14,7 +17,10 @@ export function CommandPalette({ open, onClose }: Props) {
   const [selected, setSelected] = useState(0);
 
   useEffect(() => {
-    if (open) { setQuery(''); setSelected(0); }
+    if (open) {
+      setQuery('');
+      setSelected(0);
+    }
   }, [open]);
 
   const items = useMemo(() => {
@@ -24,16 +30,33 @@ export function CommandPalette({ open, onClose }: Props) {
     });
   }, [tabs, groups]);
 
-  const fuse = useMemo(() => new Fuse(items, { keys: ['title', 'group'], threshold: 0.4 }), [items]);
+  const fuse = useMemo(
+    () => new Fuse(items, { keys: ['title', 'group'], threshold: 0.4 }),
+    [items],
+  );
   const results = query ? fuse.search(query).map((r) => r.item) : items;
 
   function onKey(e: React.KeyboardEvent) {
-    if (e.key === 'Escape') { onClose(); return; }
-    if (e.key === 'ArrowDown') { setSelected((s) => Math.min(s + 1, results.length - 1)); e.preventDefault(); return; }
-    if (e.key === 'ArrowUp') { setSelected((s) => Math.max(s - 1, 0)); e.preventDefault(); return; }
+    if (e.key === 'Escape') {
+      onClose();
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      setSelected((s) => Math.min(s + 1, results.length - 1));
+      e.preventDefault();
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      setSelected((s) => Math.max(s - 1, 0));
+      e.preventDefault();
+      return;
+    }
     if (e.key === 'Enter') {
       const pick = results[selected];
-      if (pick) { setActiveTab(pick.id); onClose(); }
+      if (pick) {
+        setActiveTab(pick.id);
+        onClose();
+      }
     }
   }
 
@@ -62,7 +85,10 @@ export function CommandPalette({ open, onClose }: Props) {
         <Input
           autoFocus
           value={query}
-          onChange={(e) => { setQuery(e.target.value); setSelected(0); }}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setSelected(0);
+          }}
           placeholder="Search tabs…"
           variant="flushed"
           color="#c9d1d9"
@@ -72,7 +98,9 @@ export function CommandPalette({ open, onClose }: Props) {
         />
         <Box maxH="320px" overflowY="auto">
           {results.length === 0 && (
-            <Text px="3" py="2" color="#7d8590" fontSize="sm">No tabs.</Text>
+            <Text px="3" py="2" color="#7d8590" fontSize="sm">
+              No tabs.
+            </Text>
           )}
           {results.map((r, i) => (
             <Box
@@ -82,14 +110,21 @@ export function CommandPalette({ open, onClose }: Props) {
               bg={i === selected ? '#1f6feb33' : 'transparent'}
               cursor="pointer"
               onMouseEnter={() => setSelected(i)}
-              onClick={() => { setActiveTab(r.id); onClose(); }}
+              onClick={() => {
+                setActiveTab(r.id);
+                onClose();
+              }}
               display="flex"
               alignItems="center"
               gap="2"
             >
               <Box w="8px" h="8px" borderRadius="4px" bg={COLOR_HEX[r.color]} />
-              <Text color="#c9d1d9" fontSize="sm" flex="1">{r.title}</Text>
-              <Text color="#7d8590" fontSize="xs">{r.group}</Text>
+              <Text color="#c9d1d9" fontSize="sm" flex="1">
+                {r.title}
+              </Text>
+              <Text color="#7d8590" fontSize="xs">
+                {r.group}
+              </Text>
             </Box>
           ))}
         </Box>

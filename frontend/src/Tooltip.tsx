@@ -14,7 +14,11 @@ interface Props {
 export function Tooltip({ label, children, openDelay = 200, closeDelay = 0 }: Props) {
   if (label == null || label === '') return children;
   return (
-    <ChakraTooltip.Root openDelay={openDelay} closeDelay={closeDelay} positioning={{ placement: 'bottom' }}>
+    <ChakraTooltip.Root
+      openDelay={openDelay}
+      closeDelay={closeDelay}
+      positioning={{ placement: 'bottom' }}
+    >
       <ChakraTooltip.Trigger asChild>{children}</ChakraTooltip.Trigger>
       <Portal>
         <ChakraTooltip.Positioner>

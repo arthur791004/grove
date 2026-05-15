@@ -5,7 +5,11 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 function safe<T>(fn: () => T, fallback: T): T {
-  try { return fn(); } catch { return fallback; }
+  try {
+    return fn();
+  } catch {
+    return fallback;
+  }
 }
 
 function expandHome(p: string): string {
@@ -14,17 +18,26 @@ function expandHome(p: string): string {
   return p;
 }
 
-interface Completion { value: string; label: string; kind: 'dir' | 'file' | 'branch' | 'script' }
+interface Completion {
+  value: string;
+  label: string;
+  kind: 'dir' | 'file' | 'branch' | 'script';
+}
 
 function listEntries(cwd: string, fragment: string, dirsOnly: boolean): Completion[] {
   const expanded = expandHome(fragment);
   const isAbsolute = path.isAbsolute(expanded);
   const base = isAbsolute
-    ? (expanded.endsWith('/') ? expanded : path.dirname(expanded))
-    : (expanded.endsWith('/') ? path.join(cwd, expanded) : path.join(cwd, path.dirname(expanded) || '.'));
+    ? expanded.endsWith('/')
+      ? expanded
+      : path.dirname(expanded)
+    : expanded.endsWith('/')
+      ? path.join(cwd, expanded)
+      : path.join(cwd, path.dirname(expanded) || '.');
   const prefix = expanded.endsWith('/') ? '' : path.basename(expanded);
   return safe<Completion[]>(() => {
-    const entries = fs.readdirSync(base, { withFileTypes: true })
+    const entries = fs
+      .readdirSync(base, { withFileTypes: true })
       .filter((e) => !e.name.startsWith('.') && e.name.startsWith(prefix));
     const filtered = dirsOnly ? entries.filter((e) => e.isDirectory()) : entries;
     if (!dirsOnly) {
@@ -37,16 +50,24 @@ function listEntries(cwd: string, fragment: string, dirsOnly: boolean): Completi
       const dirPath = path.dirname(expanded) === '.' ? '' : path.dirname(expanded) + '/';
       const ending = e.isDirectory() ? '/' : '';
       const value = (expanded.endsWith('/') ? expanded : dirPath) + e.name + ending;
-      return { value, label: e.name + ending, kind: e.isDirectory() ? 'dir' as const : 'file' as const };
+      return {
+        value,
+        label: e.name + ending,
+        kind: e.isDirectory() ? ('dir' as const) : ('file' as const),
+      };
     });
   }, []);
 }
 
 function gitBranches(cwd: string, prefix: string): Completion[] {
-  const r = spawnSync('git', ['-C', cwd, 'branch', '--format=%(refname:short)'], { encoding: 'utf8', timeout: 600 });
+  const r = spawnSync('git', ['-C', cwd, 'branch', '--format=%(refname:short)'], {
+    encoding: 'utf8',
+    timeout: 600,
+  });
   if (r.status !== 0) return [];
   return r.stdout
-    .split('\n').map((s) => s.trim())
+    .split('\n')
+    .map((s) => s.trim())
     .filter((b) => b && b.startsWith(prefix))
     .slice(0, 50)
     .map((b) => ({ value: b, label: b, kind: 'branch' as const }));
@@ -56,15 +77,17 @@ function npmScripts(cwd: string, prefix: string): Completion[] {
   return safe<Completion[]>(() => {
     const pkg = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8'));
     const scripts = pkg?.scripts ? Object.keys(pkg.scripts) : [];
-    return scripts.filter((s) => s.startsWith(prefix)).slice(0, 50)
+    return scripts
+      .filter((s) => s.startsWith(prefix))
+      .slice(0, 50)
       .map((s) => ({ value: s, label: s, kind: 'script' as const }));
   }, []);
 }
 
 interface ParsedInput {
-  command: string[];     // e.g. ['git', 'checkout']
-  fragment: string;      // current word being typed
-  prefix: string;        // input minus fragment (preserves whitespace)
+  command: string[]; // e.g. ['git', 'checkout']
+  fragment: string; // current word being typed
+  prefix: string; // input minus fragment (preserves whitespace)
 }
 
 function parseInput(input: string): ParsedInput {

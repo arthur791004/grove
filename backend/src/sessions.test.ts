@@ -11,7 +11,12 @@ import {
 } from './sessions.js';
 
 function pidAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs: number, stepMs = 50): Promise<boolean> {

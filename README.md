@@ -90,7 +90,7 @@ Workspaces today are pinned cwds. The plan is to make them **git worktrees**: on
 
 Each new tab launches into a Claude Code agentic session by default, with full repo context and your shell aliases preserved. Drop to raw zsh with `⌘\` when you need it. Sessions persist per worktree under `~/.grove/sessions/<branch>.jsonl`.
 
-This is the bet that makes Grove different from "Warp but open-source." Whether it stays the *default* vs. an opt-in mode is still TBD.
+This is the bet that makes Grove different from "Warp but open-source." Whether it stays the _default_ vs. an opt-in mode is still TBD.
 
 ### 🚧 Ask Claude on every block
 

@@ -40,16 +40,18 @@ export function Workspace() {
 
   return (
     <Box position="relative" w="100%" h="100%" bg="#010409">
-      {tabs.filter((t) => mounted.has(t.id)).map((t) => (
-        <Box
-          key={t.id}
-          position="absolute"
-          inset="0"
-          display={t.id === activeTabId ? 'block' : 'none'}
-        >
-          <TerminalView tabId={t.id} active={t.id === activeTabId} />
-        </Box>
-      ))}
+      {tabs
+        .filter((t) => mounted.has(t.id))
+        .map((t) => (
+          <Box
+            key={t.id}
+            position="absolute"
+            inset="0"
+            display={t.id === activeTabId ? 'block' : 'none'}
+          >
+            <TerminalView tabId={t.id} active={t.id === activeTabId} />
+          </Box>
+        ))}
     </Box>
   );
 }

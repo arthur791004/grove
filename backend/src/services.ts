@@ -54,11 +54,21 @@ function pidCwd(pid: number): string | null {
 }
 
 function isLocalish(host: string): boolean {
-  return host === '*' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1' || host === '[::1]' || host === '::';
+  return (
+    host === '*' ||
+    host === '127.0.0.1' ||
+    host === '0.0.0.0' ||
+    host === '::1' ||
+    host === '[::1]' ||
+    host === '::'
+  );
 }
 
 function urlFor(host: string, port: number): string {
-  const h = host === '*' || host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host.replace(/^\[|\]$/g, '');
+  const h =
+    host === '*' || host === '0.0.0.0' || host === '::'
+      ? '127.0.0.1'
+      : host.replace(/^\[|\]$/g, '');
   return `http://${h}:${port}`;
 }
 

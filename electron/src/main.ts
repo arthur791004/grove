@@ -1,4 +1,15 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, net, protocol, shell, WebContentsView, type WebContents } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  nativeImage,
+  net,
+  protocol,
+  shell,
+  WebContentsView,
+  type WebContents,
+} from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,7 +25,10 @@ import { atomicWriteFile } from './atomicWrite';
 // React.lazy chunks load.
 const APP_SCHEME = 'grove';
 protocol.registerSchemesAsPrivileged([
-  { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+  {
+    scheme: APP_SCHEME,
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+  },
 ]);
 
 app.setName('Grove');
@@ -40,13 +54,13 @@ const LOG_FILE = path.join(app.getPath('userData'), 'grove.log');
 function logLine(line: string) {
   try {
     fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${line}\n`);
-  } catch { /* logging must never throw */ }
+  } catch {
+    /* logging must never throw */
+  }
 }
 
 function formatArgs(args: unknown[]): string {
-  return args
-    .map((a) => (typeof a === 'string' ? a : inspect(a, { depth: 3 })))
-    .join(' ');
+  return args.map((a) => (typeof a === 'string' ? a : inspect(a, { depth: 3 }))).join(' ');
 }
 
 function setupLogging() {
@@ -55,8 +69,12 @@ function setupLogging() {
     if (fs.statSync(LOG_FILE).size > 5_000_000) {
       fs.renameSync(LOG_FILE, LOG_FILE + '.old');
     }
-  } catch { /* file may not exist yet */ }
-  logLine(`--- session start (electron ${process.versions.electron}, chrome ${process.versions.chrome}) ---`);
+  } catch {
+    /* file may not exist yet */
+  }
+  logLine(
+    `--- session start (electron ${process.versions.electron}, chrome ${process.versions.chrome}) ---`,
+  );
   console.log('[grove] logging to', LOG_FILE);
 
   // Mirror the main process's own console.error/.warn to the log — the
@@ -74,11 +92,15 @@ function setupLogging() {
     logLine(`[main] uncaughtException: ${err?.stack ?? String(err)}`);
   });
   process.on('unhandledRejection', (reason) => {
-    logLine(`[main] unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}`);
+    logLine(
+      `[main] unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}`,
+    );
   });
   // GPU / utility / pid-host subprocess crashes.
   app.on('child-process-gone', (_e, details) => {
-    logLine(`[main] child-process-gone: type=${details.type} reason=${details.reason} exitCode=${details.exitCode}`);
+    logLine(
+      `[main] child-process-gone: type=${details.type} reason=${details.reason} exitCode=${details.exitCode}`,
+    );
   });
 }
 
@@ -90,7 +112,9 @@ function attachWebContentsLogging(wc: WebContents, label: string) {
     logLine(`[${label}:${level === 3 ? 'error' : 'warn'}] ${message} (${sourceId}:${line})`);
   });
   wc.on('render-process-gone', (_e, details) => {
-    logLine(`[${label}] render-process-gone: reason=${details.reason} exitCode=${details.exitCode}`);
+    logLine(
+      `[${label}] render-process-gone: reason=${details.reason} exitCode=${details.exitCode}`,
+    );
   });
   wc.on('unresponsive', () => logLine(`[${label}] unresponsive`));
   wc.on('preload-error', (_e, preloadPath, error) => {
@@ -104,13 +128,21 @@ function startBackend() {
   // the asar segment so spawn can find the real filesystem path. In dev the
   // path doesn't contain "app.asar" and the replace is a no-op.
   const raw = path.resolve(__dirname, '../../backend/dist/index.js');
-  const backendEntry = raw.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
+  const backendEntry = raw.replace(
+    `${path.sep}app.asar${path.sep}`,
+    `${path.sep}app.asar.unpacked${path.sep}`,
+  );
   backend = spawn(process.execPath, [backendEntry], {
     // ELECTRON_RUN_AS_NODE makes the spawned Electron binary behave as a
     // plain Node runtime (skips the GUI / main script lookup).
     // GROVE_LOG_FILE tells the backend we're teeing its stdio into the log so
     // it skips its own (would-be duplicate) file logging.
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', GROVE_BACKEND_PORT: '4317', GROVE_LOG_FILE: LOG_FILE },
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: '1',
+      GROVE_BACKEND_PORT: '4317',
+      GROVE_LOG_FILE: LOG_FILE,
+    },
     // Pipe (not 'inherit') so backend output can be teed into the log file.
     // It's still echoed to our own stdout/stderr so the dev terminal is
     // unchanged.
@@ -138,7 +170,9 @@ async function waitForBackend(timeoutMs = 10_000): Promise<void> {
     try {
       const res = await fetch('http://127.0.0.1:4317/health');
       if (res.ok) return;
-    } catch { /* not listening yet */ }
+    } catch {
+      /* not listening yet */
+    }
     await new Promise((r) => setTimeout(r, 100));
   }
   console.error('[grove] backend /health never responded within', timeoutMs, 'ms');
@@ -165,7 +199,9 @@ function createWindow() {
   });
   // Replace the default Electron dock icon with our app icon in dev too.
   if (app.dock && nativeImage) {
-    try { app.dock.setIcon(nativeImage.createFromPath(iconPath)); } catch {}
+    try {
+      app.dock.setIcon(nativeImage.createFromPath(iconPath));
+    } catch {}
   }
   state.manage(win);
   mainWindow = win;
@@ -197,8 +233,11 @@ function createWindow() {
 const STATE_FILE = path.join(app.getPath('userData'), 'grove-state.json');
 
 ipcMain.handle('grove:state-get', async () => {
-  try { return fs.readFileSync(STATE_FILE, 'utf8'); }
-  catch { return null; }
+  try {
+    return fs.readFileSync(STATE_FILE, 'utf8');
+  } catch {
+    return null;
+  }
 });
 
 ipcMain.handle('grove:state-set', async (_e, content: string) => {
@@ -215,7 +254,11 @@ ipcMain.handle('grove:open-external', async (_event, url: string) => {
 
 ipcMain.handle('grove:reveal-path', async (_e, target: string) => {
   if (typeof target !== 'string' || !target) return;
-  try { shell.showItemInFolder(target); } catch { /* missing path */ }
+  try {
+    shell.showItemInFolder(target);
+  } catch {
+    /* missing path */
+  }
 });
 
 ipcMain.handle('grove:pick-folder', async () => {
@@ -250,7 +293,9 @@ function ensureBrowserView(): WebContentsView {
     });
   };
   wc.on('did-navigate', (_e, url) => sendNav(url));
-  wc.on('did-navigate-in-page', (_e, url, isMainFrame) => { if (isMainFrame) sendNav(url); });
+  wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
+    if (isMainFrame) sendNav(url);
+  });
   wc.on('did-start-loading', () => mainWindow?.webContents.send('grove:browser-loading', true));
   wc.on('did-stop-loading', () => mainWindow?.webContents.send('grove:browser-loading', false));
   // errorCode -3 is ERR_ABORTED — fires on intentional navigation away, not a
@@ -258,7 +303,9 @@ function ensureBrowserView(): WebContentsView {
   wc.on('did-fail-load', (_e, errorCode, errorDescription, validatedUrl, isMainFrame) => {
     if (!isMainFrame || errorCode === -3) return;
     mainWindow?.webContents.send('grove:browser-fail', {
-      url: validatedUrl, code: errorCode, message: errorDescription,
+      url: validatedUrl,
+      code: errorCode,
+      message: errorDescription,
     });
   });
   // Links that try to open a new window navigate the embedded view instead.
@@ -291,22 +338,27 @@ ipcMain.handle('grove:browser-close', () => {
   }
 });
 
-ipcMain.handle('grove:browser-set-bounds', (_e, b: { x: number; y: number; width: number; height: number; zoom?: number } | null) => {
-  if (!browserView) return;
-  // A null/empty rect parks the view offscreen — used while a DOM overlay
-  // (e.g. the load-error page) needs to show in the view's place.
-  if (!b || b.width <= 0 || b.height <= 0) {
-    browserView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
-    return;
-  }
-  browserView.setBounds({
-    x: Math.round(b.x), y: Math.round(b.y),
-    width: Math.round(b.width), height: Math.round(b.height),
-  });
-  // zoomFactor < 1 keeps a wider logical (CSS) viewport than the physical
-  // panel — used to preserve a desktop layout in a narrow panel.
-  browserView.webContents.setZoomFactor(b.zoom && b.zoom > 0 ? b.zoom : 1);
-});
+ipcMain.handle(
+  'grove:browser-set-bounds',
+  (_e, b: { x: number; y: number; width: number; height: number; zoom?: number } | null) => {
+    if (!browserView) return;
+    // A null/empty rect parks the view offscreen — used while a DOM overlay
+    // (e.g. the load-error page) needs to show in the view's place.
+    if (!b || b.width <= 0 || b.height <= 0) {
+      browserView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+      return;
+    }
+    browserView.setBounds({
+      x: Math.round(b.x),
+      y: Math.round(b.y),
+      width: Math.round(b.width),
+      height: Math.round(b.height),
+    });
+    // zoomFactor < 1 keeps a wider logical (CSS) viewport than the physical
+    // panel — used to preserve a desktop layout in a narrow panel.
+    browserView.webContents.setZoomFactor(b.zoom && b.zoom > 0 ? b.zoom : 1);
+  },
+);
 
 ipcMain.handle('grove:browser-navigate', (_e, url: string) => {
   if (!browserView || typeof url !== 'string' || !/^https?:\/\//i.test(url)) return;
