@@ -21,8 +21,55 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { useStore, type Tab, type Group } from './store';
 import { COLOR_HEX, COLOR_ORDER } from './colors';
-import { useTabContext } from './useTabContext';
+import { useTabContext, subscribeAllTabContexts } from './useTabContext';
 import { API_BASE } from './api';
+import { Tooltip } from './Tooltip';
+import { shortPath } from './paths';
+import { GitFork } from 'lucide-react';
+import {
+  BranchIcon, ChevronIcon, CloseIcon, FolderIcon, KebabIcon, PlusIcon, StopIcon, TerminalIcon,
+} from './icons';
+
+// Returns the current branch of a workspace's cwd. Seeded by a single
+// /context fetch on mount, then kept fresh by piggybacking on the per-tab
+// WebSocket ctx pushes — any tab in the same worktree (matching repoRoot)
+// reports the same branch as the workspace itself.
+function useWorkspaceBranch(groupId: string, cwd: string, enabled: boolean): string | null {
+  const [state, setState] = useState<{ branch: string | null; repoRoot: string | null }>({ branch: null, repoRoot: null });
+  useEffect(() => {
+    if (!enabled || !cwd) { setState({ branch: null, repoRoot: null }); return; }
+    let cancelled = false;
+    // One-shot seed: gives us the initial branch + the workspace's repoRoot
+    // so subsequent tab pushes can be matched.
+    fetch(`${API_BASE}/context?cwd=${encodeURIComponent(cwd)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        setState({ branch: data.branch ?? null, repoRoot: data.repoRoot ?? null });
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [cwd, enabled]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const unsub = subscribeAllTabContexts((tabId, ctx) => {
+      // Only listen to tabs that belong to this workspace (matches groupId)
+      // AND are sitting inside the same worktree (matches repoRoot). A
+      // worktree pins exactly one branch, so any such tab is authoritative.
+      const tab = useStore.getState().tabs.find((t) => t.id === tabId);
+      if (!tab || tab.groupId !== groupId) return;
+      setState((prev) => {
+        if (!prev.repoRoot || ctx.repoRoot !== prev.repoRoot) return prev;
+        if (ctx.branch === prev.branch) return prev;
+        return { ...prev, branch: ctx.branch };
+      });
+    });
+    return unsub;
+  }, [groupId, enabled]);
+
+  return state.branch;
+}
 
 interface ColorPopupCtx {
   openTabId: string | null;
@@ -173,11 +220,128 @@ function GroupSection({ group }: { group: Group }) {
   const toggleGroup = useStore((s) => s.toggleGroup);
   const removeGroup = useStore((s) => s.removeGroup);
   const newTab = useStore((s) => s.newTab);
+  const forkGroup = useStore((s) => s.forkGroup);
+  const closeFork = useStore((s) => s.closeFork);
+  const sourceName = useStore((s) =>
+    group.forkedFromId ? s.groups.find((g) => g.id === group.forkedFromId)?.name ?? null : null,
+  );
+  // Show a repo badge next to fork names when the user has forks across more
+  // than one repo — otherwise the badge would be redundant clutter. Slug is
+  // derived from `~/.grove/worktrees/<slug>/<name>/` which the main process
+  // creates at fork time.
   const [editingCwd, setEditingCwd] = useState(false);
   const setGroupCwd = useStore((s) => s.setGroupCwd);
   const autoEditCwdGroupId = useStore((s) => s.autoEditCwdGroupId);
   const setAutoEditCwdGroupId = useStore((s) => s.setAutoEditCwdGroupId);
   const justDraggedRef = useRef(false);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const [hovered, setHovered] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState<{ message: string; danger: boolean } | null>(null);
+  const isFork = !!group.forkedFromId;
+  // The workspace owns its branch; tabs that match this branch suppress their
+  // chip so the sidebar isn't repeating the same `main` four times.
+  const workspaceBranch = useWorkspaceBranch(group.id, group.cwd, !group.collapsed);
+  // grove/ is implicit when the workspace itself is a fork.
+  const workspaceBranchShort = workspaceBranch && isFork && workspaceBranch.startsWith('grove/')
+    ? workspaceBranch.slice('grove/'.length)
+    : workspaceBranch;
+  // Suppress the chip when it would just echo the workspace name — common for
+  // forks sitting on their original grove/<slug> branch.
+  const showWorkspaceBranchChip = !!workspaceBranchShort && workspaceBranchShort !== group.name;
+  // Forks are always backed by git; non-forks only know once main has resolved
+  // the cwd. `null` = unknown, `true`/`false` = resolved.
+  const [isGit, setIsGit] = useState<boolean | null>(isFork ? true : null);
+
+  useEffect(() => {
+    if (!menuPos || isGit !== null) return;
+    let cancelled = false;
+    window.grove?.workspace?.isGitRepo({ cwd: group.cwd }).then((ok) => {
+      if (!cancelled) setIsGit(!!ok);
+    });
+    return () => { cancelled = true; };
+  }, [menuPos, isGit, group.cwd]);
+
+  // Re-evaluate if the cwd changes (user edited the folder).
+  useEffect(() => { if (!isFork) setIsGit(null); }, [group.cwd, isFork]);
+
+  // Current branch lookup for the menu's Copy branch entry. Forks use their
+  // recorded forkBranch so the menu shows the grove/* slug even after the
+  // user `git switch`es inside the worktree; non-forks fetch the live branch
+  // from the backend's /context endpoint.
+  const [menuBranch, setMenuBranch] = useState<string | null>(group.forkBranch ?? null);
+  const [copyBranchBusy, setCopyBranchBusy] = useState(false);
+
+  async function fetchBranch(): Promise<string | null> {
+    try {
+      const r = await fetch(`${API_BASE}/context?cwd=${encodeURIComponent(group.cwd)}`);
+      if (!r.ok) return null;
+      const data = await r.json();
+      return data?.branch ?? null;
+    } catch { return null; }
+  }
+
+  useEffect(() => {
+    if (!menuPos || isFork) return;
+    let cancelled = false;
+    fetchBranch().then((b) => { if (!cancelled) setMenuBranch(b); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [menuPos, isFork, group.cwd]);
+
+  async function handleCopyBranch() {
+    if (menuBranch) {
+      navigator.clipboard.writeText(menuBranch);
+      setMenuPos(null);
+      return;
+    }
+    setCopyBranchBusy(true);
+    const b = await fetchBranch();
+    setCopyBranchBusy(false);
+    if (b) {
+      setMenuBranch(b);
+      navigator.clipboard.writeText(b);
+      setMenuPos(null);
+    }
+    // If still null, the cwd isn't actually a git repo right now — silently
+    // leave the menu open so the user can see the item is disabled.
+  }
+
+  async function handleFork() {
+    setMenuPos(null);
+    const res = await forkGroup(group.id);
+    if ('error' in res) {
+      // eslint-disable-next-line no-alert
+      window.alert(`Fork failed: ${res.error}`);
+    }
+  }
+
+  async function handleCloseWorkspace(force = false) {
+    setMenuPos(null);
+    // Non-forks are pure renderer state — Grove never wrote anything to git on
+    // their behalf, so removing them needs no main-process round trip.
+    if (!isFork) { removeGroup(group.id); return; }
+    const res = await closeFork(group.id, force);
+    if ('error' in res) {
+      // eslint-disable-next-line no-alert
+      window.alert(`Close workspace failed: ${res.error}`);
+      return;
+    }
+    if ('needsConfirm' in res) {
+      const { status } = res;
+      const dirty = status.hasUncommitted || status.hasUnpushed;
+      const branchInfo = status.currentBranch ? ` on ${status.currentBranch}` : '';
+      let msg: string;
+      if (dirty) {
+        const parts: string[] = [];
+        if (status.hasUncommitted) parts.push('uncommitted changes');
+        if (status.hasUnpushed) parts.push(`${status.unpushedCount} unpushed commit${status.unpushedCount === 1 ? '' : 's'}`);
+        msg = `This workspace has ${parts.join(' and ')}${branchInfo}. The worktree directory and the grove/* branch will be deleted — this work cannot be recovered.`;
+      } else {
+        msg = `No uncommitted changes${branchInfo}. The worktree directory and its grove/* branch will be removed.`;
+      }
+      setConfirmDialog({ message: msg, danger: dirty });
+    }
+  }
 
   useEffect(() => {
     if (autoEditCwdGroupId === group.id) {
@@ -186,6 +350,16 @@ function GroupSection({ group }: { group: Group }) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoEditCwdGroupId, group.id]);
+
+  useEffect(() => {
+    if (!menuPos) return;
+    const onDoc = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target?.closest('[data-group-menu]')) setMenuPos(null);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [menuPos]);
 
   async function pickFolder() {
     if (window.grove?.pickFolder) {
@@ -239,6 +413,14 @@ function GroupSection({ group }: { group: Group }) {
           if (editingCwd || justDraggedRef.current || isDragging || isSorting) return;
           toggleGroup(group.id);
         }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          setMenuPos({ top: r.bottom + 4, left: Math.max(8, r.right - 220) });
+        }}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         {...attributes}
         {...listeners}
       >
@@ -261,12 +443,8 @@ function GroupSection({ group }: { group: Group }) {
           w="20px"
           h="20px"
           flexShrink={0}
-          cursor="pointer"
-          onClick={(e) => { e.stopPropagation(); pickFolder(); }}
-          title="Change folder"
-          _hover={{ color: '#c9d1d9' }}
         >
-          <FolderIcon />
+          {isFork ? <GitFork size={14} strokeWidth={1.4} /> : <FolderIcon />}
         </Box>
         <Box flex="1" minW="0">
           {editingCwd ? (
@@ -289,18 +467,46 @@ function GroupSection({ group }: { group: Group }) {
               fontFamily="var(--grove-mono)"
             />
           ) : (
-            <Text
-              fontSize="12px"
-              color="#c9d1d9"
-              fontWeight="500"
-              truncate
-              lineHeight="1.4"
-              title={group.cwd}
-            >
-              {group.name}
-            </Text>
+            <Tooltip label={shortPath(group.cwd)}>
+              <Text
+                fontSize="12px"
+                color="#c9d1d9"
+                fontWeight="500"
+                truncate
+                lineHeight="1.4"
+              >
+                {group.name}
+              </Text>
+            </Tooltip>
           )}
         </Box>
+        {showWorkspaceBranchChip && !editingCwd && !hovered && (
+          <Tooltip label={workspaceBranch ?? ''}>
+            <Box
+              flexShrink={0}
+              px="1.5"
+              py="0.5"
+              maxW="100px"
+              bg="#161b22"
+              border="1px solid #21262d"
+              borderRadius="4px"
+              color="#7ee787"
+              fontSize="10px"
+              fontFamily="var(--grove-mono)"
+              lineHeight="1"
+              display="inline-flex"
+              alignItems="center"
+              gap="1"
+              minW="0"
+              overflow="hidden"
+            >
+              <Box flexShrink={0} display="inline-flex" alignItems="center">
+                <BranchIcon />
+              </Box>
+              <Box truncate minW="0">{workspaceBranchShort}</Box>
+            </Box>
+          </Tooltip>
+        )}
         <HStack
           className="group-actions"
           gap="1"
@@ -331,10 +537,10 @@ function GroupSection({ group }: { group: Group }) {
           <PlusIcon />
         </button>
         <button
-          title="Delete group"
+          title={isFork ? 'Close workspace' : 'Delete workspace'}
           onPointerDown={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); removeGroup(group.id); }}
+          onClick={(e) => { e.stopPropagation(); handleCloseWorkspace(false); }}
           style={{
             background: 'transparent', border: 'none',
             color: '#7d8590', cursor: 'pointer',
@@ -357,11 +563,123 @@ function GroupSection({ group }: { group: Group }) {
           >
             <Flex direction="column" gap="1" pt="1">
               {groupTabs.map((t) => (
-                <TabCard key={t.id} tab={t} />
+                <TabCard key={t.id} tab={t} workspaceBranch={workspaceBranch} />
               ))}
             </Flex>
           </SortableContext>
         </CollapsePanel>
+      )}
+      {isFork && groupTabs.length === 0 && !group.collapsed && (
+        <Box pt="1" pb="1" pl="8" pr="2">
+          <Text fontSize="11px" color="#7d8590" lineHeight="1.5">
+            Fresh workspace{sourceName ? ` from ${sourceName}` : ''}. Hover this row and click + to add a tab.
+          </Text>
+        </Box>
+      )}
+      {confirmDialog && createPortal(
+        <Box
+          position="fixed"
+          inset="0"
+          bg="rgba(0,0,0,0.5)"
+          zIndex={2000}
+          display="flex"
+          alignItems="center"
+          justifyContent="center"
+          onClick={() => setConfirmDialog(null)}
+        >
+          <Box
+            bg="#161b22"
+            border="1px solid #30363d"
+            borderRadius="8px"
+            boxShadow="0 20px 60px rgba(0,0,0,0.6)"
+            w="440px"
+            p="4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Text fontSize="14px" color="#f0f6fc" fontWeight="600" mb="2">
+              Close {group.name}?
+            </Text>
+            <Text fontSize="12px" color="#c9d1d9" mb="4" lineHeight="1.5" whiteSpace="pre-wrap">
+              {confirmDialog.message}
+            </Text>
+            <Flex justify="flex-end" gap="2">
+              <button
+                onClick={() => setConfirmDialog(null)}
+                style={{
+                  background: 'transparent', border: '1px solid #30363d', color: '#c9d1d9',
+                  cursor: 'pointer', padding: '6px 14px', borderRadius: 4, fontSize: 12,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => { setConfirmDialog(null); handleCloseWorkspace(true); }}
+                style={confirmDialog.danger
+                  ? { background: '#da3633', border: '1px solid #f85149', color: '#fff', cursor: 'pointer', padding: '6px 14px', borderRadius: 4, fontSize: 12, fontWeight: 600 }
+                  : { background: '#1f6feb', border: '1px solid #388bfd', color: '#fff', cursor: 'pointer', padding: '6px 14px', borderRadius: 4, fontSize: 12, fontWeight: 600 }
+                }
+              >
+                {confirmDialog.danger ? 'Discard and close' : 'Close workspace'}
+              </button>
+            </Flex>
+          </Box>
+        </Box>,
+        document.body,
+      )}
+      {menuPos && createPortal(
+        <Box
+          data-group-menu
+          position="fixed"
+          top={`${menuPos.top}px`}
+          left={`${menuPos.left}px`}
+          bg="#161b22"
+          border="1px solid #30363d"
+          borderRadius="6px"
+          py="1"
+          zIndex={1000}
+          minW="220px"
+          boxShadow="0 10px 30px rgba(0,0,0,0.5)"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <TabMenuItem
+            onClick={isGit === false ? () => {} : handleFork}
+            disabled={isGit === false}
+            hint={isGit === false ? 'Not a git repository' : undefined}
+          >
+            Fork workspace
+          </TabMenuItem>
+          <Box borderTop="1px solid #30363d" my="1" />
+          <TabMenuItem
+            onClick={() => {
+              navigator.clipboard.writeText(group.cwd);
+              setMenuPos(null);
+            }}
+          >
+            Copy working directory
+          </TabMenuItem>
+          {isGit !== false && (
+            <TabMenuItem
+              onClick={copyBranchBusy ? () => {} : handleCopyBranch}
+              disabled={copyBranchBusy}
+            >
+              {copyBranchBusy ? 'Copying branch…' : 'Copy branch'}
+            </TabMenuItem>
+          )}
+          <Box borderTop="1px solid #30363d" my="1" />
+          <TabMenuItem
+            onClick={() => {
+              if (window.grove?.revealPath) window.grove.revealPath(group.cwd);
+              setMenuPos(null);
+            }}
+          >
+            Open in Finder
+          </TabMenuItem>
+          <Box borderTop="1px solid #30363d" my="1" />
+          <TabMenuItem onClick={() => handleCloseWorkspace(false)} danger>
+            Close workspace
+          </TabMenuItem>
+        </Box>,
+        document.body,
       )}
     </Box>
   );
@@ -449,7 +767,7 @@ function CollapsePanel({ open, children }: { open: boolean; children: React.Reac
   );
 }
 
-function TabCard({ tab }: { tab: Tab }) {
+function TabCard({ tab, workspaceBranch }: { tab: Tab; workspaceBranch: string | null }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: `tab:${tab.id}`,
   });
@@ -477,7 +795,11 @@ function TabCard({ tab }: { tab: Tab }) {
     opacity: isDragging ? 0 : 1,
   };
 
-  const branch = ctx?.branch ?? null;
+  const rawBranch = ctx?.branch ?? null;
+  const isFork = !!group?.forkedFromId;
+  // Inside a fork the `grove/` prefix is implied by the workspace itself,
+  // so the chip drops it to leave room for the slug (otter-a3f2).
+  const branch = isFork && rawBranch?.startsWith('grove/') ? rawBranch.slice('grove/'.length) : rawBranch;
   const isDefault = tab.color === 'default';
   const flexElRef = useRef<HTMLElement | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
@@ -582,31 +904,32 @@ function TabCard({ tab }: { tab: Tab }) {
           </Text>
         )}
       </Box>
-      {branch && !hovered && !showColors && !runningCmd && (
-        <Box
-          flexShrink={0}
-          px="1.5"
-          py="0.5"
-          maxW="80px"
-          bg="#161b22"
-          border="1px solid #21262d"
-          borderRadius="4px"
-          color="#7ee787"
-          fontSize="10px"
-          fontFamily="var(--grove-mono)"
-          lineHeight="1"
-          display="inline-flex"
-          alignItems="center"
-          gap="1"
-          minW="0"
-          overflow="hidden"
-          title={branch}
-        >
-          <Box flexShrink={0} display="inline-flex" alignItems="center">
-            <BranchIcon />
+      {branch && rawBranch !== workspaceBranch && !hovered && !showColors && !runningCmd && (
+        <Tooltip label={branch}>
+          <Box
+            flexShrink={0}
+            px="1.5"
+            py="0.5"
+            maxW="80px"
+            bg="#161b22"
+            border="1px solid #21262d"
+            borderRadius="4px"
+            color="#7ee787"
+            fontSize="10px"
+            fontFamily="var(--grove-mono)"
+            lineHeight="1"
+            display="inline-flex"
+            alignItems="center"
+            gap="1"
+            minW="0"
+            overflow="hidden"
+          >
+            <Box flexShrink={0} display="inline-flex" alignItems="center">
+              <BranchIcon />
+            </Box>
+            <Box truncate minW="0">{branch}</Box>
           </Box>
-          <Box truncate minW="0">{branch}</Box>
-        </Box>
+        </Tooltip>
       )}
 
       {(hovered || showColors) && (
@@ -675,9 +998,6 @@ function TabCard({ tab }: { tab: Tab }) {
         <TabMenuItem onClick={() => { navigator.clipboard.writeText(ctx?.shortCwd || group?.cwd || ''); setOpenTabId(null); }}>
           Copy working directory
         </TabMenuItem>
-        <TabMenuItem onClick={() => { navigator.clipboard.writeText(tab.title); setOpenTabId(null); }}>
-          Copy name
-        </TabMenuItem>
         {branch && (
           <TabMenuItem onClick={() => { navigator.clipboard.writeText(branch); setOpenTabId(null); }}>
             Copy branch
@@ -709,97 +1029,20 @@ function TabCard({ tab }: { tab: Tab }) {
   );
 }
 
-function ChevronIcon() {
-  return (
-    <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-      <path d="M2.5 3.5L5 6L7.5 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function KebabIcon() {
-  return (
-    <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
-      <circle cx="5" cy="1.5" r="1" />
-      <circle cx="5" cy="5" r="1" />
-      <circle cx="5" cy="8.5" r="1" />
-    </svg>
-  );
-}
-
-function TabMenuItem({ children, onClick, danger }: { children: React.ReactNode; onClick: () => void; danger?: boolean }) {
+function TabMenuItem({ children, onClick, danger, disabled, hint }: { children: React.ReactNode; onClick: () => void; danger?: boolean; disabled?: boolean; hint?: string }) {
   return (
     <Box
       px="3"
       py="1.5"
-      cursor="pointer"
-      onClick={onClick}
-      _hover={{ bg: danger ? '#f8514922' : '#1f6feb' }}
+      cursor={disabled ? 'not-allowed' : 'pointer'}
+      onClick={disabled ? undefined : onClick}
+      _hover={disabled ? undefined : { bg: danger ? '#f8514922' : '#1f6feb' }}
+      opacity={disabled ? 0.5 : 1}
+      title={hint}
     >
       <Text fontSize="12px" color={danger ? '#f85149' : '#f0f6fc'}>{children}</Text>
+      {hint && disabled && <Text fontSize="11px" color="#7d8590" mt="0.5">{hint}</Text>}
     </Box>
   );
 }
 
-function BranchIcon() {
-  return (
-    <svg width="8" height="10" viewBox="0 0 10 12" fill="none">
-      <circle cx="2" cy="2.5" r="1.2" stroke="currentColor" strokeWidth="1" />
-      <circle cx="2" cy="9.5" r="1.2" stroke="currentColor" strokeWidth="1" />
-      <circle cx="8" cy="2.5" r="1.2" stroke="currentColor" strokeWidth="1" />
-      <path d="M2 3.7v4.6M2 6c0-1.7 1.4-3.5 6-3.5" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function FolderIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
-      <path d="M1.5 4a1 1 0 0 1 1-1h4l1.5 1.5h6a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1h-11.5a1 1 0 0 1-1-1V4z" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function TerminalIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-      <path d="M3 4.5L6 7.5L3 10.5M7 11.5h6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function StopIcon() {
-  return (
-    <svg className="grove-sq-icon" width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
-      <rect x="1" y="1" width="3.5" height="3.5" rx="0.5" />
-      <rect x="5.5" y="1" width="3.5" height="3.5" rx="0.5" />
-      <rect x="5.5" y="5.5" width="3.5" height="3.5" rx="0.5" />
-      <rect x="1" y="5.5" width="3.5" height="3.5" rx="0.5" />
-    </svg>
-  );
-}
-
-function PlusIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-      <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function NewGroupIcon() {
-  return (
-    <svg width="14" height="12" viewBox="0 0 14 12" fill="none">
-      <path d="M1 2.5a1 1 0 0 1 1-1h3.5l1.5 1.5h5a1 1 0 0 1 1 1V10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2.5z" stroke="currentColor" strokeWidth="1" strokeLinejoin="round" />
-      <path d="M7 5.5v3M5.5 7h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function CloseIcon() {
-  return (
-    <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-      <path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-    </svg>
-  );
-}

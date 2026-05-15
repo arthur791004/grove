@@ -1,10 +1,16 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { Box, Flex, Text } from '@chakra-ui/react';
+import { Box, CloseButton, Dialog, Flex, IconButton, NativeSelect, Portal, Text } from '@chakra-ui/react';
+import { RefreshCw, SlidersHorizontal } from 'lucide-react';
 import { Sidebar } from './Sidebar';
 import { Workspace } from './Workspace';
 import { CommandPalette } from './CommandPalette';
 import { useShortcuts } from './useShortcuts';
-import { useStore } from './store';
+import { useStore, type Group } from './store';
+import { shortPath } from './paths';
+
+// Stable empty reference: returning a fresh `[]` from a selector would force a
+// re-render every store tick because zustand uses reference equality.
+const EMPTY_GROUPS: Group[] = [];
 
 // Lazy-load the right-side panels: only one is ever open and they're each
 // a chunk of code (DiffPanel pulls react-diff-view; FileBrowserPanel pulls
@@ -36,6 +42,7 @@ export function App() {
   const browserPanelOpen = useStore((s) => s.browserPanelOpen);
   const toggleBrowserPanel = useStore((s) => s.toggleBrowserPanel);
   const browserPanelFullscreen = useStore((s) => s.browserPanelFullscreen);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
   useEffect(() => {
     const onResize = () => setWindowWidth(window.innerWidth);
@@ -57,6 +64,17 @@ export function App() {
     const s = useStore.getState();
     if (s.tabs.length === 0) s.newTab();
   }, []);
+
+  // Apply font-family / font-size prefs to the document root so CSS variables
+  // (and xterm via its own subscription) pick them up app-wide.
+  const monoFontFamily = useStore((s) => s.monoFontFamily);
+  const monoFontSize = useStore((s) => s.monoFontSize);
+  useEffect(() => {
+    const root = document.documentElement;
+    if (monoFontFamily) root.style.setProperty('--grove-mono', monoFontFamily);
+    else root.style.removeProperty('--grove-mono');
+    root.style.setProperty('--grove-mono-size', `${monoFontSize}px`);
+  }, [monoFontFamily, monoFontSize]);
 
   return (
     <Flex direction="column" h="100vh" w="100vw" bg="#0d1117" overflow="hidden">
@@ -93,6 +111,7 @@ export function App() {
           <BrowserToggleButton open={browserPanelOpen} onClick={toggleBrowserPanel} />
           <FileBrowserToggleButton open={fileBrowserOpen} onClick={toggleFileBrowser} />
           <DiffToggleButton open={diffPanelOpen} onClick={toggleDiffPanel} />
+          <SettingsButton open={settingsOpen} onClick={() => setSettingsOpen((o) => !o)} />
         </Flex>
       </Flex>
       <Flex flex="1" minH="0" minW="0" overflow="hidden">
@@ -160,6 +179,7 @@ export function App() {
         </Box>
       </Flex>
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </Flex>
   );
 }
@@ -212,8 +232,22 @@ function TitlebarIconButton({
 function AddWorkspaceSplitButton() {
   const newGroup = useStore((s) => s.newGroup);
   const setAutoEditCwdGroupId = useStore((s) => s.setAutoEditCwdGroupId);
+  const forkGroup = useStore((s) => s.forkGroup);
   const [open, setOpen] = useState(false);
+  const [showForkPicker, setShowForkPicker] = useState(false);
+  // groupId → is its cwd a git repo. Populated on demand when the fork
+  // picker opens (or when the user clicks "Fork workspace…" with one group).
+  const [forkable, setForkable] = useState<Record<string, boolean>>({});
   const ref = useRef<HTMLDivElement>(null);
+
+  // Only subscribe to the heavy arrays while the picker is actually open —
+  // otherwise this button re-renders on every tab title edit or pty tick.
+  const groups = useStore((s) => (showForkPicker ? s.groups : EMPTY_GROUPS));
+  const activeGroupId = useStore((s) => {
+    if (!showForkPicker) return null;
+    const t = s.tabs.find((t) => t.id === s.activeTabId);
+    return t?.groupId ?? null;
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -236,6 +270,45 @@ function AddWorkspaceSplitButton() {
     const id = newGroup(undefined, '~');
     setAutoEditCwdGroupId(id);
   };
+
+  const doFork = async (sourceId: string) => {
+    setOpen(false);
+    setShowForkPicker(false);
+    const res = await forkGroup(sourceId);
+    if ('error' in res) {
+      // eslint-disable-next-line no-alert
+      window.alert(`Fork failed: ${res.error}`);
+    }
+  };
+
+  const forkClicked = async () => {
+    if (!window.grove?.workspace) return;
+    const all = useStore.getState().groups;
+    // Resolve gitness for everything we don't already know, in parallel —
+    // forks (forkedFromId set) are git-backed by construction so skip them.
+    const checks = await Promise.all(all.map(async (g) => {
+      if (g.forkedFromId) return [g.id, true] as const;
+      const ok = await window.grove!.workspace.isGitRepo({ cwd: g.cwd });
+      return [g.id, !!ok] as const;
+    }));
+    const map = Object.fromEntries(checks);
+    setForkable(map);
+    const eligible = all.filter((g) => map[g.id]);
+    if (eligible.length === 0) {
+      // eslint-disable-next-line no-alert
+      window.alert('No git repositories among your workspaces. Fork is only available for workspaces inside a git repo.');
+      setOpen(false);
+      return;
+    }
+    if (eligible.length === 1) { doFork(eligible[0].id); return; }
+    setShowForkPicker(true);
+  };
+
+  // Reset the picker sub-view when the dropdown closes so reopening starts
+  // clean.
+  useEffect(() => {
+    if (!open) setShowForkPicker(false);
+  }, [open]);
 
   return (
     <Box ref={ref} position="relative" display="inline-flex" alignItems="center">
@@ -260,8 +333,29 @@ function AddWorkspaceSplitButton() {
           zIndex={100}
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
-          <MenuItem onClick={quickAdd} hint="Adds a workspace rooted at ~">Quick add</MenuItem>
-          <MenuItem onClick={addWithFolder} hint="Create then immediately edit folder">Add with folder…</MenuItem>
+          {!showForkPicker && (
+            <>
+              <MenuItem onClick={quickAdd} hint="Adds a workspace rooted at ~">Quick add</MenuItem>
+              <MenuItem onClick={addWithFolder} hint="Create then immediately edit folder">Add with folder…</MenuItem>
+              <MenuItem onClick={forkClicked} hint="Clean parallel copy on a fresh branch">Fork workspace…</MenuItem>
+            </>
+          )}
+          {showForkPicker && (
+            <>
+              <Box px="3" py="1.5">
+                <Text fontSize="11px" color="#7d8590">Fork from…</Text>
+              </Box>
+              {groups.filter((g) => forkable[g.id]).map((g) => (
+                <MenuItem
+                  key={g.id}
+                  onClick={() => doFork(g.id)}
+                  hint={g.id === activeGroupId ? 'active' : g.cwd}
+                >
+                  {g.name}
+                </MenuItem>
+              ))}
+            </>
+          )}
         </Box>
       )}
     </Box>
@@ -314,6 +408,214 @@ function DiffToggleButton({ open, onClick }: { open: boolean; onClick: () => voi
         <path d="M5 11h4" strokeWidth="1.3" strokeLinecap="round" />
       </svg>
     </TitlebarIconButton>
+  );
+}
+
+function SettingsButton({ open, onClick }: { open: boolean; onClick: () => void }) {
+  return (
+    <TitlebarIconButton active={open} title="Settings" onClick={onClick}>
+      <SlidersHorizontal size={18} strokeWidth={1.4} />
+    </TitlebarIconButton>
+  );
+}
+
+type OrphanBranch = { repoRoot: string; branch: string; worktreePath?: string };
+type CleanupState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'list'; entries: OrphanBranch[] }
+  | { status: 'empty' }
+  | { status: 'done'; deleted: number; errors: Array<{ branch: string; message: string }> };
+
+const MONO_FONT_OPTIONS: Array<{ label: string; value: string }> = [
+  { label: 'System default', value: '' },
+  { label: 'Hack', value: "'Hack', monospace" },
+  { label: 'JetBrains Mono', value: "'JetBrains Mono', monospace" },
+  { label: 'Fira Code', value: "'Fira Code', monospace" },
+  { label: 'Cascadia Code', value: "'Cascadia Code', monospace" },
+  { label: 'SF Mono', value: "'SF Mono', monospace" },
+  { label: 'Menlo', value: 'Menlo, monospace' },
+  { label: 'Monaco', value: 'Monaco, monospace' },
+];
+
+function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [cleanup, setCleanup] = useState<CleanupState>({ status: 'idle' });
+  const monoFontFamily = useStore((s) => s.monoFontFamily);
+  const monoFontSize = useStore((s) => s.monoFontSize);
+  const setMonoFontFamily = useStore((s) => s.setMonoFontFamily);
+  const setMonoFontSize = useStore((s) => s.setMonoFontSize);
+
+  const refresh = async () => {
+    if (!window.grove?.workspace) return;
+    setCleanup({ status: 'loading' });
+    const groups = useStore.getState().groups;
+    // Treat any registry entry whose workspaceId isn't in `liveWorkspaceIds`
+    // as orphaned, so the renderer enumerates everything it currently knows
+    // about (sending non-fork ids is harmless).
+    const liveWorkspaceIds = groups.map((g) => g.id);
+    const cwds = groups.map((g) => g.cwd);
+    try {
+      const entries = await window.grove.workspace.listGroveBranches({ liveWorkspaceIds, cwds });
+      setCleanup(entries.length === 0 ? { status: 'empty' } : { status: 'list', entries });
+    } catch (err) {
+      // eslint-disable-next-line no-alert
+      window.alert(`Listing branches failed: ${err instanceof Error ? err.message : String(err)}`);
+      setCleanup({ status: 'idle' });
+    }
+  };
+
+  // Re-scan each time the dialog opens (don't keep stale lists after deletes
+  // or closures from other surfaces).
+  useEffect(() => { if (open) refresh(); }, [open]);
+
+  const deleteAll = async () => {
+    if (cleanup.status !== 'list' || !window.grove?.workspace) return;
+    const entries = cleanup.entries;
+    setCleanup({ status: 'loading' });
+    const res = await window.grove.workspace.deleteBranches({ entries });
+    setCleanup({ status: 'done', deleted: res.deleted, errors: res.errors });
+  };
+
+  return (
+    <Dialog.Root open={open} onOpenChange={(e) => { if (!e.open) onClose(); }} placement="center">
+      <Portal>
+        <Dialog.Backdrop bg="rgba(0,0,0,0.5)" />
+        <Dialog.Positioner>
+          <Dialog.Content
+            bg="#161b22"
+            border="1px solid #30363d"
+            borderRadius="8px"
+            boxShadow="0 20px 60px rgba(0,0,0,0.6)"
+            w="520px"
+            h="560px"
+            maxW="520px"
+            display="flex"
+            flexDirection="column"
+          >
+            <Dialog.Header px="4" py="3" borderBottom="1px solid #30363d" display="flex" alignItems="center" justifyContent="space-between">
+              <Dialog.Title fontSize="14px" color="#f0f6fc" fontWeight="600">Settings</Dialog.Title>
+              <Dialog.CloseTrigger asChild>
+                <CloseButton size="sm" color="#7d8590" />
+              </Dialog.CloseTrigger>
+            </Dialog.Header>
+            <Dialog.Body flex="1" overflowY="auto" px="4" py="3">
+              <Text fontSize="13px" color="#f0f6fc" fontWeight="600" mb="2">Appearance</Text>
+              <Flex align="center" gap="3" mb="2">
+                <Text fontSize="12px" color="#7d8590" w="80px" flexShrink={0}>Font family</Text>
+                <Box flex="1">
+                  <NativeSelect.Root size="sm">
+                    <NativeSelect.Field
+                      value={monoFontFamily}
+                      onChange={(e) => setMonoFontFamily(e.target.value)}
+                      bg="#0d1117"
+                      color="#c9d1d9"
+                      borderColor="#30363d"
+                      fontSize="12px"
+                    >
+                      {MONO_FONT_OPTIONS.map((opt) => (
+                        <option key={opt.label} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </NativeSelect.Field>
+                    <NativeSelect.Indicator color="#7d8590" />
+                  </NativeSelect.Root>
+                </Box>
+              </Flex>
+              <Flex align="center" gap="3" mb="4">
+                <Text fontSize="12px" color="#7d8590" w="80px" flexShrink={0}>Font size</Text>
+                <input
+                  type="number"
+                  min={8}
+                  max={28}
+                  value={monoFontSize}
+                  onChange={(e) => setMonoFontSize(Number(e.target.value) || 13)}
+                  style={{
+                    width: 64, background: '#0d1117', color: '#c9d1d9',
+                    border: '1px solid #30363d', borderRadius: 4,
+                    padding: '4px 8px', fontSize: 12,
+                    outline: 'none',
+                  }}
+                />
+                <Text fontSize="11px" color="#7d8590">px</Text>
+                <Box flex="1" />
+                <Text
+                  color="#c9d1d9"
+                  style={{
+                    fontFamily: monoFontFamily || "'Hack', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Menlo, Monaco, monospace",
+                    fontSize: `${monoFontSize}px`,
+                  }}
+                >
+                  The quick brown fox 0123
+                </Text>
+              </Flex>
+              <Box borderTop="1px solid #30363d" my="3" />
+              <Flex align="center" justify="space-between" mb="2">
+                <Text fontSize="13px" color="#f0f6fc" fontWeight="600">Clean up Grove branches</Text>
+                {(cleanup.status === 'list' || cleanup.status === 'done') && (
+                  <IconButton
+                    aria-label="Refresh"
+                    onClick={refresh}
+                    variant="outline"
+                    size="xs"
+                    borderColor="#30363d"
+                    color="#c9d1d9"
+                    _hover={{ bg: '#21262d' }}
+                  >
+                    <RefreshCw size={14} strokeWidth={1.6} />
+                  </IconButton>
+                )}
+              </Flex>
+              <Text fontSize="11px" color="#7d8590" mb="3">
+                Orphan grove/* branches and worktree directories with no live workspace backing them.
+              </Text>
+              {cleanup.status === 'loading' && <Text fontSize="12px" color="#7d8590">Scanning…</Text>}
+              {cleanup.status === 'empty' && <Text fontSize="12px" color="#c9d1d9">Nothing to clean up.</Text>}
+              {cleanup.status === 'list' && (
+                <>
+                  <Box border="1px solid #30363d" borderRadius="6px" maxH="280px" overflowY="auto" mb="3">
+                    {cleanup.entries.map((e) => (
+                      <Flex key={`${e.repoRoot}\0${e.branch}`} px="3" py="2" borderBottom="1px solid #21262d" align="center" gap="2">
+                        <Box flex="1" minW="0">
+                          <Text fontSize="12px" color="#f0f6fc" fontFamily="var(--grove-mono)" truncate title={`${e.branch}\n${shortPath(e.repoRoot)}`}>
+                            {e.branch}
+                          </Text>
+                          <Text fontSize="10px" color="#7d8590" truncate>{shortPath(e.repoRoot)}</Text>
+                        </Box>
+                        {e.worktreePath && (
+                          <Text fontSize="10px" color="#d29922" fontFamily="var(--grove-mono)" flexShrink={0} title={shortPath(e.worktreePath)}>
+                            orphan worktree
+                          </Text>
+                        )}
+                      </Flex>
+                    ))}
+                  </Box>
+                  <button
+                    onClick={deleteAll}
+                    style={{ background: 'transparent', border: '1px solid #30363d', color: '#c9d1d9', cursor: 'pointer', padding: '4px 12px', borderRadius: 4, fontSize: 12 }}
+                  >
+                    Delete {cleanup.entries.length} {cleanup.entries.length === 1 ? 'entry' : 'entries'}
+                  </button>
+                </>
+              )}
+              {cleanup.status === 'done' && (
+                <>
+                  <Text fontSize="12px" color="#c9d1d9">Deleted {cleanup.deleted} branch{cleanup.deleted === 1 ? '' : 'es'}.</Text>
+                  {cleanup.errors.length > 0 && (
+                    <Box mt="2">
+                      <Text fontSize="11px" color="#f85149" mb="1">{cleanup.errors.length} failed:</Text>
+                      {cleanup.errors.map((err) => (
+                        <Text key={err.branch} fontSize="10px" color="#7d8590" fontFamily="var(--grove-mono)" mb="0.5">
+                          {err.branch} — {err.message}
+                        </Text>
+                      ))}
+                    </Box>
+                  )}
+                </>
+              )}
+            </Dialog.Body>
+          </Dialog.Content>
+        </Dialog.Positioner>
+      </Portal>
+    </Dialog.Root>
   );
 }
 

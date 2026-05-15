@@ -34,11 +34,27 @@ ipcRenderer.on('grove:browser-loading', (_e, loading: boolean) => {
 
 type Bounds = { x: number; y: number; width: number; height: number; zoom?: number };
 
+import type { CloseRequest, ForkRequest, ForkResult, OrphanBranch, StatusRequest } from './worktree/ipc';
+import type { WorktreeStatus } from './worktree/git';
+
 contextBridge.exposeInMainWorld('grove', {
   pickFolder: (): Promise<string | null> => ipcRenderer.invoke('grove:pick-folder'),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('grove:open-external', url),
   stateGet: (): Promise<string | null> => ipcRenderer.invoke('grove:state-get'),
   stateSet: (content: string): Promise<void> => ipcRenderer.invoke('grove:state-set', content),
+  revealPath: (target: string): Promise<void> => ipcRenderer.invoke('grove:reveal-path', target),
+  workspace: {
+    fork: (req: ForkRequest): Promise<ForkResult> => ipcRenderer.invoke('workspace:fork', req),
+    close: (req: CloseRequest): Promise<{ removed: boolean; branchDeleted: boolean }> => ipcRenderer.invoke('workspace:close', req),
+    status: (req: StatusRequest): Promise<WorktreeStatus | null> =>
+      ipcRenderer.invoke('workspace:status', req),
+    isGitRepo: (req: { cwd: string }): Promise<boolean> =>
+      ipcRenderer.invoke('workspace:is-git-repo', req),
+    listGroveBranches: (req: { cwds?: string[] }): Promise<OrphanBranch[]> =>
+      ipcRenderer.invoke('workspace:list-grove-branches', req),
+    deleteBranches: (req: { entries: OrphanBranch[] }): Promise<{ deleted: number; errors: Array<{ branch: string; message: string }> }> =>
+      ipcRenderer.invoke('workspace:delete-branches', req),
+  },
   browser: {
     open: (url: string): Promise<void> => ipcRenderer.invoke('grove:browser-open', url),
     close: (): Promise<void> => ipcRenderer.invoke('grove:browser-close'),

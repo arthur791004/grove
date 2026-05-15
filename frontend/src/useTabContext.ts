@@ -4,6 +4,7 @@ import { API_BASE } from './api';
 export interface TabContext {
   cwd: string;
   shortCwd: string;
+  repoRoot: string | null;
   branch: string | null;
   node: string | null;
   diff: { added: number; removed: number; files: number } | null;
@@ -15,9 +16,24 @@ export interface TabContext {
 const cache = new Map<string, TabContext>();
 const listeners = new Map<string, Set<(c: TabContext) => void>>();
 const oneShotFetched = new Set<string>();
+// Global subscribers receive every tab's ctx update. Used by the sidebar's
+// workspace branch hook to avoid polling — any tab in a workspace that lands
+// a ctx with matching repoRoot is the authoritative source of the workspace's
+// current branch.
+const globalListeners = new Set<(tabId: string, ctx: TabContext) => void>();
+
+export function subscribeAllTabContexts(fn: (tabId: string, ctx: TabContext) => void): () => void {
+  globalListeners.add(fn);
+  return () => { globalListeners.delete(fn); };
+}
+
+export function getCachedTabContext(tabId: string): TabContext | null {
+  return cache.get(tabId) ?? null;
+}
 
 function sameCtx(a: TabContext, b: TabContext): boolean {
   if (a.shortCwd !== b.shortCwd || a.branch !== b.branch || a.node !== b.node) return false;
+  if (a.repoRoot !== b.repoRoot) return false;
   if (a.cwdReady !== b.cwdReady) return false;
   const ad = a.diff, bd = b.diff;
   if (ad !== bd) {
@@ -39,6 +55,7 @@ function toCtx(data: Partial<TabContext> & Record<string, unknown>): TabContext 
   return {
     cwd: typeof data.cwd === 'string' ? data.cwd : '',
     shortCwd: typeof data.shortCwd === 'string' ? data.shortCwd : '',
+    repoRoot: typeof data.repoRoot === 'string' ? data.repoRoot : null,
     branch: typeof data.branch === 'string' ? data.branch : null,
     node: typeof data.node === 'string' ? data.node : null,
     diff: (data.diff as TabContext['diff']) ?? null,
@@ -56,6 +73,7 @@ export function setTabContext(tabId: string, data: Partial<TabContext> & Record<
   cache.set(tabId, next);
   const subs = listeners.get(tabId);
   if (subs) for (const fn of subs) fn(next);
+  for (const fn of globalListeners) fn(tabId, next);
 }
 
 export function useTabContext(

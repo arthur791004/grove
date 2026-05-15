@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { inspect } from 'node:util';
+import { registerWorktreeHandlers } from './worktree/ipc';
+import { atomicWriteFile } from './atomicWrite';
 
 // Custom scheme used to serve the built renderer in packaged builds. Loading
 // the bundle from file:// breaks dynamic import() of code-split chunks because
@@ -201,14 +203,7 @@ ipcMain.handle('grove:state-get', async () => {
 
 ipcMain.handle('grove:state-set', async (_e, content: string) => {
   if (typeof content !== 'string') return;
-  try {
-    fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
-    const tmp = STATE_FILE + '.tmp';
-    fs.writeFileSync(tmp, content, 'utf8');
-    fs.renameSync(tmp, STATE_FILE);
-  } catch (err) {
-    console.error('[grove] state-set failed', err);
-  }
+  atomicWriteFile(STATE_FILE, content);
 });
 
 ipcMain.handle('grove:open-external', async (_event, url: string) => {
@@ -216,6 +211,11 @@ ipcMain.handle('grove:open-external', async (_event, url: string) => {
   // Only allow http(s) to avoid file:// or other scheme abuse.
   if (!/^https?:\/\//i.test(url)) return;
   await shell.openExternal(url);
+});
+
+ipcMain.handle('grove:reveal-path', async (_e, target: string) => {
+  if (typeof target !== 'string' || !target) return;
+  try { shell.showItemInFolder(target); } catch { /* missing path */ }
 });
 
 ipcMain.handle('grove:pick-folder', async () => {
@@ -354,6 +354,7 @@ app.whenReady().then(async () => {
     await waitForBackend();
   }
   registerAppProtocol();
+  registerWorktreeHandlers();
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

@@ -2,6 +2,7 @@
   color-scheme: dark;
   /* Warp default font stack — Hack first (Warp's bundled default), then common monos */
   --grove-mono: 'Hack', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Menlo, Monaco, monospace;
+  --grove-mono-size: 13px;
 }
 
 html, body, #root {

@@ -20,7 +20,11 @@ function nodeVersion(cwd: string): string | null {
     encoding: 'utf8',
     timeout: 1500,
   });
-  const v = r.status === 0 ? (r.stdout.trim() || null) : null;
+  // Interactive shells source ~/.zshrc, which can print banners or color
+  // escape codes — extract just the version pattern from whatever lands in
+  // stdout so the chip doesn't render leading garbage.
+  const match = r.status === 0 ? r.stdout.match(/v?\d+\.\d+\.\d+/) : null;
+  const v = match ? (match[0].startsWith('v') ? match[0] : `v${match[0]}`) : null;
   nodeCache.set(key, { v, ts: now });
   return v;
 }

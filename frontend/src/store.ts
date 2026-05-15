@@ -53,6 +53,11 @@ export interface Group {
   name: string;
   cwd: string;
   collapsed: boolean;
+  // `grove/<animal>-<hash>` branch the fork was created on. The user is free
+  // to `git switch` away from it inside the worktree — this field never
+  // updates, it captures origin only.
+  forkBranch?: string;
+  forkedFromId?: string;
 }
 
 interface State {
@@ -76,6 +81,9 @@ interface State {
   browserHistory: Array<{ url: string; visitedAt: number; cwd: string }>;
   autoEditCwdGroupId: string | null;
   runningCmds: Record<string, string>;
+  // Empty string = use the default CSS stack defined in styles.css.
+  monoFontFamily: string;
+  monoFontSize: number;
 }
 
 interface Actions {
@@ -84,6 +92,9 @@ interface Actions {
   setGroupCwd(id: string, cwd: string): void;
   removeGroup(id: string): void;
   toggleGroup(id: string): void;
+  forkGroup(sourceGroupId: string): Promise<{ id: string } | { error: string }>;
+  closeFork(id: string, force?: boolean): Promise<{ ok: true } | { needsConfirm: true; status: WorktreeStatus } | { error: string }>;
+  _dropGroup(id: string): void;
   newTab(groupId?: string, title?: string): string;
   closeTab(id: string): void;
   renameTab(id: string, title: string): void;
@@ -107,6 +118,8 @@ interface Actions {
   removeBrowserHistory(url: string, cwd?: string): void;
   setAutoEditCwdGroupId(id: string | null): void;
   setRunningCmd(tabId: string, cmd: string | null): void;
+  setMonoFontFamily(v: string): void;
+  setMonoFontSize(n: number): void;
 }
 
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -141,6 +154,8 @@ export const useStore = create<State & Actions>()(
       browserHistory: [],
       autoEditCwdGroupId: null,
       runningCmds: {},
+      monoFontFamily: '',
+      monoFontSize: 13,
 
       newGroup(name, cwd = '~') {
         const id = uid();
@@ -171,23 +186,98 @@ export const useStore = create<State & Actions>()(
       },
 
       removeGroup(id) {
-        const s = get();
-        const tabsInGroup = s.tabs.filter((t) => t.groupId === id);
-        tabsInGroup.forEach((t) => get().closeTab(t.id));
-        if (s.groupOrder.length <= 1) return;
-        set((s) => ({
-          groups: s.groups.filter((g) => g.id !== id),
-          groupOrder: s.groupOrder.filter((gid) => gid !== id),
-          tabOrderByGroup: Object.fromEntries(
-            Object.entries(s.tabOrderByGroup).filter(([gid]) => gid !== id),
-          ),
-        }));
+        if (get().groupOrder.length <= 1) return;
+        get()._dropGroup(id);
+      },
+
+      _dropGroup(id) {
+        // PTY teardown is best-effort fire-and-forget; the state mutation
+        // below removes the tabs in one shot so we never observe a state
+        // where tabs reference a deleted group.
+        const tabsInGroup = get().tabs.filter((t) => t.groupId === id);
+        for (const t of tabsInGroup) {
+          fetch(`${API_BASE}/session/${t.id}`, { method: 'DELETE' }).catch(() => {});
+        }
+        set((s) => {
+          const tabs = s.tabs.filter((t) => t.groupId !== id);
+          const runningCmds = { ...s.runningCmds };
+          for (const t of tabsInGroup) delete runningCmds[t.id];
+          let activeTabId = s.activeTabId;
+          if (activeTabId && tabsInGroup.some((t) => t.id === activeTabId)) {
+            activeTabId = tabs[0]?.id ?? null;
+          }
+          const tabOrderByGroup = { ...s.tabOrderByGroup };
+          delete tabOrderByGroup[id];
+          return {
+            groups: s.groups.filter((g) => g.id !== id),
+            groupOrder: s.groupOrder.filter((gid) => gid !== id),
+            tabOrderByGroup,
+            tabs,
+            activeTabId,
+            runningCmds,
+          };
+        });
       },
 
       toggleGroup(id) {
         set((s) => ({
           groups: s.groups.map((g) => (g.id === id ? { ...g, collapsed: !g.collapsed } : g)),
         }));
+      },
+
+      async forkGroup(sourceGroupId) {
+        const source = get().groups.find((g) => g.id === sourceGroupId);
+        if (!source) return { error: 'Source workspace not found.' };
+        if (!window.grove?.workspace) return { error: 'Forking requires the desktop app.' };
+        const newId = uid();
+        try {
+          const res = await window.grove.workspace.fork({ workspaceId: newId, sourceCwd: source.cwd });
+          set((s) => {
+            // Slot the fork right after its source so the relationship is
+            // visible in the sidebar; if the source is missing for some reason,
+            // fall back to appending.
+            const sourceIdx = s.groupOrder.indexOf(sourceGroupId);
+            const order = [...s.groupOrder];
+            if (sourceIdx >= 0) order.splice(sourceIdx + 1, 0, newId);
+            else order.push(newId);
+            return {
+              groups: [...s.groups, {
+                id: newId,
+                name: res.displayName,
+                cwd: res.worktreePath,
+                collapsed: false,
+                forkBranch: res.branch,
+                forkedFromId: sourceGroupId,
+              }],
+              groupOrder: order,
+              tabOrderByGroup: { ...s.tabOrderByGroup, [newId]: [] },
+            };
+          });
+          return { id: newId };
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : String(err) };
+        }
+      },
+
+      async closeFork(id, force) {
+        const group = get().groups.find((g) => g.id === id);
+        if (!group) return { error: 'Workspace not found.' };
+        if (!group.forkedFromId) return { error: 'Not a fork — use Delete group instead.' };
+        if (!window.grove?.workspace) return { error: 'Closing forks requires the desktop app.' };
+        // Always confirm — closing a fork removes a worktree directory and
+        // potentially the grove/* branch, both of which deserve a beat to
+        // verify even when nothing is dirty.
+        if (!force) {
+          const status = await window.grove.workspace.status({ workspaceId: id });
+          return { needsConfirm: true, status: status ?? { hasUncommitted: false, hasUnpushed: false, unpushedCount: 0, currentBranch: null } };
+        }
+        try {
+          await window.grove.workspace.close({ workspaceId: id, force });
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : String(err) };
+        }
+        get()._dropGroup(id);
+        return { ok: true };
       },
 
       newTab(groupId, title) {
@@ -344,6 +434,9 @@ export const useStore = create<State & Actions>()(
 
       setAutoEditCwdGroupId(id) { set({ autoEditCwdGroupId: id }); },
 
+      setMonoFontFamily(v) { set({ monoFontFamily: v }); },
+      setMonoFontSize(n) { set({ monoFontSize: Math.max(8, Math.min(28, Math.round(n))) }); },
+
       setRunningCmd(tabId, cmd) {
         set((s) => {
           const cur = s.runningCmds[tabId];
@@ -379,6 +472,8 @@ export const useStore = create<State & Actions>()(
         browserPanelListOpen: s.browserPanelListOpen,
         browserPanelUrl: s.browserPanelUrl,
         browserHistory: s.browserHistory,
+        monoFontFamily: s.monoFontFamily,
+        monoFontSize: s.monoFontSize,
       }),
     },
   ),

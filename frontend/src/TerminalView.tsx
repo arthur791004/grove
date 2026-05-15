@@ -9,6 +9,7 @@ import { useTabContext, setTabContext, type TabContext } from './useTabContext';
 import { useStore } from './store';
 import { API_BASE, WS_BASE } from './api';
 import { TerminalOutput } from './TerminalOutput';
+import { BranchIcon, DiffIcon, FileIcon, FolderIcon, NodeIcon, PrIcon, ScriptIcon } from './icons';
 
 const ALT_ON   = /\x1b\[\?(?:1049|47|1047)h/g;
 const ALT_OFF  = /\x1b\[\?(?:1049|47|1047)l/g;
@@ -151,6 +152,10 @@ function useCmdHeld(): boolean {
   return down;
 }
 
+// Matches git's "fatal: 'main' is already used by worktree at '/path'" so
+// the renderer can replace git's wall-of-text with a workspace-aware hint.
+const FORK_LOCK_RE = /fatal: '([^']+)' is already (?:checked out|used by worktree) at/;
+
 function applyCarriageReturns(prev: string, incoming: string): string {
   if (
     incoming.indexOf('\r') === -1 &&
@@ -245,6 +250,9 @@ export function TerminalView({ tabId, active }: Props) {
   const [altScreen, setAltScreen] = useState(false);
   const [cursorHide, setCursorHide] = useState(false);
   const [forcedRaw, setForcedRaw] = useState(false);
+  // Surfaced when git refuses a branch switch because another worktree owns
+  // the branch. Dismissed by the user or auto-cleared on the next block start.
+  const [forkLockHint, setForkLockHint] = useState<{ branch: string } | null>(null);
   const rawMode = altScreen || cursorHide || forcedRaw;
   const rawKind: RawKind = altScreen || forcedRaw ? 'alt' : 'cursor';
   const rawModeRef = useRef(false);
@@ -361,6 +369,10 @@ export function TerminalView({ tabId, active }: Props) {
             closed = true;
             return;
           }
+          if (msg.type === 'raw' || msg.type === 'output') {
+            const m = typeof msg.data === 'string' ? msg.data.match(FORK_LOCK_RE) : null;
+            if (m) setForkLockHint({ branch: m[1] });
+          }
           if (msg.type === 'raw') {
             const scan = altCarryRef.current + msg.data;
             const result = detectRawScan(scan);
@@ -436,6 +448,7 @@ export function TerminalView({ tabId, active }: Props) {
             pending.set(cur, (pending.get(cur) ?? '') + msg.data);
             scheduleFlush();
           } else if (msg.type === 'block-start') {
+            setForkLockHint(null);
             inPromptRef.current = false;
             const id = ++blockCounter;
             currentBlockRef.current = id;
@@ -539,7 +552,7 @@ export function TerminalView({ tabId, active }: Props) {
     if (!xtermHostRef.current) return;
     const term = new Terminal({
       fontFamily: 'var(--grove-mono), Menlo, monospace',
-      fontSize: 13,
+      fontSize: useStore.getState().monoFontSize,
       theme: { background: '#010409', foreground: '#c9d1d9' },
       cursorBlink: true,
       scrollback: 5000,
@@ -605,6 +618,27 @@ export function TerminalView({ tabId, active }: Props) {
       serializeRef.current = null;
     };
   }, [tabId]);
+
+  // Apply Settings font preferences live. Selector-driven so these fire only
+  // when the actual slice changes (cf. useStore.subscribe, which woke up on
+  // every store mutation across every mounted TerminalView).
+  const prefFontSize = useStore((s) => s.monoFontSize);
+  const prefFontFamily = useStore((s) => s.monoFontFamily);
+  useEffect(() => {
+    const term = xtermRef.current;
+    if (!term) return;
+    term.options.fontSize = prefFontSize;
+    try { fitRef.current?.fit(); } catch { /* xterm not yet sized */ }
+  }, [prefFontSize]);
+  useEffect(() => {
+    const term = xtermRef.current;
+    if (!term) return;
+    // Re-set fontFamily to flush xterm's cached cell metrics.
+    const fam = term.options.fontFamily;
+    term.options.fontFamily = 'monospace';
+    term.options.fontFamily = fam;
+    try { fitRef.current?.fit(); } catch { /* xterm not yet sized */ }
+  }, [prefFontFamily]);
 
   useEffect(() => { rawModeRef.current = rawMode; }, [rawMode]);
 
@@ -900,7 +934,7 @@ export function TerminalView({ tabId, active }: Props) {
           flex="1"
           overflowY="auto"
           fontFamily="var(--grove-mono)"
-          fontSize="13px"
+          fontSize="var(--grove-mono-size)"
           color="#c9d1d9"
           display="flex"
           flexDirection="column"
@@ -971,6 +1005,39 @@ export function TerminalView({ tabId, active }: Props) {
           </Box>
         )}
 
+      {forkLockHint && (
+        <Box
+          mx="4"
+          mb="1"
+          px="2.5"
+          py="1.5"
+          bg="#3d2a1a"
+          border="1px solid #7d4a1a"
+          borderRadius="4px"
+          color="#f0d9a8"
+          fontSize="11px"
+          fontFamily="var(--grove-mono)"
+          display="flex"
+          alignItems="center"
+          gap="2"
+        >
+          <Box flex="1">
+            <Text as="span" color="#f8c468" fontWeight="600">{forkLockHint.branch}</Text>
+            {' is checked out in another workspace. Switch that workspace to a different branch first.'}
+          </Box>
+          <button
+            onClick={() => setForkLockHint(null)}
+            title="Dismiss"
+            style={{
+              background: 'transparent', border: 'none', color: '#f0d9a8',
+              cursor: 'pointer', padding: '2px 4px', borderRadius: 3, fontSize: 12, lineHeight: 1,
+            }}
+          >
+            ✕
+          </button>
+        </Box>
+      )}
+
       <ChipStrip ctx={ctx} tabId={tabId} />
 
       <Box
@@ -980,7 +1047,7 @@ export function TerminalView({ tabId, active }: Props) {
         <Box flex="1" position="relative" h="22px">
           {suggestion && !runningBlock && (
             <Box position="absolute" inset="0" pointerEvents="none"
-              fontFamily="var(--grove-mono)" fontSize="13px" lineHeight="22px" color="#484f58"
+              fontFamily="var(--grove-mono)" fontSize="var(--grove-mono-size)" lineHeight="22px" color="#484f58"
               style={{
                 whiteSpace: 'pre',
                 letterSpacing: 0,
@@ -1046,7 +1113,7 @@ export function TerminalView({ tabId, active }: Props) {
               WebkitAppearance: 'none',
               letterSpacing: 0,
               wordSpacing: 0,
-              fontFamily: 'var(--grove-mono)', fontSize: '13px', lineHeight: '22px',
+              fontFamily: 'var(--grove-mono)', fontSize: 'var(--grove-mono-size)', lineHeight: '22px',
               color: '#c9d1d9', caretColor: 'transparent',
               position: 'relative', zIndex: 1,
               fontFeatureSettings: '"liga" 0, "calt" 0',
@@ -1165,7 +1232,7 @@ function BlockCard({ block, ctxNode, cmdHeld, onDelete, onRerun }: { block: Bloc
           color="#f0f6fc"
           fontWeight="700"
           fontFamily="var(--grove-mono)"
-          fontSize="13px"
+          fontSize="var(--grove-mono-size)"
           style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
         >
           {block.cmd}
@@ -1176,7 +1243,7 @@ function BlockCard({ block, ctxNode, cmdHeld, onDelete, onRerun }: { block: Bloc
           className={cmdHeld ? 'grove-output grove-cmd-held' : 'grove-output'}
           color="#c9d1d9"
           fontFamily="var(--grove-mono)"
-          fontSize="13px"
+          fontSize="var(--grove-mono-size)"
           lineHeight="1"
           overflowX={block.interactive ? 'auto' : undefined}
           style={{
@@ -1330,7 +1397,7 @@ function RunningBadge({ cmd, onStop }: { cmd: string; onStop: () => void }) {
       h="22px"
       lineHeight="22px"
       fontFamily="var(--grove-mono)"
-      fontSize="13px"
+      fontSize="var(--grove-mono-size)"
       color="#484f58"
       flexShrink="0"
       minW="0"
@@ -1365,9 +1432,16 @@ function RunningBadge({ cmd, onStop }: { cmd: string; onStop: () => void }) {
 }
 
 function ChipStrip({ ctx, tabId }: { ctx: ReturnType<typeof useTabContext>; tabId: string }) {
+  // Split into two primitive-returning selectors so each only re-renders when
+  // its own slice actually changes — a combined object selector would churn on
+  // every store tick.
   const groupCwd = useStore((s) => {
     const tab = s.tabs.find((t) => t.id === tabId);
     return tab ? s.groups.find((g) => g.id === tab.groupId)?.cwd : undefined;
+  });
+  const isFork = useStore((s) => {
+    const tab = s.tabs.find((t) => t.id === tabId);
+    return tab ? !!s.groups.find((g) => g.id === tab.groupId)?.forkedFromId : false;
   });
   // Only trust ctx.shortCwd once the backend confirms the pty session has
   // initialized (cwdReady). Otherwise the HTTP /context fetch on first mount
@@ -1379,7 +1453,7 @@ function ChipStrip({ ctx, tabId }: { ctx: ReturnType<typeof useTabContext>; tabI
   return (
     <HStack px="4" pt="4" pb="0" gap="2" bg="#010409" flexWrap="wrap">
       <Chip
-        icon={<FolderIcon />}
+        icon={<FolderIcon size={12} />}
         label={cwdLoading
           ? <Text as="span" color="#484f58" style={{ filter: 'blur(5px)', opacity: 0.5, userSelect: 'none' }}>loading…</Text>
           : cwd}
@@ -1388,7 +1462,11 @@ function ChipStrip({ ctx, tabId }: { ctx: ReturnType<typeof useTabContext>; tabI
         <Chip icon={<NodeIcon />} label={ctx.node} labelColor="#7ee787" />
       )}
       {ctx?.branch && (
-        <Chip icon={<BranchIcon />} label={ctx.branch} labelColor="#7ee787" />
+        <Chip
+          icon={<BranchIcon size={12} />}
+          label={isFork && ctx.branch.startsWith('grove/') ? ctx.branch.slice('grove/'.length) : ctx.branch}
+          labelColor="#7ee787"
+        />
       )}
       {ctx?.diff && ctx.diff.files > 0 && (
         <Chip
@@ -1484,12 +1562,12 @@ function CompletionDropdown({
             onMouseDown={(e) => { e.preventDefault(); onPick(i); }}
           >
             <Box color={isSel ? '#ffffff' : '#7d8590'} display="flex" alignItems="center">
-              {item.kind === 'dir' && <FolderIcon />}
+              {item.kind === 'dir' && <FolderIcon size={12} />}
               {item.kind === 'file' && <FileIcon />}
-              {item.kind === 'branch' && <BranchIcon />}
+              {item.kind === 'branch' && <BranchIcon size={12} />}
               {item.kind === 'script' && <ScriptIcon />}
             </Box>
-            <Text fontFamily="var(--grove-mono)" fontSize="13px" fontWeight={isSel ? '600' : '500'} flex="1" truncate>
+            <Text fontFamily="var(--grove-mono)" fontSize="var(--grove-mono-size)" fontWeight={isSel ? '600' : '500'} flex="1" truncate>
               {item.label}
             </Text>
             <Text fontFamily="var(--grove-mono)" fontSize="12px" color={isSel ? '#cce0ff' : '#7d8590'}>
@@ -1499,65 +1577,6 @@ function CompletionDropdown({
         );
       })}
     </Box>
-  );
-}
-
-function FileIcon() {
-  return (
-    <svg width="12" height="13" viewBox="0 0 12 14" fill="none">
-      <path d="M2 1h5l3 3v9a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1" />
-      <path d="M7 1v3h3" stroke="currentColor" strokeWidth="1" />
-    </svg>
-  );
-}
-
-function ScriptIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
-      <path d="M3 4l3 3-3 3M7 11h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function NodeIcon() {
-  return (
-    <svg width="11" height="12" viewBox="0 0 11 12" fill="none">
-      <path d="M5.5 0.5L10.5 3.25v5.5L5.5 11.5L0.5 8.75v-5.5L5.5 0.5z" stroke="#7ee787" strokeWidth="1" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function FolderIcon() {
-  return (
-    <svg width="12" height="11" viewBox="0 0 14 12" fill="none">
-      <path d="M1 2.5a1 1 0 0 1 1-1h3.5l1.5 1.5h5a1 1 0 0 1 1 1V10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2.5z" stroke="currentColor" strokeWidth="1" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function BranchIcon() {
-  return (
-    <svg width="10" height="12" viewBox="0 0 10 12" fill="none">
-      <circle cx="2" cy="2.5" r="1.2" stroke="currentColor" strokeWidth="1" />
-      <circle cx="2" cy="9.5" r="1.2" stroke="currentColor" strokeWidth="1" />
-      <circle cx="8" cy="2.5" r="1.2" stroke="currentColor" strokeWidth="1" />
-      <path d="M2 3.7v4.6M2 6c0-1.7 1.4-3.5 6-3.5" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function DiffIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor">
-      <path
-        d="M3 1h5l3 3v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z"
-        strokeWidth="1"
-        strokeLinejoin="round"
-      />
-      <path d="M8 1v3h3" strokeWidth="1" />
-      <path d="M5 7.5h4M7 5.5v4" strokeWidth="1.1" strokeLinecap="round" />
-      <path d="M5 11h4" strokeWidth="1.1" strokeLinecap="round" />
-    </svg>
   );
 }
 
@@ -1590,15 +1609,3 @@ function PrChip({ pr }: { pr: NonNullable<TabContext['pr']> }) {
   );
 }
 
-function PrIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="3.5" cy="3" r="1.3" />
-      <circle cx="3.5" cy="11" r="1.3" />
-      <circle cx="10.5" cy="11" r="1.3" />
-      <path d="M3.5 4.3v5.4" />
-      <path d="M10.5 9.7V6a2 2 0 0 0-2-2H7" />
-      <path d="M8.5 2.5L7 4l1.5 1.5" />
-    </svg>
-  );
-}
