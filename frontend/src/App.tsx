@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import {
   Box,
   CloseButton,
@@ -16,22 +16,36 @@ import { CommandPalette } from './CommandPalette';
 import { useShortcuts } from './useShortcuts';
 import { useStore, type Group } from './store';
 import { shortPath } from './paths';
+import './extensions/builtins';
+import { usePanels } from './extensions/registry';
 
 // Stable empty reference: returning a fresh `[]` from a selector would force a
 // re-render every store tick because zustand uses reference equality.
 const EMPTY_GROUPS: Group[] = [];
 
-// Lazy-load the right-side panels: only one is ever open and they're each
-// a chunk of code (DiffPanel pulls react-diff-view; FileBrowserPanel pulls
-// prism-react-renderer + the icon set; BrowserPanel hosts the iframe).
-// First open pays the import cost, then they're cached.
-const DiffPanel = lazy(() => import('./DiffPanel').then((m) => ({ default: m.DiffPanel })));
-const FileBrowserPanel = lazy(() =>
-  import('./FileBrowserPanel').then((m) => ({ default: m.FileBrowserPanel })),
-);
-const BrowserPanel = lazy(() =>
-  import('./BrowserPanel').then((m) => ({ default: m.BrowserPanel })),
-);
+// Transitional shims while the store still keeps one boolean per built-in
+// panel. Slice 1 only refactors the rendering plumbing onto the registry;
+// generalizing the open-state to `activePanelId: string | null` is a future
+// slice (touches toggle handlers, per-panel fullscreen, etc.). New panels
+// added in later slices will need entries here OR a real store cutover.
+const PANEL_OPEN_SELECTORS: Record<string, (s: ReturnType<typeof useStore.getState>) => boolean> = {
+  diff: (s) => s.diffPanelOpen,
+  files: (s) => s.fileBrowserOpen,
+  browser: (s) => s.browserPanelOpen,
+};
+const PANEL_FULLSCREEN_SELECTORS: Record<
+  string,
+  (s: ReturnType<typeof useStore.getState>) => boolean
+> = {
+  diff: (s) => s.diffPanelFullscreen,
+  files: (s) => s.fileBrowserFullscreen,
+  browser: (s) => s.browserPanelFullscreen,
+};
+const PANEL_TOGGLERS: Record<string, (s: ReturnType<typeof useStore.getState>) => void> = {
+  diff: (s) => s.toggleDiffPanel(),
+  files: (s) => s.toggleFileBrowser(),
+  browser: (s) => s.toggleBrowserPanel(),
+};
 
 const SIDEBAR_WIDTH = 220;
 // Default right-side panel takes 40% of the content area, with a minimum
@@ -46,15 +60,6 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
-  const diffPanelOpen = useStore((s) => s.diffPanelOpen);
-  const toggleDiffPanel = useStore((s) => s.toggleDiffPanel);
-  const diffPanelFullscreen = useStore((s) => s.diffPanelFullscreen);
-  const fileBrowserOpen = useStore((s) => s.fileBrowserOpen);
-  const toggleFileBrowser = useStore((s) => s.toggleFileBrowser);
-  const fileBrowserFullscreen = useStore((s) => s.fileBrowserFullscreen);
-  const browserPanelOpen = useStore((s) => s.browserPanelOpen);
-  const toggleBrowserPanel = useStore((s) => s.toggleBrowserPanel);
-  const browserPanelFullscreen = useStore((s) => s.browserPanelFullscreen);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
   useEffect(() => {
@@ -62,18 +67,28 @@ export function App() {
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
+
+  // Registry-driven panel state. Active panel id (if any) is derived from
+  // each panel's open-selector — at most one is open at a time.
+  const panels = usePanels();
+  const activePanelId = useStore((s) => {
+    for (const p of panels) {
+      const sel = PANEL_OPEN_SELECTORS[p.id];
+      if (sel?.(s)) return p.id;
+    }
+    return null;
+  });
+  const activeUserFullscreen = useStore((s) => {
+    if (!activePanelId) return false;
+    return PANEL_FULLSCREEN_SELECTORS[activePanelId]?.(s) ?? false;
+  });
+  const activePanel = activePanelId ? (panels.find((p) => p.id === activePanelId) ?? null) : null;
+
   const contentW = windowWidth - (sidebarOpen ? SIDEBAR_WIDTH : 0);
-  const panelOpen = diffPanelOpen || fileBrowserOpen || browserPanelOpen;
+  const panelOpen = !!activePanel;
   const activePanelBaseW = panelOpen ? Math.max(PANEL_MIN, Math.round(contentW * PANEL_RATIO)) : 0;
   const forcedFullscreen = panelOpen && contentW - activePanelBaseW < MIN_WORKSPACE_WIDTH;
-  const userFullscreen = diffPanelOpen
-    ? diffPanelFullscreen
-    : fileBrowserOpen
-      ? fileBrowserFullscreen
-      : browserPanelOpen
-        ? browserPanelFullscreen
-        : false;
-  const effectiveFullscreen = userFullscreen || forcedFullscreen;
+  const effectiveFullscreen = activeUserFullscreen || forcedFullscreen;
   useShortcuts(() => setPaletteOpen(true));
 
   useEffect(() => {
@@ -124,9 +139,20 @@ export function App() {
           pt="2px"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
-          <BrowserToggleButton open={browserPanelOpen} onClick={toggleBrowserPanel} />
-          <FileBrowserToggleButton open={fileBrowserOpen} onClick={toggleFileBrowser} />
-          <DiffToggleButton open={diffPanelOpen} onClick={toggleDiffPanel} />
+          {panels.map((p) => (
+            <TitlebarIconButton
+              key={p.id}
+              active={activePanelId === p.id}
+              title={
+                activePanelId === p.id
+                  ? `Hide ${p.title.toLowerCase()}`
+                  : `Show ${p.title.toLowerCase()}`
+              }
+              onClick={() => PANEL_TOGGLERS[p.id]?.(useStore.getState())}
+            >
+              {p.icon}
+            </TitlebarIconButton>
+          ))}
           <SettingsButton open={settingsOpen} onClick={() => setSettingsOpen((o) => !o)} />
         </Flex>
       </Flex>
@@ -174,15 +200,8 @@ export function App() {
           >
             <Box w="100%" h="100%">
               <Suspense fallback={<PanelLoading />}>
-                {diffPanelOpen && <DiffPanel forcedFullscreen={forcedFullscreen} />}
-                {fileBrowserOpen && (
-                  <FileBrowserPanel
-                    forcedFullscreen={forcedFullscreen}
-                    panelWidth={effectiveFullscreen ? contentW : activePanelBaseW}
-                  />
-                )}
-                {browserPanelOpen && (
-                  <BrowserPanel
+                {activePanel && (
+                  <activePanel.component
                     forcedFullscreen={forcedFullscreen}
                     panelWidth={effectiveFullscreen ? contentW : activePanelBaseW}
                   />
@@ -450,59 +469,6 @@ function MenuItem({
         </Text>
       )}
     </Box>
-  );
-}
-
-function FileBrowserToggleButton({ open, onClick }: { open: boolean; onClick: () => void }) {
-  return (
-    <TitlebarIconButton active={open} title={open ? 'Hide files' : 'Show files'} onClick={onClick}>
-      <svg width="18" height="16" viewBox="0 0 18 16" fill="none" stroke="currentColor">
-        <path
-          d="M2 3.5a1 1 0 0 1 1-1h4l1.5 1.5h7a1 1 0 0 1 1 1V12.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5z"
-          strokeWidth="1.3"
-          strokeLinejoin="round"
-        />
-      </svg>
-    </TitlebarIconButton>
-  );
-}
-
-function BrowserToggleButton({ open, onClick }: { open: boolean; onClick: () => void }) {
-  return (
-    <TitlebarIconButton
-      active={open}
-      title={open ? 'Hide browser' : 'Show browser'}
-      onClick={onClick}
-    >
-      <svg
-        width="16"
-        height="16"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.3"
-      >
-        <circle cx="8" cy="8" r="6" />
-        <path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12" strokeLinecap="round" />
-      </svg>
-    </TitlebarIconButton>
-  );
-}
-
-function DiffToggleButton({ open, onClick }: { open: boolean; onClick: () => void }) {
-  return (
-    <TitlebarIconButton active={open} title={open ? 'Hide diff' : 'Show diff'} onClick={onClick}>
-      <svg width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="currentColor">
-        <path
-          d="M3 1h5l3 3v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z"
-          strokeWidth="1.2"
-          strokeLinejoin="round"
-        />
-        <path d="M8 1v3h3" strokeWidth="1.2" />
-        <path d="M5 7.5h4M7 5.5v4" strokeWidth="1.3" strokeLinecap="round" />
-        <path d="M5 11h4" strokeWidth="1.3" strokeLinecap="round" />
-      </svg>
-    </TitlebarIconButton>
   );
 }
 
