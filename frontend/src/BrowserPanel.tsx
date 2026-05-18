@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { Box, Flex, HStack, Input, Text } from '@chakra-ui/react';
 import { useStore } from './store';
 import { API_BASE } from './api';
+import { SquareLoader } from './SquareLoader';
 
 interface ServiceEntry {
   port: number;
@@ -447,7 +448,7 @@ function ServicesList({
       <Box flex="1" overflowY="auto">
         {services === null ? (
           <Flex h="100%" align="center" justify="center">
-            <LoadingDots />
+            <SquareLoader />
           </Flex>
         ) : services.length === 0 && recents.length === 0 ? (
           <Flex
@@ -714,17 +715,6 @@ function FrameErrorView({
         </Box>
       </Flex>
     </Flex>
-  );
-}
-
-function LoadingDots() {
-  return (
-    <div className="grove-sq-loader">
-      <span />
-      <span />
-      <span />
-      <span />
-    </div>
   );
 }
 

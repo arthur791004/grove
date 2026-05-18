@@ -11,8 +11,10 @@ import {
 } from '@chakra-ui/react';
 import { RefreshCw, SlidersHorizontal } from 'lucide-react';
 import { Sidebar } from './Sidebar';
+import { SquareLoader } from './SquareLoader';
 import { Workspace } from './Workspace';
 import { CommandPalette } from './CommandPalette';
+import { ReconnectBanner } from './ReconnectBanner';
 import { useShortcuts } from './useShortcuts';
 import { useStore, type Group } from './store';
 import { shortPath } from './paths';
@@ -183,6 +185,7 @@ export function App() {
       </Flex>
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <ReconnectBanner />
     </Flex>
   );
 }
@@ -197,12 +200,7 @@ function PanelLoading() {
       bg="#010409"
       borderLeft="1px solid #21262d"
     >
-      <span className="grove-sq-loader">
-        <span />
-        <span />
-        <span />
-        <span />
-      </span>
+      <SquareLoader />
     </Flex>
   );
 }

@@ -2,6 +2,7 @@ import { Box, Flex, HStack, Text } from '@chakra-ui/react';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from './store';
 import { API_BASE } from './api';
+import { SquareLoader } from './SquareLoader';
 
 interface DiffFile {
   path: string;
@@ -585,12 +586,7 @@ function ExpandAllButton({
     >
       <Box w="14px" h="14px" display="inline-flex" alignItems="center" justifyContent="center">
         {isLoading ? (
-          <span className="grove-sq-loader">
-            <span />
-            <span />
-            <span />
-            <span />
-          </span>
+          <SquareLoader />
         ) : (
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
             {isExpanded ? (
@@ -865,12 +861,7 @@ function HunkHeaderLine({
           justifyContent="center"
         >
           {isLoading ? (
-            <span className="grove-sq-loader">
-              <span />
-              <span />
-              <span />
-              <span />
-            </span>
+            <SquareLoader />
           ) : (
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
               {isExpanded ? (
@@ -936,12 +927,7 @@ function HunkToggleRow({
         justifyContent="center"
       >
         {isLoading ? (
-          <span className="grove-sq-loader">
-            <span />
-            <span />
-            <span />
-            <span />
-          </span>
+          <SquareLoader />
         ) : (
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
             {isExpanded ? (

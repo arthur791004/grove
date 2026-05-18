@@ -29,6 +29,7 @@ function resolveTilde(p: string): string {
 }
 import { useTabContext } from './useTabContext';
 import { API_BASE } from './api';
+import { SquareLoader } from './SquareLoader';
 
 interface FileEntry {
   name: string;
@@ -463,12 +464,7 @@ export function FileBrowserPanel({
                   )}
                   {!dir && !dirError && (
                     <Flex h="100%" align="center" justify="center">
-                      <span className="grove-sq-loader">
-                        <span />
-                        <span />
-                        <span />
-                        <span />
-                      </span>
+                      <SquareLoader />
                     </Flex>
                   )}
                   {dir && rows.length === 0 && !dirError && (
@@ -554,7 +550,7 @@ function SearchInput({
         justifyContent="center"
       >
         {searching ? (
-          <span className="grove-sq-loader" />
+          <SquareLoader />
         ) : (
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
             <circle cx="5" cy="5" r="3" strokeWidth="1.3" />
@@ -625,12 +621,7 @@ function SearchResults({
   if (results === null && searching) {
     return (
       <Flex h="100%" align="center" justify="center">
-        <span className="grove-sq-loader">
-          <span />
-          <span />
-          <span />
-          <span />
-        </span>
+        <SquareLoader />
       </Flex>
     );
   }
@@ -722,12 +713,7 @@ function FilePreview({
   if (loading && !content) {
     return (
       <Flex h="100%" align="center" justify="center">
-        <span className="grove-sq-loader">
-          <span />
-          <span />
-          <span />
-          <span />
-        </span>
+        <SquareLoader />
       </Flex>
     );
   }

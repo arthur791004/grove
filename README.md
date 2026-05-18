@@ -107,7 +107,7 @@ A block already has everything needed to reproduce it. One-click "share" produce
 
 - **Electron** shell — custom titlebar, IPC for folder picker, open external, frame nav forwarding
 - **React 18 + Chakra v3 + Vite + Zustand** (persisted to localStorage)
-- **Fastify + WebSocket + node-pty** backend on `127.0.0.1:4317`
+- **Fastify + WebSocket + node-pty** backend on `127.0.0.1:4317` — runs as a persistent daemon (see below) so dev servers and watchers survive window close
 - **xterm.js** for raw-mode TUI overlay (vim, htop, ssh, claude…)
 - `lsof` for dev server discovery
 - Custom **zsh integration** via `ZDOTDIR` for OSC 133 + Grove markers
@@ -122,7 +122,21 @@ npm install
 npm run dev:all
 ```
 
-`dev:all` builds the Electron main process, then runs backend + Vite + Electron in parallel. A `kill-ports` step nukes any stale listeners on `4317` and `5173` first so restarts don't conflict.
+`dev:all` builds the Electron main process, then runs backend + Vite + Electron in parallel. A `kill-ports` step nukes any stale listeners on `4318` and `5173` first so restarts don't conflict. The dev backend listens on `4318` to stay clear of any packaged Grove daemon on `4317`.
+
+### The daemon
+
+A packaged Grove runs the backend as a detached daemon at `127.0.0.1:4317`. Closing the window leaves it alive — your `npm run dev`, test watchers, and long compiles keep going. Reopen Grove and Electron reconnects to the same process. `⌘Q` (Quit Grove) tears the daemon down cleanly; force-quit or crashes leave it running, and the next launch reconnects.
+
+Manage it from the CLI when needed:
+
+```bash
+npm run daemon:status   # is it running?
+npm run daemon:stop     # SIGTERM + clean PID file
+npm run daemon:start    # build backend, start fresh
+```
+
+State lives in `~/.grove/`: `daemon.pid`, `daemon.log`, `blocks/`, `worktrees/`.
 
 See [FEATURES.md](FEATURES.md) for the v1 scope.
 

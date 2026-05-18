@@ -10,13 +10,13 @@ import {
   WebContentsView,
   type WebContents,
 } from 'electron';
-import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { inspect } from 'node:util';
 import { registerWorktreeHandlers } from './worktree/ipc';
 import { atomicWriteFile } from './atomicWrite';
+import { ensureDaemon, shutdownDaemon } from './daemon';
 
 // Custom scheme used to serve the built renderer in packaged builds. Loading
 // the bundle from file:// breaks dynamic import() of code-split chunks because
@@ -35,7 +35,6 @@ app.setName('Grove');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const windowStateKeeper = require('electron-window-state');
 
-let backend: ChildProcess | null = null;
 let mainWindow: BrowserWindow | null = null;
 
 // Embedded browser surface for the BrowserPanel. A WebContentsView is a real
@@ -122,61 +121,9 @@ function attachWebContentsLogging(wc: WebContents, label: string) {
   });
 }
 
-function startBackend() {
-  // In a packaged build the backend lives at
-  // app.asar.unpacked/backend/dist (see electron-builder asarUnpack). Replace
-  // the asar segment so spawn can find the real filesystem path. In dev the
-  // path doesn't contain "app.asar" and the replace is a no-op.
-  const raw = path.resolve(__dirname, '../../backend/dist/index.js');
-  const backendEntry = raw.replace(
-    `${path.sep}app.asar${path.sep}`,
-    `${path.sep}app.asar.unpacked${path.sep}`,
-  );
-  backend = spawn(process.execPath, [backendEntry], {
-    // ELECTRON_RUN_AS_NODE makes the spawned Electron binary behave as a
-    // plain Node runtime (skips the GUI / main script lookup).
-    // GROVE_LOG_FILE tells the backend we're teeing its stdio into the log so
-    // it skips its own (would-be duplicate) file logging.
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: '1',
-      GROVE_BACKEND_PORT: '4317',
-      GROVE_LOG_FILE: LOG_FILE,
-    },
-    // Pipe (not 'inherit') so backend output can be teed into the log file.
-    // It's still echoed to our own stdout/stderr so the dev terminal is
-    // unchanged.
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  const tee = (stream: NodeJS.ReadableStream | null, out: NodeJS.WriteStream, tag: string) => {
-    stream?.on('data', (chunk: Buffer) => {
-      out.write(chunk);
-      for (const line of chunk.toString().split('\n')) {
-        if (line.trim()) logLine(`[backend:${tag}] ${line}`);
-      }
-    });
-  };
-  tee(backend.stdout, process.stdout, 'out');
-  tee(backend.stderr, process.stderr, 'err');
-  backend.on('exit', (code, signal) => logLine(`[backend] exited code=${code} signal=${signal}`));
-}
-
-// Poll /health until fastify is listening so the renderer never observes the
-// "ECONNREFUSED → 8 retries → give up" race. ~10s budget is generous; a healthy
-// backend comes up in under a second.
-async function waitForBackend(timeoutMs = 10_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch('http://127.0.0.1:4317/health');
-      if (res.ok) return;
-    } catch {
-      /* not listening yet */
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  console.error('[grove] backend /health never responded within', timeoutMs, 'ms');
-}
+// Backend lifecycle now lives in ./daemon.ts. Electron connects to a persistent
+// daemon on 127.0.0.1:4317 instead of spawning it as a child — see the Grove
+// Daemon Persistence design doc.
 
 function createWindow() {
   const state = windowStateKeeper({ defaultWidth: 1280, defaultHeight: 800 });
@@ -402,8 +349,17 @@ function registerAppProtocol() {
 app.whenReady().then(async () => {
   setupLogging();
   if (!process.env.GROVE_DEV_URL) {
-    startBackend();
-    await waitForBackend();
+    try {
+      await ensureDaemon();
+    } catch (err) {
+      logLine(`[grove] ensureDaemon failed: ${err instanceof Error ? err.stack : String(err)}`);
+      dialog.showErrorBox(
+        'Grove daemon failed to start',
+        `${err instanceof Error ? err.message : String(err)}\n\nSee ~/.grove/daemon.log for details.`,
+      );
+      app.exit(1);
+      return;
+    }
   }
   registerAppProtocol();
   registerWorktreeHandlers();
@@ -413,7 +369,24 @@ app.whenReady().then(async () => {
   });
 });
 
+// Window-all-closed: on macOS the app stays in the dock and the daemon keeps
+// running — closing a window is "I'll be back". On other platforms we follow
+// the conventional "close = quit" model, which fires before-quit below.
 app.on('window-all-closed', () => {
-  if (backend) backend.kill();
   if (process.platform !== 'darwin') app.quit();
+});
+
+// before-quit fires on ⌘Q / File → Quit / app.quit(). This is the only place
+// we tear the daemon down — survives window close, dies with the app.
+let quitting = false;
+app.on('before-quit', (event) => {
+  if (quitting) return;
+  if (process.env.GROVE_DEV_URL) return; // dev runs its own backend
+  event.preventDefault();
+  quitting = true;
+  shutdownDaemon()
+    .catch((err) =>
+      logLine(`[grove] shutdownDaemon failed: ${err instanceof Error ? err.stack : String(err)}`),
+    )
+    .finally(() => app.exit(0));
 });

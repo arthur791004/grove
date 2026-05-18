@@ -17,6 +17,13 @@ interface Session {
   env: Record<string, string>;
   subscribers: Set<WSLike>;
   rawBuffer: string;
+  // Latest observed terminal mode state from the pty stream. Tracked
+  // explicitly because rawBuffer is a rolling 200KB window — the original
+  // ?1049h/?25l that put a long-running TUI (claude) into raw mode rolls
+  // out of the buffer, so the frontend can't infer raw state from rawBuffer
+  // alone on reattach.
+  altScreen: boolean;
+  cursorHide: boolean;
   parseBuffer: string;
   parsedOutputBuffer: string;
   blocks: BlockRecord[];
@@ -28,6 +35,19 @@ const MAX_BLOCK_OUTPUT = 200_000;
 
 const sessions = new Map<string, Session>();
 const MAX_BUFFER = 200_000;
+
+// Tracks alt-screen and cursor-hide toggles for reconnect-time raw-mode
+// detection. Includes legacy ?47/?1047 alongside ?1049 so the frontend's
+// raw-mode hint covers the same TUIs detectRawScan does.
+const ALT_TOGGLE_RE = /\x1b\[\?(?:1049|1047|47)([hl])/g;
+const CURSOR_TOGGLE_RE = /\x1b\[\?25([hl])/g;
+function updateRawModeState(session: Session, data: string): void {
+  // Hot path — skip the two regex scans on chunks with no private-mode
+  // sequences (most plain command output).
+  if (data.indexOf('\x1b[?') === -1) return;
+  for (const m of data.matchAll(ALT_TOGGLE_RE)) session.altScreen = m[1] === 'h';
+  for (const m of data.matchAll(CURSOR_TOGGLE_RE)) session.cursorHide = m[1] === 'l';
+}
 
 const MARKER_REGEX = /\x1b\]1337;grove-(pre|post);([^\x07\x1b]*)\x07/;
 const OSC7_REGEX = /\x1b\]7;file:\/\/[^/]*([^\x07\x1b]+)(?:\x07|\x1b\\)/g;
@@ -385,6 +405,8 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
     env: {},
     subscribers: new Set(),
     rawBuffer: '',
+    altScreen: false,
+    cursorHide: false,
     parseBuffer: '',
     parsedOutputBuffer: '',
     blocks: loadBlocks(tabId),
@@ -395,6 +417,7 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
     session.rawBuffer += data;
     if (session.rawBuffer.length > MAX_BUFFER)
       session.rawBuffer = session.rawBuffer.slice(-MAX_BUFFER);
+    updateRawModeState(session, data);
     broadcast(session, { type: 'raw', data });
     processChunk(session, data);
   });
@@ -479,6 +502,14 @@ export function subscribe(tabId: string, ws: WSLike, cwd?: string): () => void {
     throw err;
   }
   s.subscribers.add(ws);
+  // Tell the frontend whether the session is currently in raw mode BEFORE
+  // any replay so it can pre-mount the xterm overlay and hide the blocks
+  // list while history streams in. Without this hint, the frontend renders
+  // historical block-start/output/block-end first and only flips to raw
+  // mode when the live block-start arrives at the end of the replay —
+  // producing a visible flash of the blocks list on reattach.
+  const rawActive = s.altScreen || s.cursorHide;
+  send(ws, { type: 'replay-begin', raw: rawActive });
   // Replay recorded blocks as native block-start/output/block-end triples so
   // a frontend refresh rebuilds the exact same block list it had before.
   for (const b of s.blocks) {
@@ -488,6 +519,7 @@ export function subscribe(tabId: string, ws: WSLike, cwd?: string): () => void {
       send(ws, { type: 'block-end', exit: b.exit, durationMs: b.durationMs ?? 0 });
   }
   if (s.rawBuffer) send(ws, { type: 'raw', data: s.rawBuffer });
+  send(ws, { type: 'replay-end' });
   // Send the current ctx (if any) so the new subscriber's chips populate
   // immediately instead of waiting for the next OSC 7 / env / block-end tick.
   if (s.env && Object.keys(s.env).length > 0) pushCtx(s);

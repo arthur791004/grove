@@ -9,6 +9,7 @@ import { useTabContext, setTabContext, type TabContext } from './useTabContext';
 import { useStore } from './store';
 import { API_BASE, WS_BASE } from './api';
 import { TerminalOutput } from './TerminalOutput';
+import { SquareLoader } from './SquareLoader';
 import { BranchIcon, DiffIcon, FileIcon, FolderIcon, NodeIcon, PrIcon, ScriptIcon } from './icons';
 
 const ALT_ON = /\x1b\[\?(?:1049|47|1047)h/g;
@@ -289,10 +290,22 @@ export function TerminalView({ tabId, active }: Props) {
   const [altScreen, setAltScreen] = useState(false);
   const [cursorHide, setCursorHide] = useState(false);
   const [forcedRaw, setForcedRaw] = useState(false);
+  // Pre-mounts the xterm overlay during subscribe replay when the backend
+  // tells us the session is currently in raw mode (long-running TUI like
+  // claude). Cleared on `replay-end` once the live raw stream has taken
+  // over. Without this, historical block replay flashes the blocks list
+  // before the live block-start flips into raw mode.
+  const [replayRaw, setReplayRaw] = useState(false);
+  // Full-component loading overlay shown from mount until the subscribe
+  // replay finishes (replay-end). Keeps users from seeing an empty xterm
+  // or a flash of stale blocks while history streams in. Safety timeout
+  // covers older daemons that don't emit replay-begin/end.
+  const [loading, setLoading] = useState(true);
+  const loadingTimerRef = useRef<number | null>(null);
   // Surfaced when git refuses a branch switch because another worktree owns
   // the branch. Dismissed by the user or auto-cleared on the next block start.
   const [forkLockHint, setForkLockHint] = useState<{ branch: string } | null>(null);
-  const rawMode = altScreen || cursorHide || forcedRaw;
+  const rawMode = altScreen || cursorHide || forcedRaw || replayRaw;
   const rawKind: RawKind = altScreen || forcedRaw ? 'alt' : 'cursor';
   const rawModeRef = useRef(false);
   const activeRef = useRef(active);
@@ -386,6 +399,14 @@ export function TerminalView({ tabId, active }: Props) {
           attempt = 0;
           stableTimer = null;
         }, 3000);
+        // Safety net: if replay-end never arrives (older daemon without the
+        // replay envelope, or a stalled connection), drop the loader so the
+        // UI isn't permanently masked.
+        if (loadingTimerRef.current !== null) clearTimeout(loadingTimerRef.current);
+        loadingTimerRef.current = window.setTimeout(() => {
+          setLoading(false);
+          loadingTimerRef.current = null;
+        }, 1500);
       };
       ws.onclose = () => {
         if (stableTimer) {
@@ -415,6 +436,23 @@ export function TerminalView({ tabId, active }: Props) {
         if (closed || ws !== wsRef.current) return;
         try {
           const msg = JSON.parse(ev.data);
+          if (msg.type === 'replay-begin') {
+            // If the backend says the session is in raw mode, pre-mount the
+            // xterm overlay so the historical block replay that follows is
+            // hidden underneath it. replay-end clears the flag once the
+            // live raw stream has reconstructed the TUI.
+            if (msg.raw) setReplayRaw(true);
+            return;
+          }
+          if (msg.type === 'replay-end') {
+            setReplayRaw(false);
+            setLoading(false);
+            if (loadingTimerRef.current !== null) {
+              clearTimeout(loadingTimerRef.current);
+              loadingTimerRef.current = null;
+            }
+            return;
+          }
           if (msg.type === 'fatal') {
             // Backend rejected the subscription (e.g., session-limit). Don't
             // reconnect — that just loops forever hitting the same reject.
@@ -575,6 +613,10 @@ export function TerminalView({ tabId, active }: Props) {
       if (flushRafRef.current !== null) {
         cancelAnimationFrame(flushRafRef.current);
         flushRafRef.current = null;
+      }
+      if (loadingTimerRef.current !== null) {
+        clearTimeout(loadingTimerRef.current);
+        loadingTimerRef.current = null;
       }
       wsRef.current?.close();
     };
@@ -1033,6 +1075,25 @@ export function TerminalView({ tabId, active }: Props) {
       >
         <Box ref={xtermHostRef} w="100%" h="100%" />
       </Box>
+
+      {/* Initial-load overlay — shown from mount until subscribe replay
+          finishes (replay-end) or the 1.5s safety timer fires. Covers blocks,
+          xterm, and pending-block loader (zIndex 6) so the user never sees
+          an empty xterm or stale blocks flash while history streams in. */}
+      {loading && (
+        <Box
+          position="absolute"
+          inset="0"
+          bg="#010409"
+          zIndex={6}
+          display="flex"
+          alignItems="center"
+          justifyContent="center"
+          pointerEvents="none"
+        >
+          <SquareLoader size={8} />
+        </Box>
+      )}
 
       <Box position="relative" flex="1" minH="0" display="flex">
         <Box
@@ -1633,12 +1694,7 @@ function RunningBadge({ cmd, onStop }: { cmd: string; onStop: () => void }) {
       flexShrink="0"
       minW="0"
     >
-      <Box className="grove-sq-loader" aria-label="running">
-        <span />
-        <span />
-        <span />
-        <span />
-      </Box>
+      <SquareLoader ariaLabel="running" />
       <Box as="span" truncate maxW="360px">
         {truncated}
       </Box>
