@@ -38,6 +38,7 @@ const groveStorage = createJSONStorage(() => ({
 }));
 
 export type TabColor = 'default' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan';
+export type AgentState = 'working' | 'blocked';
 
 const RANDOM_TAB_COLORS: TabColor[] = ['red', 'green', 'yellow', 'blue', 'magenta', 'cyan'];
 const pickRandomColor = (): TabColor =>
@@ -83,6 +84,12 @@ interface State {
   browserHistory: Array<{ url: string; visitedAt: number; cwd: string }>;
   autoEditCwdGroupId: string | null;
   runningCmds: Record<string, string>;
+  // Per-tab `claude` agent state pushed from the backend agent-state ticker.
+  // Absent = no claude session running. Transient.
+  agentStates: Record<string, AgentState>;
+  // Most recent Claude assistant snippet per tab. Parallel to agentStates so
+  // existing consumers (Sidebar chip) keep their simple shape.
+  agentReplies: Record<string, string>;
   // Transient — not persisted across reloads.
   unreadTabs: Record<string, true>;
   // Empty string = use the default CSS stack defined in styles.css.
@@ -124,6 +131,7 @@ interface Actions {
   removeBrowserHistory(url: string, cwd?: string): void;
   setAutoEditCwdGroupId(id: string | null): void;
   setRunningCmd(tabId: string, cmd: string | null): void;
+  setAgentState(tabId: string, state: AgentState | null, reply?: string | null): void;
   markTabUnread(tabId: string): void;
   clearTabUnread(tabId: string): void;
   setMonoFontFamily(v: string): void;
@@ -158,6 +166,8 @@ export const useStore = create<State & Actions>()(
       browserHistory: [],
       autoEditCwdGroupId: null,
       runningCmds: {},
+      agentStates: {},
+      agentReplies: {},
       unreadTabs: {},
       monoFontFamily: '',
       monoFontSize: 13,
@@ -340,12 +350,16 @@ export const useStore = create<State & Actions>()(
           const runningCmds = { ...s.runningCmds };
           delete runningCmds[id];
           const { [id]: _unread, ...unreadTabs } = s.unreadTabs;
+          const { [id]: _agent, ...agentStates } = s.agentStates;
+          const { [id]: _reply, ...agentReplies } = s.agentReplies;
           return {
             tabs: remaining,
             tabOrderByGroup: newOrder,
             activeTabId: nextActive,
             runningCmds,
             unreadTabs,
+            agentStates,
+            agentReplies,
           };
         });
       },
@@ -501,6 +515,32 @@ export const useStore = create<State & Actions>()(
           }
           if (cur === cmd) return s;
           return { runningCmds: { ...s.runningCmds, [tabId]: cmd } };
+        });
+      },
+
+      setAgentState(tabId, state, reply) {
+        set((s) => {
+          const curState = s.agentStates[tabId];
+          const curReply = s.agentReplies[tabId];
+          const nextReply = reply ?? undefined;
+          if (state === null) {
+            if (curState === undefined && curReply === undefined) return s;
+            const { [tabId]: _s, ...restState } = s.agentStates;
+            const { [tabId]: _r, ...restReply } = s.agentReplies;
+            return { agentStates: restState, agentReplies: restReply };
+          }
+          if (curState === state && curReply === nextReply) return s;
+          const agentStates = curState === state ? s.agentStates : { ...s.agentStates, [tabId]: state };
+          let agentReplies = s.agentReplies;
+          if (curReply !== nextReply) {
+            if (nextReply === undefined) {
+              const { [tabId]: _r, ...rest } = s.agentReplies;
+              agentReplies = rest;
+            } else {
+              agentReplies = { ...s.agentReplies, [tabId]: nextReply };
+            }
+          }
+          return { agentStates, agentReplies };
         });
       },
     }),

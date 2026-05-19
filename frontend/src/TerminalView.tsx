@@ -614,6 +614,8 @@ export function TerminalView({ tabId, active }: Props) {
             setForcedRaw(false);
             rawModeRef.current = false;
             useStore.getState().setRunningCmd(tabId, null);
+          } else if (msg.type === 'agent-state') {
+            useStore.getState().setAgentState(tabId, msg.state ?? null, msg.reply ?? null);
           }
         } catch {}
       };

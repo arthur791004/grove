@@ -150,7 +150,13 @@ export function App() {
             position="absolute"
             inset="0"
             pr={panelOpen && !forcedFullscreen ? `${activePanelBaseW}px` : '0px'}
+            // `isolation: isolate` keeps the TerminalView's raw-mode xterm
+            // overlay (zIndex 5) and other inner z-indexed nodes contained in
+            // their own stacking context. Without it, those positive z-indices
+            // leak into the parent context and paint over the right-panel
+            // sibling whenever the panel goes fullscreen.
             style={{
+              isolation: 'isolate',
               transition: 'padding-right 240ms cubic-bezier(0.22, 0.61, 0.36, 1)',
             }}
           >

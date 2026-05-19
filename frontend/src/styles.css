@@ -241,6 +241,15 @@ body,
   flex-shrink: 0;
 }
 
+@keyframes grove-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
 @keyframes grove-sq-pulse {
   0%,
   100% {

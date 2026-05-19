@@ -28,7 +28,11 @@ interface Session {
   parsedOutputBuffer: string;
   blocks: BlockRecord[];
   currentBlock: BlockRecord | null;
+  agentState: AgentState | null;
+  agentReply: string | null;
 }
+
+export type AgentState = 'working' | 'blocked';
 
 const MAX_BLOCKS = 200;
 const MAX_BLOCK_OUTPUT = 200_000;
@@ -346,12 +350,86 @@ function processChunk(session: Session, chunk: string) {
           session.currentBlock = null;
           saveBlocks(session.tabId, session.blocks);
         }
+        setAgent(session, null, null);
         broadcast(session, { type: 'block-end', exit: event.exit, durationMs: event.durationMs });
         pushCtx(session);
       }
     }
     session.parseBuffer = session.parseBuffer.slice(found.index + found[0].length);
   }
+}
+
+function isClaudeSession(session: Session): boolean {
+  const cmd = session.currentBlock?.cmd;
+  if (!cmd) return false;
+  // Match `claude`, `claude --resume`, `npx claude`, etc. Avoids picking up
+  // unrelated commands that happen to contain the word.
+  return /(?:^|\s)claude(?:\s|$)/.test(cmd);
+}
+
+function setAgent(
+  session: Session,
+  next: AgentState | null,
+  reply: string | null,
+): void {
+  const sameState = session.agentState === next;
+  const sameReply = session.agentReply === reply;
+  if (sameState && sameReply) return;
+  session.agentState = next;
+  session.agentReply = reply;
+  broadcast(session, { type: 'agent-state', state: next, reply });
+}
+
+// Pull a one-line snippet from Claude's most recent assistant turn so the
+// agents footer can hint at what was last said. Claude prints assistant text
+// with a `⏺ ` bullet; we find the last bullet in the sanitized buffer (which
+// keeps SGR but drops cursor moves), grab its line, and strip color codes.
+const SGR_RE = /\x1b\[[0-9;]*m/g;
+const REPLY_BULLET = '⏺ ';
+const REPLY_MAX_LEN = 160;
+function extractLastReply(session: Session): string | null {
+  if (!isClaudeSession(session)) return null;
+  const buf = session.parsedOutputBuffer;
+  const tail = buf.length > DETECT_TAIL ? buf.slice(-DETECT_TAIL) : buf;
+  const idx = tail.lastIndexOf(REPLY_BULLET);
+  if (idx === -1) return null;
+  const after = tail.slice(idx + REPLY_BULLET.length);
+  const nl = after.indexOf('\n');
+  const raw = nl === -1 ? after : after.slice(0, nl);
+  const line = raw.replace(SGR_RE, '').replace(/\s+/g, ' ').trim();
+  if (!line) return null;
+  return line.length > REPLY_MAX_LEN ? line.slice(0, REPLY_MAX_LEN - 1) + '…' : line;
+}
+
+// Derive agent state from the most recent Claude TUI repaint. We compare the
+// last position of three markers in a tail of the raw pty buffer:
+//   - "esc to interrupt" → the status line shown only while Claude is doing
+//     work (thinking, tool call, streaming). Strongest "working" signal.
+//   - "Do you want" / "❯ 1." → a permission prompt is on screen.
+//   - "│ >" → the bordered input row is the most recent thing rendered (idle
+//     prompt waiting for the user's next message).
+// The marker with the highest index wins — that's whatever Claude painted
+// last. Pure-quiet-timer detection flapped because Claude repaints its
+// spinner/cursor on a timer even while waiting on the user.
+const WORKING_MARK = 'esc to interrupt';
+const PERMISSION_MARKS = ['Do you want', '❯ 1.'];
+const IDLE_MARK = '│ >';
+const DETECT_TAIL = 16_384;
+
+function detectAgentState(session: Session): AgentState | null {
+  if (!isClaudeSession(session)) return null;
+  const buf = session.rawBuffer;
+  const tail = buf.length > DETECT_TAIL ? buf.slice(-DETECT_TAIL) : buf;
+  const working = tail.lastIndexOf(WORKING_MARK);
+  let blocked = tail.lastIndexOf(IDLE_MARK);
+  for (const m of PERMISSION_MARKS) {
+    const i = tail.lastIndexOf(m);
+    if (i > blocked) blocked = i;
+  }
+  if (working === -1 && blocked === -1) return session.agentState;
+  if (working > blocked) return 'working';
+  if (blocked > working) return 'blocked';
+  return session.agentState;
 }
 
 // Cap concurrent pty sessions to stay well under macOS's kern.tty.ptmx_max
@@ -411,6 +489,8 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
     parsedOutputBuffer: '',
     blocks: loadBlocks(tabId),
     currentBlock: null,
+    agentState: null,
+    agentReply: null,
   };
 
   term.onData((data) => {
@@ -420,6 +500,8 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
     updateRawModeState(session, data);
     broadcast(session, { type: 'raw', data });
     processChunk(session, data);
+    const nextState = detectAgentState(session);
+    setAgent(session, nextState, nextState ? extractLastReply(session) : null);
   });
 
   term.onExit(() => {
@@ -523,6 +605,7 @@ export function subscribe(tabId: string, ws: WSLike, cwd?: string): () => void {
   // Send the current ctx (if any) so the new subscriber's chips populate
   // immediately instead of waiting for the next OSC 7 / env / block-end tick.
   if (s.env && Object.keys(s.env).length > 0) pushCtx(s);
+  if (s.agentState) send(ws, { type: 'agent-state', state: s.agentState, reply: s.agentReply });
   return () => {
     s.subscribers.delete(ws);
   };
