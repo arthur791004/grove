@@ -33,9 +33,16 @@ function fileAnchorId(path: string) {
 
 interface ParsedHunk {
   headerLine: string;
+  oldStart: number;
   newStart: number;
   newCount: number;
   body: string[];
+}
+
+interface NumberedLine {
+  line: string;
+  oldLn: number | null;
+  newLn: number | null;
 }
 
 const HUNK_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
@@ -49,6 +56,7 @@ function parseHunks(patch: string): ParsedHunk[] {
       if (cur) hunks.push(cur);
       cur = {
         headerLine: line,
+        oldStart: parseInt(m[1], 10),
         newStart: parseInt(m[3], 10),
         newCount: m[4] ? parseInt(m[4], 10) : 1,
         body: [],
@@ -64,21 +72,45 @@ function parseHunks(patch: string): ParsedHunk[] {
   return hunks;
 }
 
+// Annotate each body line with its old/new line number. Context lines bump
+// both counters; '+' bumps only new; '-' bumps only old. '\' (no-newline
+// markers) and empty lines inherit nothing.
+function numberBody(body: string[], oldStart: number, newStart: number): NumberedLine[] {
+  const out: NumberedLine[] = [];
+  let oldLn = oldStart;
+  let newLn = newStart;
+  for (const line of body) {
+    const ch = line[0];
+    if (ch === '+') {
+      out.push({ line, oldLn: null, newLn });
+      newLn++;
+    } else if (ch === '-') {
+      out.push({ line, oldLn, newLn: null });
+      oldLn++;
+    } else if (ch === ' ' || line === '') {
+      out.push({ line, oldLn, newLn });
+      oldLn++;
+      newLn++;
+    } else {
+      out.push({ line, oldLn: null, newLn: null });
+    }
+  }
+  return out;
+}
+
 // Slice the body of a hunk so only lines whose new-file line number falls in
 // [from, to] are kept. Deletion lines (no new line number) inherit the most
 // recent in-range state, so adjacent `-` lines accompany the context they
 // replaced.
-function sliceHunkBody(hunk: ParsedHunk, from: number, to: number): string[] {
-  const result: string[] = [];
-  let newLn = hunk.newStart - 1;
+function sliceHunkBody(hunk: ParsedHunk, from: number, to: number): NumberedLine[] {
+  const numbered = numberBody(hunk.body, hunk.oldStart, hunk.newStart);
+  const result: NumberedLine[] = [];
   let inRange = false;
-  for (const line of hunk.body) {
-    const ch = line[0];
-    if (ch === '+' || ch === ' ' || line === '') {
-      newLn++;
-      inRange = newLn >= from && newLn <= to;
+  for (const nl of numbered) {
+    if (nl.newLn !== null) {
+      inRange = nl.newLn >= from && nl.newLn <= to;
     }
-    if (inRange) result.push(line);
+    if (inRange) result.push(nl);
   }
   return result;
 }
@@ -759,10 +791,11 @@ function FileDiffView({
             isExpanded && fullHunk
               ? sliceHunkBody(fullHunk, gap.from, gap.to ?? Number.MAX_SAFE_INTEGER)
               : null;
+          const numberedBody = numberBody(h.body, h.oldStart, h.newStart);
           return (
             <Fragment key={i}>
-              {expandedLines?.map((line, j) => (
-                <DiffLine key={j} line={line} language={language} />
+              {expandedLines?.map((nl, j) => (
+                <DiffLine key={j} nl={nl} language={language} />
               ))}
               <HunkHeaderLine
                 text={h.headerLine}
@@ -771,8 +804,8 @@ function FileDiffView({
                 isLoading={loadingGap === key}
                 onToggle={() => onToggleGap(i)}
               />
-              {h.body.map((line, j) => (
-                <DiffLine key={j} line={line} language={language} />
+              {numberedBody.map((nl, j) => (
+                <DiffLine key={j} nl={nl} language={language} />
               ))}
             </Fragment>
           );
@@ -788,8 +821,8 @@ function FileDiffView({
                 : null;
             return (
               <>
-                {expandedLines?.map((line, j) => (
-                  <DiffLine key={j} line={line} language={language} />
+                {expandedLines?.map((nl, j) => (
+                  <DiffLine key={j} nl={nl} language={language} />
                 ))}
                 <HunkToggleRow
                   isExpanded={isExpanded}
@@ -932,12 +965,12 @@ function HunkToggleRow({
   );
 }
 
-function DiffLine({ line, language }: { line: string; language: Language }) {
+function DiffLine({ nl, language }: { nl: NumberedLine; language: Language }) {
+  const { line } = nl;
   let bg = 'transparent';
   let gutter = 'transparent';
   let prefix = '';
   let code = line;
-  const isHunk = line.startsWith('@@');
   const isAdd = line.startsWith('+') && !line.startsWith('+++');
   const isDel = line.startsWith('-') && !line.startsWith('---');
   if (isAdd) {
@@ -950,9 +983,6 @@ function DiffLine({ line, language }: { line: string; language: Language }) {
     gutter = '#f85149';
     prefix = '-';
     code = line.slice(1);
-  } else if (isHunk) {
-    bg = 'rgba(56, 139, 253, 0.12)';
-    gutter = '#1f6feb';
   } else if (line.startsWith(' ')) {
     prefix = ' ';
     code = line.slice(1);
@@ -963,26 +993,36 @@ function DiffLine({ line, language }: { line: string; language: Language }) {
       bg={bg}
       color="#c9d1d9"
       minH="18px"
-      pl="9px"
       pr="12px"
       align="center"
       style={{ borderLeft: `3px solid ${gutter}` }}
     >
-      <Box as="span" whiteSpace="pre" flex="1" minW="0">
-        {isHunk ? (
-          <Box as="span" color="#79c0ff">
-            {line || ' '}
-          </Box>
-        ) : (
-          <>
-            <Box as="span" color={prefixColor} pr="2">
-              {prefix}
-            </Box>
-            <HighlightedCode code={code} language={language} />
-          </>
-        )}
+      <LineNumberGutter value={nl.oldLn} />
+      <LineNumberGutter value={nl.newLn} />
+      <Box as="span" whiteSpace="pre" flex="1" minW="0" pl="9px">
+        <Box as="span" color={prefixColor} pr="2">
+          {prefix}
+        </Box>
+        <HighlightedCode code={code} language={language} />
       </Box>
     </Flex>
+  );
+}
+
+function LineNumberGutter({ value }: { value: number | null }) {
+  return (
+    <Box
+      flexShrink={0}
+      w="44px"
+      pr="2"
+      textAlign="right"
+      color="#484f58"
+      userSelect="none"
+      fontFamily="var(--grove-mono)"
+      style={{ whiteSpace: 'pre' }}
+    >
+      {value ?? ''}
+    </Box>
   );
 }
 
