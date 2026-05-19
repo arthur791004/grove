@@ -1,3 +1,5 @@
+import { Cable, FlaskConical, GitBranch } from 'lucide-react';
+
 // Hand-rolled SVG icons used across the renderer.
 //
 // New icons should come from `lucide-react` first — only add a custom icon
@@ -195,14 +197,121 @@ export function ClaudeIcon({ size = 12 }: IconProps) {
   );
 }
 
+// Stack of three "containers" suggesting Docker's payload glyph. No whale —
+// keeps the silhouette readable at 12px.
+export function DockerIcon({ size = 12 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="currentColor">
+      <rect x="2" y="6" width="2.2" height="2.2" rx="0.3" />
+      <rect x="4.7" y="6" width="2.2" height="2.2" rx="0.3" />
+      <rect x="7.4" y="6" width="2.2" height="2.2" rx="0.3" />
+      <rect x="4.7" y="3.3" width="2.2" height="2.2" rx="0.3" />
+      <path
+        d="M1 9h11c0 2-1.5 3-3.5 3H4.5C2.5 12 1 11 1 9z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+// Two interlocking rounded squares evoke the Python snake/logo without the
+// brand colors — currentColor lets it adopt the tab tint.
+export function PythonIcon({ size = 12 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" stroke="currentColor">
+      <path
+        d="M4 2.5h4a1.5 1.5 0 0 1 1.5 1.5v3h-5A1.5 1.5 0 0 0 3 8.5V11"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M10 11.5H6a1.5 1.5 0 0 1-1.5-1.5V7h5A1.5 1.5 0 0 0 11 5.5V3"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="5.2" cy="3.7" r="0.5" fill="currentColor" stroke="none" />
+      <circle cx="8.8" cy="10.3" r="0.5" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+// npm wordmark abstracted to its three-square cadence: one tall, two short,
+// arranged in the logo's distinctive proportions.
+export function NpmIcon({ size = 12 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" stroke="currentColor">
+      <rect x="1" y="3.5" width="12" height="7" rx="0.6" strokeWidth="1.1" />
+      <path
+        d="M3.5 10V6.5h1.5V10M5 7h1.5v2.5M7 10V6.5h2v3M9 6.5h1v3M11 6.5v3"
+        strokeWidth="1.1"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// Vim's diamond outline with a vee notch.
+export function VimIcon({ size = 12 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14" fill="none" stroke="currentColor">
+      <path
+        d="M7 1.5L12.5 7L7 12.5L1.5 7L7 1.5z"
+        strokeWidth="1.1"
+        strokeLinejoin="round"
+      />
+      <path d="M4.5 5.5L7 9.5L9.5 5.5" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+// Lucide wrappers — accept the same IconProps signature so commandIcon
+// callers don't have to special-case them.
+const GitIcon = ({ size = 12 }: IconProps) => <GitBranch size={size} />;
+const SshIcon = ({ size = 12 }: IconProps) => <Cable size={size} />;
+const PytestIcon = ({ size = 12 }: IconProps) => <FlaskConical size={size} />;
+
 const CMD_PREFIX_RE = /^(?:sudo\s+|env\s+\w+=\S+\s+)+/;
 const CMD_SPLIT_RE = /[\s|;&]/;
+
+const COMMAND_ICON_MAP: Record<string, (props: IconProps) => JSX.Element> = {
+  claude: ClaudeIcon,
+  docker: DockerIcon,
+  'docker-compose': DockerIcon,
+  podman: DockerIcon,
+  python: PythonIcon,
+  python3: PythonIcon,
+  pip: PythonIcon,
+  pip3: PythonIcon,
+  poetry: PythonIcon,
+  uv: PythonIcon,
+  npm: NpmIcon,
+  npx: NpmIcon,
+  pnpm: NpmIcon,
+  yarn: NpmIcon,
+  bun: NpmIcon,
+  vim: VimIcon,
+  nvim: VimIcon,
+  vi: VimIcon,
+  git: GitIcon,
+  gh: GitIcon,
+  ssh: SshIcon,
+  mosh: SshIcon,
+  pytest: PytestIcon,
+  jest: PytestIcon,
+  vitest: PytestIcon,
+};
 
 export function commandIcon(cmd: string): ((props: IconProps) => JSX.Element) | null {
   const head = cmd.trim().replace(CMD_PREFIX_RE, '').split(CMD_SPLIT_RE)[0]?.toLowerCase();
   if (!head) return null;
-  if (head === 'claude' || head.endsWith('/claude')) return ClaudeIcon;
-  return null;
+  const direct = COMMAND_ICON_MAP[head];
+  if (direct) return direct;
+  // Support `/path/to/claude` style invocations.
+  const basename = head.includes('/') ? head.slice(head.lastIndexOf('/') + 1) : head;
+  return COMMAND_ICON_MAP[basename] ?? null;
 }
 
 export function PrIcon({ size = 12 }: IconProps) {

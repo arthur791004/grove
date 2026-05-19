@@ -34,7 +34,7 @@ import { API_BASE } from './api';
 import { Tooltip } from './Tooltip';
 import { AgentsFooter } from './AgentsFooter';
 import { shortPath } from './paths';
-import { GitFork, Hand } from 'lucide-react';
+import { GitFork, Hand, MessageSquareMore } from 'lucide-react';
 import {
   BranchIcon,
   ChevronIcon,
@@ -46,7 +46,6 @@ import {
   TerminalIcon,
   commandIcon,
 } from './icons';
-import { SquareLoader } from './SquareLoader';
 
 // Returns the current branch of a workspace's cwd. Seeded by a single
 // /context fetch on mount, then kept fresh by piggybacking on the per-tab
@@ -912,7 +911,7 @@ function resolveIconBox({
       border: COLOR_HEX.yellow + '66',
       color: COLOR_HEX.yellow,
       title: 'Claude is working (click to send ⌃C)',
-      icon: <SquareLoader size={3} />,
+      icon: <MessageSquareMore size={12} strokeWidth={2.25} />,
     };
   }
   const baseBg = isDefault ? '#161b22' : tabColorHex + '33';
@@ -931,7 +930,15 @@ function resolveIconBox({
   return { bg: baseBg, border: baseBorder, color: baseColor, title: undefined, icon: <TerminalIcon /> };
 }
 
-export function TabCard({ tab, workspaceBranch }: { tab: Tab; workspaceBranch: string | null }) {
+export function TabCard({
+  tab,
+  workspaceBranch,
+  compact,
+}: {
+  tab: Tab;
+  workspaceBranch: string | null;
+  compact?: boolean;
+}) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: `tab:${tab.id}`,
   });
@@ -996,8 +1003,8 @@ export function TabCard({ tab, workspaceBranch }: { tab: Tab; workspaceBranch: s
         px="1.5"
         h="32px"
         borderRadius="6px"
-        bg={active ? '#21262d' : 'transparent'}
-        _hover={{ bg: active ? '#21262d' : '#161b22' }}
+        bg={active && !compact ? '#21262d' : 'transparent'}
+        _hover={{ bg: active && !compact ? '#21262d' : '#161b22' }}
         cursor="pointer"
         onClick={() => setActive(tab.id)}
         onContextMenu={(e) => {
@@ -1011,7 +1018,7 @@ export function TabCard({ tab, workspaceBranch }: { tab: Tab; workspaceBranch: s
         {...attributes}
         {...listeners}
       >
-        <Box w="10px" h="20px" flexShrink={0} />
+        {!compact && <Box w="10px" h="20px" flexShrink={0} />}
         {(() => {
           const iconBox = resolveIconBox({
             agentState,
@@ -1155,7 +1162,7 @@ export function TabCard({ tab, workspaceBranch }: { tab: Tab; workspaceBranch: s
             </Tooltip>
           )}
 
-        {(hovered || showColors) && (
+        {!compact && (hovered || showColors) && (
           <HStack
             gap="1"
             position="absolute"

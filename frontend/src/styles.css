@@ -267,7 +267,7 @@ body,
   flex-shrink: 0;
 }
 .grove-sq-loader > span {
-  background: #83c2d7;
+  background: currentColor;
   border-radius: 1px;
   animation: grove-sq-pulse 0.9s ease-in-out infinite;
 }

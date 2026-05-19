@@ -30,9 +30,18 @@ interface Session {
   currentBlock: BlockRecord | null;
   agentState: AgentState | null;
   agentReply: string | null;
+  agentPrompt: AgentPrompt | null;
 }
 
 export type AgentState = 'working' | 'blocked';
+
+// When Claude pauses on a numbered permission menu we surface the question +
+// choices so the agents footer can render clickable buttons. `null` while
+// Claude is working / idle, or when the prompt couldn't be parsed.
+export interface AgentPrompt {
+  question: string;
+  choices: string[];
+}
 
 const MAX_BLOCKS = 200;
 const MAX_BLOCK_OUTPUT = 200_000;
@@ -350,7 +359,7 @@ function processChunk(session: Session, chunk: string) {
           session.currentBlock = null;
           saveBlocks(session.tabId, session.blocks);
         }
-        setAgent(session, null, null);
+        setAgent(session, null, null, null);
         broadcast(session, { type: 'block-end', exit: event.exit, durationMs: event.durationMs });
         pushCtx(session);
       }
@@ -371,13 +380,110 @@ function setAgent(
   session: Session,
   next: AgentState | null,
   reply: string | null,
+  prompt: AgentPrompt | null,
 ): void {
   const sameState = session.agentState === next;
   const sameReply = session.agentReply === reply;
-  if (sameState && sameReply) return;
+  const samePrompt = agentPromptsEqual(session.agentPrompt, prompt);
+  if (sameState && sameReply && samePrompt) return;
   session.agentState = next;
   session.agentReply = reply;
-  broadcast(session, { type: 'agent-state', state: next, reply });
+  session.agentPrompt = prompt;
+  broadcast(session, { type: 'agent-state', state: next, reply, prompt });
+}
+
+function agentPromptsEqual(a: AgentPrompt | null, b: AgentPrompt | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.question !== b.question) return false;
+  if (a.choices.length !== b.choices.length) return false;
+  for (let i = 0; i < a.choices.length; i++) {
+    if (a.choices[i] !== b.choices[i]) return false;
+  }
+  return true;
+}
+
+// Pull the permission question + numbered choices out of the Claude TUI tail
+// when state is `blocked`. Claude renders these as something like:
+//
+//   ╭─────────────────────────────╮
+//   │ Do you want to make this    │
+//   │ edit to foo.ts?             │
+//   │                             │
+//   │ ❯ 1. Yes                    │
+//   │   2. Yes, and don't ask     │
+//   │     again this session      │
+//   │   3. No (esc)               │
+//   ╰─────────────────────────────╯
+//
+// Boxed lines have leading `│ ` / trailing ` │` decoration that we strip. We
+// look for the cluster of `<n>. <text>` lines and treat any non-empty lines
+// above them (within the same box) as the question.
+const PROMPT_CHOICE_RE = /^\s*[❯>]?\s*(\d+)\.\s+(.+?)\s*$/;
+const BOX_BORDER_RE = /^[\s│╭╮╰╯─┌┐└┘├┤]*$/;
+const PROMPT_QUESTION_MAX_LEN = 240;
+const PROMPT_CHOICE_MAX_LEN = 80;
+
+function extractAgentPrompt(session: Session): AgentPrompt | null {
+  if (!isClaudeSession(session)) return null;
+  const buf = session.rawBuffer;
+  const rawTail = buf.length > DETECT_TAIL ? buf.slice(-DETECT_TAIL) : buf;
+  const tail = rawTail.replace(SGR_RE, '');
+  // Split into trimmed text lines, stripping the box-drawing decoration.
+  const lines = tail
+    .split(/\r?\n/)
+    .map((l) =>
+      l
+        // Drop leading/trailing box pipes.
+        .replace(/^[\s│]+/, '')
+        .replace(/[\s│]+$/, ''),
+    );
+  // Walk bottom-up to find the most recent contiguous run of numbered choices.
+  let endIdx = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (PROMPT_CHOICE_RE.test(lines[i])) {
+      endIdx = i;
+      break;
+    }
+  }
+  if (endIdx === -1) return null;
+  let startIdx = endIdx;
+  const choicesRev: Array<{ n: number; text: string }> = [];
+  for (let i = endIdx; i >= 0; i--) {
+    const m = lines[i].match(PROMPT_CHOICE_RE);
+    if (m) {
+      choicesRev.push({ n: Number(m[1]), text: m[2] });
+      startIdx = i;
+    } else if (lines[i] === '' || BOX_BORDER_RE.test(lines[i])) {
+      // Allow blank / border lines interleaved with choices that wrap.
+      continue;
+    } else {
+      break;
+    }
+  }
+  if (choicesRev.length === 0) return null;
+  const choices = choicesRev.reverse().map((c) =>
+    c.text.length > PROMPT_CHOICE_MAX_LEN
+      ? c.text.slice(0, PROMPT_CHOICE_MAX_LEN - 1) + '…'
+      : c.text,
+  );
+  // Question = the non-empty text lines above the choices, up to the previous
+  // box border / blank gap. Join multi-line wraps with a single space.
+  const questionParts: string[] = [];
+  for (let i = startIdx - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (line === '' || BOX_BORDER_RE.test(line)) {
+      if (questionParts.length > 0) break;
+      continue;
+    }
+    questionParts.unshift(line);
+  }
+  let question = questionParts.join(' ').replace(/\s+/g, ' ').trim();
+  if (!question) return null;
+  if (question.length > PROMPT_QUESTION_MAX_LEN) {
+    question = question.slice(0, PROMPT_QUESTION_MAX_LEN - 1) + '…';
+  }
+  return { question, choices };
 }
 
 // Pull a one-line snippet from Claude's most recent assistant turn so the
@@ -488,6 +594,7 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
     currentBlock: null,
     agentState: null,
     agentReply: null,
+    agentPrompt: null,
   };
 
   term.onData((data) => {
@@ -498,7 +605,9 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
     broadcast(session, { type: 'raw', data });
     processChunk(session, data);
     const nextState = detectAgentState(session);
-    setAgent(session, nextState, nextState ? extractLastReply(session) : null);
+    const nextReply = nextState ? extractLastReply(session) : null;
+    const nextPrompt = nextState === 'blocked' ? extractAgentPrompt(session) : null;
+    setAgent(session, nextState, nextReply, nextPrompt);
   });
 
   term.onExit(() => {
@@ -602,7 +711,13 @@ export function subscribe(tabId: string, ws: WSLike, cwd?: string): () => void {
   // Send the current ctx (if any) so the new subscriber's chips populate
   // immediately instead of waiting for the next OSC 7 / env / block-end tick.
   if (s.env && Object.keys(s.env).length > 0) pushCtx(s);
-  if (s.agentState) send(ws, { type: 'agent-state', state: s.agentState, reply: s.agentReply });
+  if (s.agentState)
+    send(ws, {
+      type: 'agent-state',
+      state: s.agentState,
+      reply: s.agentReply,
+      prompt: s.agentPrompt,
+    });
   return () => {
     s.subscribers.delete(ws);
   };

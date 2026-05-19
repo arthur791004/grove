@@ -40,6 +40,11 @@ const groveStorage = createJSONStorage(() => ({
 export type TabColor = 'default' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan';
 export type AgentState = 'working' | 'blocked';
 
+export interface AgentPrompt {
+  question: string;
+  choices: string[];
+}
+
 const RANDOM_TAB_COLORS: TabColor[] = ['red', 'green', 'yellow', 'blue', 'magenta', 'cyan'];
 const pickRandomColor = (): TabColor =>
   RANDOM_TAB_COLORS[Math.floor(Math.random() * RANDOM_TAB_COLORS.length)];
@@ -90,6 +95,9 @@ interface State {
   // Most recent Claude assistant snippet per tab. Parallel to agentStates so
   // existing consumers (Sidebar chip) keep their simple shape.
   agentReplies: Record<string, string>;
+  // Parsed permission prompt (question + numbered choices) when state is
+  // `blocked`. Absent when Claude isn't on a menu we can parse.
+  agentPrompts: Record<string, AgentPrompt>;
   // Transient — not persisted across reloads.
   unreadTabs: Record<string, true>;
   // Empty string = use the default CSS stack defined in styles.css.
@@ -131,7 +139,12 @@ interface Actions {
   removeBrowserHistory(url: string, cwd?: string): void;
   setAutoEditCwdGroupId(id: string | null): void;
   setRunningCmd(tabId: string, cmd: string | null): void;
-  setAgentState(tabId: string, state: AgentState | null, reply?: string | null): void;
+  setAgentState(
+    tabId: string,
+    state: AgentState | null,
+    reply?: string | null,
+    prompt?: AgentPrompt | null,
+  ): void;
   markTabUnread(tabId: string): void;
   clearTabUnread(tabId: string): void;
   setMonoFontFamily(v: string): void;
@@ -139,6 +152,20 @@ interface Actions {
 }
 
 const uid = () => Math.random().toString(36).slice(2, 10);
+
+function agentPromptsEqual(
+  a: AgentPrompt | undefined,
+  b: AgentPrompt | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.question !== b.question) return false;
+  if (a.choices.length !== b.choices.length) return false;
+  for (let i = 0; i < a.choices.length; i++) {
+    if (a.choices[i] !== b.choices[i]) return false;
+  }
+  return true;
+}
 
 export function defaultGroupName(cwd: string): string {
   const trimmed = cwd.replace(/\/$/, '');
@@ -168,6 +195,7 @@ export const useStore = create<State & Actions>()(
       runningCmds: {},
       agentStates: {},
       agentReplies: {},
+      agentPrompts: {},
       unreadTabs: {},
       monoFontFamily: '',
       monoFontSize: 13,
@@ -352,6 +380,7 @@ export const useStore = create<State & Actions>()(
           const { [id]: _unread, ...unreadTabs } = s.unreadTabs;
           const { [id]: _agent, ...agentStates } = s.agentStates;
           const { [id]: _reply, ...agentReplies } = s.agentReplies;
+          const { [id]: _prompt, ...agentPrompts } = s.agentPrompts;
           return {
             tabs: remaining,
             tabOrderByGroup: newOrder,
@@ -360,6 +389,7 @@ export const useStore = create<State & Actions>()(
             unreadTabs,
             agentStates,
             agentReplies,
+            agentPrompts,
           };
         });
       },
@@ -518,19 +548,29 @@ export const useStore = create<State & Actions>()(
         });
       },
 
-      setAgentState(tabId, state, reply) {
+      setAgentState(tabId, state, reply, prompt) {
         set((s) => {
           const curState = s.agentStates[tabId];
           const curReply = s.agentReplies[tabId];
+          const curPrompt = s.agentPrompts[tabId];
           const nextReply = reply ?? undefined;
+          const nextPrompt = prompt ?? undefined;
           if (state === null) {
-            if (curState === undefined && curReply === undefined) return s;
+            if (curState === undefined && curReply === undefined && curPrompt === undefined)
+              return s;
             const { [tabId]: _s, ...restState } = s.agentStates;
             const { [tabId]: _r, ...restReply } = s.agentReplies;
-            return { agentStates: restState, agentReplies: restReply };
+            const { [tabId]: _p, ...restPrompt } = s.agentPrompts;
+            return {
+              agentStates: restState,
+              agentReplies: restReply,
+              agentPrompts: restPrompt,
+            };
           }
-          if (curState === state && curReply === nextReply) return s;
-          const agentStates = curState === state ? s.agentStates : { ...s.agentStates, [tabId]: state };
+          const samePrompt = agentPromptsEqual(curPrompt, nextPrompt);
+          if (curState === state && curReply === nextReply && samePrompt) return s;
+          const agentStates =
+            curState === state ? s.agentStates : { ...s.agentStates, [tabId]: state };
           let agentReplies = s.agentReplies;
           if (curReply !== nextReply) {
             if (nextReply === undefined) {
@@ -540,7 +580,16 @@ export const useStore = create<State & Actions>()(
               agentReplies = { ...s.agentReplies, [tabId]: nextReply };
             }
           }
-          return { agentStates, agentReplies };
+          let agentPrompts = s.agentPrompts;
+          if (!samePrompt) {
+            if (nextPrompt === undefined) {
+              const { [tabId]: _p, ...rest } = s.agentPrompts;
+              agentPrompts = rest;
+            } else {
+              agentPrompts = { ...s.agentPrompts, [tabId]: nextPrompt };
+            }
+          }
+          return { agentStates, agentReplies, agentPrompts };
         });
       },
     }),

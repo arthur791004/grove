@@ -646,7 +646,7 @@ export function TerminalView({ tabId, active }: Props) {
           } else if (msg.type === 'agent-state') {
             const prev = useStore.getState().agentStates[tabId];
             const next: AgentState | null = msg.state ?? null;
-            useStore.getState().setAgentState(tabId, next, msg.reply ?? null);
+            useStore.getState().setAgentState(tabId, next, msg.reply ?? null, msg.prompt ?? null);
             maybeNotifyAgentWaiting(tabId, prev, next);
           }
         } catch {}
