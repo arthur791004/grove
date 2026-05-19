@@ -32,8 +32,9 @@ import { COLOR_HEX, COLOR_ORDER } from './colors';
 import { useTabContext, subscribeAllTabContexts } from './useTabContext';
 import { API_BASE } from './api';
 import { Tooltip } from './Tooltip';
+import { AgentsFooter } from './AgentsFooter';
 import { shortPath } from './paths';
-import { GitFork } from 'lucide-react';
+import { GitFork, Hand, Loader2 } from 'lucide-react';
 import {
   BranchIcon,
   ChevronIcon,
@@ -203,6 +204,7 @@ export function Sidebar() {
             </DragOverlay>
           </DndContext>
         </Box>
+        <AgentsFooter />
       </Box>
     </ColorPopupContext.Provider>
   );
@@ -887,6 +889,7 @@ function TabCard({ tab, workspaceBranch }: { tab: Tab; workspaceBranch: string |
   const [editing, setEditing] = useState(false);
   const [hovered, setHovered] = useState(false);
   const runningCmd = useStore((s) => s.runningCmds[tab.id]);
+  const agentState = useStore((s) => s.agentStates[tab.id]);
   // Only poll context for tabs the user is looking at or has a command in.
   // Idle tabs keep their last cached ctx (branch/node/etc.) without spamming
   // /context every 1.5s × every-tab.
@@ -1051,35 +1054,71 @@ function TabCard({ tab, workspaceBranch }: { tab: Tab; workspaceBranch: string |
             </Text>
           )}
         </Box>
-        {branch && rawBranch !== workspaceBranch && !hovered && !showColors && !runningCmd && (
-          <Tooltip label={branch}>
+        {agentState && !hovered && !showColors && (
+          <Tooltip
+            label={agentState === 'blocked' ? 'Claude is waiting for input' : 'Claude is working'}
+          >
             <Box
               flexShrink={0}
-              px="1.5"
-              py="0.5"
-              maxW="80px"
-              bg="#161b22"
-              border="1px solid #21262d"
+              w="16px"
+              h="16px"
+              bg={agentState === 'blocked' ? COLOR_HEX.red + '22' : COLOR_HEX.yellow + '22'}
+              border="1px solid"
+              borderColor={
+                agentState === 'blocked' ? COLOR_HEX.red + '66' : COLOR_HEX.yellow + '66'
+              }
               borderRadius="4px"
-              color="#7ee787"
-              fontSize="10px"
-              fontFamily="var(--grove-mono)"
-              lineHeight="1"
+              color={agentState === 'blocked' ? COLOR_HEX.red : COLOR_HEX.yellow}
               display="inline-flex"
               alignItems="center"
-              gap="1"
-              minW="0"
-              overflow="hidden"
+              justifyContent="center"
             >
-              <Box flexShrink={0} display="inline-flex" alignItems="center">
-                <BranchIcon />
-              </Box>
-              <Box truncate minW="0">
-                {branch}
-              </Box>
+              {agentState === 'blocked' ? (
+                <Hand size={10} strokeWidth={2.25} />
+              ) : (
+                <Loader2
+                  size={10}
+                  strokeWidth={2.5}
+                  style={{ animation: 'grove-spin 1.2s linear infinite' }}
+                />
+              )}
             </Box>
           </Tooltip>
         )}
+        {branch &&
+          rawBranch !== workspaceBranch &&
+          !hovered &&
+          !showColors &&
+          !runningCmd &&
+          !agentState && (
+            <Tooltip label={branch}>
+              <Box
+                flexShrink={0}
+                px="1.5"
+                py="0.5"
+                maxW="80px"
+                bg="#161b22"
+                border="1px solid #21262d"
+                borderRadius="4px"
+                color="#7ee787"
+                fontSize="10px"
+                fontFamily="var(--grove-mono)"
+                lineHeight="1"
+                display="inline-flex"
+                alignItems="center"
+                gap="1"
+                minW="0"
+                overflow="hidden"
+              >
+                <Box flexShrink={0} display="inline-flex" alignItems="center">
+                  <BranchIcon />
+                </Box>
+                <Box truncate minW="0">
+                  {branch}
+                </Box>
+              </Box>
+            </Tooltip>
+          )}
 
         {(hovered || showColors) && (
           <HStack
