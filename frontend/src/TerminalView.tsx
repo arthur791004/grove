@@ -9,7 +9,7 @@ import { dispatch } from './extensions/actions';
 import { isLocalUrl } from './urlRouting';
 import '@xterm/xterm/css/xterm.css';
 import { useTabContext, setTabContext, type TabContext } from './useTabContext';
-import { useStore } from './store';
+import { useStore, type AgentState } from './store';
 import { API_BASE, WS_BASE } from './api';
 import { TerminalOutput } from './TerminalOutput';
 import { SquareLoader } from './SquareLoader';
@@ -110,16 +110,33 @@ function isInteractiveCmd(cmd: string): boolean {
   return INTERACTIVE_CMD_RE.test(cmd.trim());
 }
 
-const LONG_CMD_THRESHOLD_MS = 30_000;
-function maybeNotifyLongCommand(tabId: string, durationMs: number | null): void {
-  if (durationMs === null || durationMs < LONG_CMD_THRESHOLD_MS) return;
+// Mark the tab unread and (once per away-period) bounce the dock. Skipped
+// when the user is already looking at this tab — main also coalesces, but
+// avoiding the IPC round-trip is cheaper.
+function notifyTabAttention(tabId: string): void {
   const st = useStore.getState();
   if (st.activeTabId === tabId && document.hasFocus()) return;
-  // Skip the dock IPC if this tab was already unread — main also coalesces,
-  // but avoiding the round-trip is cheaper.
   const alreadyUnread = !!st.unreadTabs[tabId];
   st.markTabUnread(tabId);
   if (!alreadyUnread) window.grove?.notifyAttention?.();
+}
+
+const LONG_CMD_THRESHOLD_MS = 30_000;
+function maybeNotifyLongCommand(tabId: string, durationMs: number | null): void {
+  if (durationMs === null || durationMs < LONG_CMD_THRESHOLD_MS) return;
+  notifyTabAttention(tabId);
+}
+
+// Bounce on transitions into a "needs human" state: hit a permission prompt
+// (→ blocked) or finished working and dropped back to the input (working → null).
+function maybeNotifyAgentWaiting(
+  tabId: string,
+  prev: AgentState | undefined,
+  next: AgentState | null,
+): void {
+  if (next === 'blocked' || (prev === 'working' && next === null)) {
+    notifyTabAttention(tabId);
+  }
 }
 
 interface CompletionItem {
@@ -627,7 +644,10 @@ export function TerminalView({ tabId, active }: Props) {
             rawModeRef.current = false;
             useStore.getState().setRunningCmd(tabId, null);
           } else if (msg.type === 'agent-state') {
-            useStore.getState().setAgentState(tabId, msg.state ?? null, msg.reply ?? null);
+            const prev = useStore.getState().agentStates[tabId];
+            const next: AgentState | null = msg.state ?? null;
+            useStore.getState().setAgentState(tabId, next, msg.reply ?? null);
+            maybeNotifyAgentWaiting(tabId, prev, next);
           }
         } catch {}
       };

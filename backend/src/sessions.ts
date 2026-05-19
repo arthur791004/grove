@@ -401,25 +401,22 @@ function extractLastReply(session: Session): string | null {
   return line.length > REPLY_MAX_LEN ? line.slice(0, REPLY_MAX_LEN - 1) + '…' : line;
 }
 
-// Derive agent state from the most recent Claude TUI repaint. We compare the
-// last position of three markers in a tail of the raw pty buffer:
-//   - "esc to interrupt" → the status line shown only while Claude is doing
-//     work (thinking, tool call, streaming). Strongest "working" signal.
-//   - "Do you want" / "❯ 1." → a permission prompt is on screen.
-//   - "│ >" → the bordered input row is the most recent thing rendered (idle
-//     prompt waiting for the user's next message).
-// The marker with the highest index wins — that's whatever Claude painted
-// last. Pure-quiet-timer detection flapped because Claude repaints its
-// spinner/cursor on a timer even while waiting on the user.
+// Derive agent state from the most recent Claude TUI repaint. The marker
+// with the highest byte offset in the tail wins — whatever Claude painted
+// last. SGR is stripped first because Claude styles individual glyphs (e.g.
+// `\x1b[1m❯\x1b[0m 1.`), which breaks literal substring matching otherwise.
 const WORKING_MARK = 'esc to interrupt';
-const PERMISSION_MARKS = ['Do you want', '❯ 1.'];
+const PERMISSION_MARKS = ['Do you want', '❯ 1.', '1. Yes', '(y/n)', '[y/n]'];
 const IDLE_MARK = '│ >';
-const DETECT_TAIL = 16_384;
+// Tail size is bounded by the size of a single prompt frame (~1–2KB) plus
+// some slack. Bigger windows just waste regex work on every pty chunk.
+const DETECT_TAIL = 4_096;
 
 function detectAgentState(session: Session): AgentState | null {
   if (!isClaudeSession(session)) return null;
   const buf = session.rawBuffer;
-  const tail = buf.length > DETECT_TAIL ? buf.slice(-DETECT_TAIL) : buf;
+  const rawTail = buf.length > DETECT_TAIL ? buf.slice(-DETECT_TAIL) : buf;
+  const tail = rawTail.replace(SGR_RE, '');
   const working = tail.lastIndexOf(WORKING_MARK);
   let blocked = tail.lastIndexOf(IDLE_MARK);
   for (const m of PERMISSION_MARKS) {

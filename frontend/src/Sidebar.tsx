@@ -34,7 +34,7 @@ import { API_BASE } from './api';
 import { Tooltip } from './Tooltip';
 import { AgentsFooter } from './AgentsFooter';
 import { shortPath } from './paths';
-import { GitFork, Hand, Loader2 } from 'lucide-react';
+import { GitFork, Hand } from 'lucide-react';
 import {
   BranchIcon,
   ChevronIcon,
@@ -44,7 +44,9 @@ import {
   PlusIcon,
   StopIcon,
   TerminalIcon,
+  commandIcon,
 } from './icons';
+import { SquareLoader } from './SquareLoader';
 
 // Returns the current branch of a workspace's cwd. Seeded by a single
 // /context fetch on mount, then kept fresh by piggybacking on the per-tab
@@ -876,7 +878,60 @@ function CollapsePanel({ open, children }: { open: boolean; children: React.Reac
   );
 }
 
-function TabCard({ tab, workspaceBranch }: { tab: Tab; workspaceBranch: string | null }) {
+interface IconBox {
+  bg: string;
+  border: string;
+  color: string;
+  title: string | undefined;
+  icon: React.ReactNode;
+}
+
+function resolveIconBox({
+  agentState,
+  runningCmd,
+  isDefault,
+  tabColorHex,
+}: {
+  agentState: 'working' | 'blocked' | undefined;
+  runningCmd: string | null;
+  isDefault: boolean;
+  tabColorHex: string;
+}): IconBox {
+  if (agentState === 'blocked') {
+    return {
+      bg: COLOR_HEX.red + '22',
+      border: COLOR_HEX.red + '66',
+      color: COLOR_HEX.red,
+      title: 'Claude is waiting for input (click to send ⌃C)',
+      icon: <Hand size={12} strokeWidth={2.25} />,
+    };
+  }
+  if (agentState === 'working') {
+    return {
+      bg: COLOR_HEX.yellow + '22',
+      border: COLOR_HEX.yellow + '66',
+      color: COLOR_HEX.yellow,
+      title: 'Claude is working (click to send ⌃C)',
+      icon: <SquareLoader size={3} />,
+    };
+  }
+  const baseBg = isDefault ? '#161b22' : tabColorHex + '33';
+  const baseBorder = isDefault ? '#21262d' : tabColorHex + '66';
+  const baseColor = isDefault ? '#7d8590' : tabColorHex;
+  if (runningCmd) {
+    const Cmd = commandIcon(runningCmd);
+    return {
+      bg: baseBg,
+      border: baseBorder,
+      color: baseColor,
+      title: `Stop "${runningCmd}" (send ⌃C)`,
+      icon: Cmd ? <Cmd size={12} /> : <StopIcon />,
+    };
+  }
+  return { bg: baseBg, border: baseBorder, color: baseColor, title: undefined, icon: <TerminalIcon /> };
+}
+
+export function TabCard({ tab, workspaceBranch }: { tab: Tab; workspaceBranch: string | null }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: `tab:${tab.id}`,
   });
@@ -957,53 +1012,65 @@ function TabCard({ tab, workspaceBranch }: { tab: Tab; workspaceBranch: string |
         {...listeners}
       >
         <Box w="10px" h="20px" flexShrink={0} />
-        <Box
-          as={runningCmd ? 'button' : 'div'}
-          w="20px"
-          h="20px"
-          borderRadius="4px"
-          bg={isDefault ? '#161b22' : COLOR_HEX[tab.color] + '33'}
-          border="1px solid"
-          borderColor={isDefault ? '#21262d' : COLOR_HEX[tab.color] + '66'}
-          display="flex"
-          alignItems="center"
-          justifyContent="center"
-          flexShrink={0}
-          color={isDefault ? '#7d8590' : COLOR_HEX[tab.color]}
-          cursor={runningCmd ? 'pointer' : 'default'}
-          title={runningCmd ? `Stop "${runningCmd}" (send ⌃C)` : undefined}
-          onPointerDown={runningCmd ? (e: React.PointerEvent) => e.stopPropagation() : undefined}
-          onMouseDown={runningCmd ? (e: React.MouseEvent) => e.stopPropagation() : undefined}
-          onClick={
-            runningCmd
-              ? (e: React.MouseEvent) => {
-                  e.stopPropagation();
-                  fetch(`${API_BASE}/session/${tab.id}/input`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ data: '\x03' }),
-                  }).catch(() => {});
-                }
-              : undefined
-          }
-          _hover={runningCmd ? { color: '#f85149' } : undefined}
-          position="relative"
-        >
-          {runningCmd ? <StopIcon /> : <TerminalIcon />}
-          {unread && (
+        {(() => {
+          const iconBox = resolveIconBox({
+            agentState,
+            runningCmd: runningCmd || null,
+            isDefault,
+            tabColorHex: COLOR_HEX[tab.color],
+          });
+          return (
             <Box
-              position="absolute"
-              top="-2px"
-              right="-2px"
-              w="7px"
-              h="7px"
-              borderRadius="full"
-              bg={COLOR_HEX.red}
-              border="1.5px solid #0d1117"
-              aria-label="Long command finished"
-            />
-          )}
-        </Box>
+              as={runningCmd ? 'button' : 'div'}
+              w="20px"
+              h="20px"
+              borderRadius="4px"
+              bg={iconBox.bg}
+              border="1px solid"
+              borderColor={iconBox.border}
+              display="flex"
+              alignItems="center"
+              justifyContent="center"
+              flexShrink={0}
+              color={iconBox.color}
+              cursor={runningCmd ? 'pointer' : 'default'}
+              title={iconBox.title}
+              onPointerDown={
+                runningCmd ? (e: React.PointerEvent) => e.stopPropagation() : undefined
+              }
+              onMouseDown={runningCmd ? (e: React.MouseEvent) => e.stopPropagation() : undefined}
+              onClick={
+                runningCmd
+                  ? (e: React.MouseEvent) => {
+                      e.stopPropagation();
+                      fetch(`${API_BASE}/session/${tab.id}/input`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ data: '\x03' }),
+                      }).catch(() => {});
+                    }
+                  : undefined
+              }
+              _hover={runningCmd ? { opacity: 0.75 } : undefined}
+              position="relative"
+            >
+              {iconBox.icon}
+              {unread && (
+                <Box
+                  position="absolute"
+                  top="-2px"
+                  right="-2px"
+                  w="7px"
+                  h="7px"
+                  borderRadius="full"
+                  bg={COLOR_HEX.red}
+                  border="1.5px solid #0d1117"
+                  aria-label="Long command finished"
+                />
+              )}
+            </Box>
+          );
+        })()}
 
         <Box flex="1" minW="0">
           {editing ? (
@@ -1054,43 +1121,11 @@ function TabCard({ tab, workspaceBranch }: { tab: Tab; workspaceBranch: string |
             </Text>
           )}
         </Box>
-        {agentState && !hovered && !showColors && (
-          <Tooltip
-            label={agentState === 'blocked' ? 'Claude is waiting for input' : 'Claude is working'}
-          >
-            <Box
-              flexShrink={0}
-              w="16px"
-              h="16px"
-              bg={agentState === 'blocked' ? COLOR_HEX.red + '22' : COLOR_HEX.yellow + '22'}
-              border="1px solid"
-              borderColor={
-                agentState === 'blocked' ? COLOR_HEX.red + '66' : COLOR_HEX.yellow + '66'
-              }
-              borderRadius="4px"
-              color={agentState === 'blocked' ? COLOR_HEX.red : COLOR_HEX.yellow}
-              display="inline-flex"
-              alignItems="center"
-              justifyContent="center"
-            >
-              {agentState === 'blocked' ? (
-                <Hand size={10} strokeWidth={2.25} />
-              ) : (
-                <Loader2
-                  size={10}
-                  strokeWidth={2.5}
-                  style={{ animation: 'grove-spin 1.2s linear infinite' }}
-                />
-              )}
-            </Box>
-          </Tooltip>
-        )}
         {branch &&
           rawBranch !== workspaceBranch &&
           !hovered &&
           !showColors &&
-          !runningCmd &&
-          !agentState && (
+          !runningCmd && (
             <Tooltip label={branch}>
               <Box
                 flexShrink={0}

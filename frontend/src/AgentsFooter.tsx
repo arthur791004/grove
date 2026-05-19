@@ -1,24 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Box, HStack, Input, Portal, Text } from '@chakra-ui/react';
-import { TerminalSquare } from 'lucide-react';
-import { useStore, type AgentState, type Group, type Tab } from './store';
+import { Box, Input, Portal, Text } from '@chakra-ui/react';
+import { DndContext } from '@dnd-kit/core';
+import { SortableContext } from '@dnd-kit/sortable';
+import { useStore, type AgentState, type Tab } from './store';
 import { COLOR_HEX } from './colors';
-import { shortPath } from './paths';
 import { API_BASE } from './api';
+import { TabCard } from './Sidebar';
 
 interface AgentRow {
   tab: Tab;
   state: AgentState;
   reply: string | null;
-  group: Group | undefined;
 }
 
 export function AgentsFooter() {
   const tabs = useStore((s) => s.tabs);
-  const groups = useStore((s) => s.groups);
   const agentStates = useStore((s) => s.agentStates);
   const agentReplies = useStore((s) => s.agentReplies);
-  const setActiveTab = useStore((s) => s.setActiveTab);
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
@@ -26,13 +24,12 @@ export function AgentsFooter() {
 
   const rows = useMemo<AgentRow[]>(() => {
     const tabIdx = new Map(tabs.map((t) => [t.id, t]));
-    const groupIdx = new Map(groups.map((g) => [g.id, g]));
     return Object.entries(agentStates).flatMap(([id, state]) => {
       const tab = tabIdx.get(id);
       if (!tab) return [];
-      return [{ tab, state, reply: agentReplies[id] ?? null, group: groupIdx.get(tab.groupId) }];
+      return [{ tab, state, reply: agentReplies[id] ?? null }];
     });
-  }, [tabs, groups, agentStates, agentReplies]);
+  }, [tabs, agentStates, agentReplies]);
 
   const counts = useMemo(() => {
     let working = 0;
@@ -125,19 +122,14 @@ export function AgentsFooter() {
             zIndex={1000}
             p="1"
           >
-            {rows.map(({ tab, state, reply, group }) => (
-              <AgentsFooterRow
-                key={tab.id}
-                tab={tab}
-                state={state}
-                reply={reply}
-                group={group}
-                onActivate={() => {
-                  setActiveTab(tab.id);
-                  setOpen(false);
-                }}
-              />
-            ))}
+            {/* Inert wrapper so TabCard's useSortable resolves; drag is a no-op here. */}
+            <DndContext>
+              <SortableContext items={rows.map((r) => `tab:${r.tab.id}`)}>
+                {rows.map(({ tab, state, reply }) => (
+                  <AgentsFooterRow key={tab.id} tab={tab} state={state} reply={reply} />
+                ))}
+              </SortableContext>
+            </DndContext>
           </Box>
         </Portal>
       )}
@@ -149,20 +141,13 @@ function AgentsFooterRow({
   tab,
   state,
   reply,
-  group,
-  onActivate,
 }: {
   tab: Tab;
   state: AgentState;
   reply: string | null;
-  group: Group | undefined;
-  onActivate: () => void;
 }) {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
-  const tabColor = COLOR_HEX[tab.color];
-  const stateColor = state === 'blocked' ? COLOR_HEX.red : COLOR_HEX.yellow;
-  const workspace = group?.name || (group?.cwd ? shortPath(group.cwd) : null);
 
   async function send() {
     const text = draft;
@@ -182,65 +167,40 @@ function AgentsFooterRow({
   }
 
   return (
-    <Box px="2" py="2" borderRadius="4px" _hover={{ bg: '#1c2128' }}>
-      <HStack gap="2" mb="1" align="start">
-        <Box mt="2px" color={tabColor} flexShrink={0} display="flex">
-          <TerminalSquare size={14} />
-        </Box>
-        <Box flex="1" minW={0} cursor="pointer" onClick={onActivate}>
-          <HStack gap="2" align="baseline">
-            <Text fontSize="12px" color="#c9d1d9" truncate>
-              {tab.title}
-            </Text>
-            {workspace && (
-              <Text fontSize="10px" color="#7d8590" truncate>
-                {workspace}
-              </Text>
-            )}
-          </HStack>
-          {reply && (
-            <Text
-              fontSize="10px"
-              color="#8b949e"
-              truncate
-              mt="2px"
-              fontFamily="var(--grove-mono)"
-            >
-              {reply}
-            </Text>
-          )}
-        </Box>
-        <HStack gap="1" flexShrink={0}>
-          <Box
-            w="6px"
-            h="6px"
-            borderRadius="full"
-            bg={stateColor}
-            animation={state === 'working' ? 'grove-pulse 1.4s ease-in-out infinite' : undefined}
-          />
-          <Text fontSize="10px" color={stateColor}>
-            {state}
+    <Box pb="2">
+      <TabCard tab={tab} workspaceBranch={null} />
+      <Box px="2" pt="1">
+        {reply && (
+          <Text
+            fontSize="10px"
+            color="#8b949e"
+            truncate
+            mb="1"
+            fontFamily="var(--grove-mono)"
+            title={reply}
+          >
+            {reply}
           </Text>
-        </HStack>
-      </HStack>
-      <Input
-        size="xs"
-        placeholder={state === 'blocked' ? 'Reply to unblock…' : 'Send to Claude…'}
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            send();
-          }
-        }}
-        bg="#0d1117"
-        border="1px solid #21262d"
-        color="#c9d1d9"
-        fontSize="11px"
-        fontFamily="var(--grove-mono)"
-        _focus={{ borderColor: '#388bfd', outline: 'none' }}
-      />
+        )}
+        <Input
+          size="xs"
+          placeholder={state === 'blocked' ? 'Reply to unblock…' : 'Send to Claude…'}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              send();
+            }
+          }}
+          bg="#0d1117"
+          border="1px solid #21262d"
+          color="#c9d1d9"
+          fontSize="11px"
+          fontFamily="var(--grove-mono)"
+          _focus={{ borderColor: '#388bfd', outline: 'none' }}
+        />
+      </Box>
     </Box>
   );
 }

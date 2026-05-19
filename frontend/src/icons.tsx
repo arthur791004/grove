@@ -183,6 +183,28 @@ export function DiffIcon({ size = 12 }: IconProps) {
   );
 }
 
+export function ClaudeIcon({ size = 12 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 12 12" fill="none">
+      <g stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+        <path d="M6 1.5v9" />
+        <path d="M2.1 3.5l7.8 5" />
+        <path d="M2.1 8.5l7.8-5" />
+      </g>
+    </svg>
+  );
+}
+
+const CMD_PREFIX_RE = /^(?:sudo\s+|env\s+\w+=\S+\s+)+/;
+const CMD_SPLIT_RE = /[\s|;&]/;
+
+export function commandIcon(cmd: string): ((props: IconProps) => JSX.Element) | null {
+  const head = cmd.trim().replace(CMD_PREFIX_RE, '').split(CMD_SPLIT_RE)[0]?.toLowerCase();
+  if (!head) return null;
+  if (head === 'claude' || head.endsWith('/claude')) return ClaudeIcon;
+  return null;
+}
+
 export function PrIcon({ size = 12 }: IconProps) {
   return (
     <svg
