@@ -4,6 +4,9 @@ import { Box, HStack, Text } from '@chakra-ui/react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SerializeAddon } from '@xterm/addon-serialize';
+import { WebLinksAddon } from '@xterm/addon-web-links';
+import { dispatch } from './extensions/actions';
+import { isLocalUrl } from './urlRouting';
 import '@xterm/xterm/css/xterm.css';
 import { useTabContext, setTabContext, type TabContext } from './useTabContext';
 import { useStore } from './store';
@@ -672,8 +675,21 @@ export function TerminalView({ tabId, active }: Props) {
     });
     const fit = new FitAddon();
     const serialize = new SerializeAddon();
+    // Cmd/Ctrl-click on a URL inside the live TUI (Claude, ssh prompts, etc.):
+    //   - localhost / 127.0.0.1 → embedded browser panel (dev servers, etc.)
+    //   - everything else → OS default browser via shell.openExternal.
+    const webLinks = new WebLinksAddon((event, uri) => {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      event.preventDefault();
+      if (isLocalUrl(uri)) {
+        dispatch('open-url', { url: uri });
+      } else {
+        window.grove?.openExternal?.(uri);
+      }
+    });
     term.loadAddon(fit);
     term.loadAddon(serialize);
+    term.loadAddon(webLinks);
     term.open(xtermHostRef.current);
     xtermRef.current = term;
     fitRef.current = fit;

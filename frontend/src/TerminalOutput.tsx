@@ -2,6 +2,7 @@ import React, { Fragment, useMemo } from 'react';
 import { useStore } from './store';
 import { API_BASE } from './api';
 import { dispatch } from './extensions/actions';
+import { isLocalUrl } from './urlRouting';
 
 // Renderer for terminal block output.
 //
@@ -305,7 +306,11 @@ function cleanToken(s: string): string {
 async function openLink(rawTarget: string, blockCwd: string) {
   const cleanedRaw = cleanToken(rawTarget);
   if (HTTP_URL_WORD.test(cleanedRaw)) {
-    dispatch('open-url', { url: cleanedRaw });
+    if (isLocalUrl(cleanedRaw)) {
+      dispatch('open-url', { url: cleanedRaw });
+    } else {
+      window.grove?.openExternal?.(cleanedRaw);
+    }
     return;
   }
   let p = urlToPath(rawTarget);
