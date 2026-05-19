@@ -13,6 +13,7 @@ declare global {
       stateGet(): Promise<string | null>;
       stateSet(content: string): Promise<void>;
       revealPath(target: string): Promise<void>;
+      notifyAttention(): Promise<void>;
       workspace: {
         fork(req: { workspaceId: string; sourceCwd: string }): Promise<{
           branch: string;

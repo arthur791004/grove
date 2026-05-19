@@ -879,6 +879,7 @@ function TabCard({ tab, workspaceBranch }: { tab: Tab; workspaceBranch: string |
     id: `tab:${tab.id}`,
   });
   const active = useStore((s) => s.activeTabId === tab.id);
+  const unread = useStore((s) => !!s.unreadTabs[tab.id]);
   const setActive = useStore((s) => s.setActiveTab);
   const closeTab = useStore((s) => s.closeTab);
   const renameTab = useStore((s) => s.renameTab);
@@ -983,8 +984,22 @@ function TabCard({ tab, workspaceBranch }: { tab: Tab; workspaceBranch: string |
               : undefined
           }
           _hover={runningCmd ? { color: '#f85149' } : undefined}
+          position="relative"
         >
           {runningCmd ? <StopIcon /> : <TerminalIcon />}
+          {unread && (
+            <Box
+              position="absolute"
+              top="-2px"
+              right="-2px"
+              w="7px"
+              h="7px"
+              borderRadius="full"
+              bg={COLOR_HEX.red}
+              border="1.5px solid #0d1117"
+              aria-label="Long command finished"
+            />
+          )}
         </Box>
 
         <Box flex="1" minW="0">

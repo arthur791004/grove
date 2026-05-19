@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('grove', {
   stateGet: (): Promise<string | null> => ipcRenderer.invoke('grove:state-get'),
   stateSet: (content: string): Promise<void> => ipcRenderer.invoke('grove:state-set', content),
   revealPath: (target: string): Promise<void> => ipcRenderer.invoke('grove:reveal-path', target),
+  notifyAttention: (): Promise<void> => ipcRenderer.invoke('grove:notify-attention'),
   workspace: {
     fork: (req: ForkRequest): Promise<ForkResult> => ipcRenderer.invoke('workspace:fork', req),
     close: (req: CloseRequest): Promise<{ removed: boolean; branchDeleted: boolean }> =>

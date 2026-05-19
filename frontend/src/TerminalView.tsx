@@ -107,6 +107,18 @@ function isInteractiveCmd(cmd: string): boolean {
   return INTERACTIVE_CMD_RE.test(cmd.trim());
 }
 
+const LONG_CMD_THRESHOLD_MS = 30_000;
+function maybeNotifyLongCommand(tabId: string, durationMs: number | null): void {
+  if (durationMs === null || durationMs < LONG_CMD_THRESHOLD_MS) return;
+  const st = useStore.getState();
+  if (st.activeTabId === tabId && document.hasFocus()) return;
+  // Skip the dock IPC if this tab was already unread — main also coalesces,
+  // but avoiding the round-trip is cheaper.
+  const alreadyUnread = !!st.unreadTabs[tabId];
+  st.markTabUnread(tabId);
+  if (!alreadyUnread) window.grove?.notifyAttention?.();
+}
+
 interface CompletionItem {
   value: string;
   label: string;
@@ -588,6 +600,7 @@ export function TerminalView({ tabId, active }: Props) {
                 ),
               );
             }
+            maybeNotifyLongCommand(tabId, msg.durationMs);
             if (snapshot) applySnapshotToInteractiveBlock(snapshot);
             // Clear xterm so the next interactive command — including ones
             // that don't emit ?25l/?1049h on entry — starts on a blank canvas

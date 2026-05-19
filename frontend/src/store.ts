@@ -83,6 +83,8 @@ interface State {
   browserHistory: Array<{ url: string; visitedAt: number; cwd: string }>;
   autoEditCwdGroupId: string | null;
   runningCmds: Record<string, string>;
+  // Transient — not persisted across reloads.
+  unreadTabs: Record<string, true>;
   // Empty string = use the default CSS stack defined in styles.css.
   monoFontFamily: string;
   monoFontSize: number;
@@ -122,6 +124,8 @@ interface Actions {
   removeBrowserHistory(url: string, cwd?: string): void;
   setAutoEditCwdGroupId(id: string | null): void;
   setRunningCmd(tabId: string, cmd: string | null): void;
+  markTabUnread(tabId: string): void;
+  clearTabUnread(tabId: string): void;
   setMonoFontFamily(v: string): void;
   setMonoFontSize(n: number): void;
 }
@@ -154,6 +158,7 @@ export const useStore = create<State & Actions>()(
       browserHistory: [],
       autoEditCwdGroupId: null,
       runningCmds: {},
+      unreadTabs: {},
       monoFontFamily: '',
       monoFontSize: 13,
 
@@ -334,11 +339,13 @@ export const useStore = create<State & Actions>()(
           }
           const runningCmds = { ...s.runningCmds };
           delete runningCmds[id];
+          const { [id]: _unread, ...unreadTabs } = s.unreadTabs;
           return {
             tabs: remaining,
             tabOrderByGroup: newOrder,
             activeTabId: nextActive,
             runningCmds,
+            unreadTabs,
           };
         });
       },
@@ -356,7 +363,23 @@ export const useStore = create<State & Actions>()(
       },
 
       setActiveTab(id) {
-        set({ activeTabId: id });
+        set((s) => {
+          if (!id || !s.unreadTabs[id]) return { activeTabId: id };
+          const { [id]: _, ...rest } = s.unreadTabs;
+          return { activeTabId: id, unreadTabs: rest };
+        });
+      },
+
+      markTabUnread(tabId) {
+        set((s) => (s.unreadTabs[tabId] ? s : { unreadTabs: { ...s.unreadTabs, [tabId]: true } }));
+      },
+
+      clearTabUnread(tabId) {
+        set((s) => {
+          if (!s.unreadTabs[tabId]) return s;
+          const { [tabId]: _, ...rest } = s.unreadTabs;
+          return { unreadTabs: rest };
+        });
       },
 
       moveTab(tabId, targetGroupId, targetIndex) {

@@ -36,6 +36,7 @@ app.setName('Grove');
 const windowStateKeeper = require('electron-window-state');
 
 let mainWindow: BrowserWindow | null = null;
+let attentionPending = false;
 
 // Embedded browser surface for the BrowserPanel. A WebContentsView is a real
 // top-level browsing context (no X-Frame-Options/CSP embedding limits) layered
@@ -153,6 +154,11 @@ function createWindow() {
   state.manage(win);
   mainWindow = win;
   attachWebContentsLogging(win.webContents, 'renderer');
+  win.on('focus', () => {
+    if (!attentionPending) return;
+    attentionPending = false;
+    app.dock?.setBadge('');
+  });
   win.on('closed', () => {
     if (browserView) {
       browserView.webContents.close();
@@ -325,6 +331,15 @@ ipcMain.handle('grove:browser-back', () => {
 ipcMain.handle('grove:browser-forward', () => {
   const nav = browserView?.webContents.navigationHistory;
   if (nav?.canGoForward()) nav.goForward();
+});
+
+// app.dock is undefined off-darwin, so this is a no-op on Win/Linux.
+// `attentionPending` coalesces bursts: one bounce per away-period, not one per command.
+ipcMain.handle('grove:notify-attention', () => {
+  if (mainWindow?.isFocused() || attentionPending) return;
+  attentionPending = true;
+  app.dock?.setBadge('•');
+  app.dock?.bounce('informational');
 });
 
 function registerAppProtocol() {
