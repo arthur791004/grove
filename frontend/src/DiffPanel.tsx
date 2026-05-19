@@ -3,6 +3,10 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from './store';
 import { API_BASE } from './api';
 import { SquareLoader } from './SquareLoader';
+import { Icon } from '@iconify/react';
+import { Highlight, themes, type Language } from 'prism-react-renderer';
+import { iconNameForFile } from './fileIcon';
+import { detectLanguage } from './codeLanguage';
 
 interface DiffFile {
   path: string;
@@ -353,8 +357,13 @@ export function DiffPanel({ forcedFullscreen = false }: { forcedFullscreen?: boo
                   >
                     <ChevronIcon />
                   </IconSlot>
-                  <IconSlot color={statusColor(f.status)} title={statusLabel(f.status)}>
-                    <FileGlyph />
+                  <IconSlot title={statusLabel(f.status)}>
+                    <Icon
+                      icon={iconNameForFile(f.path.split('/').pop() || f.path)}
+                      width="14"
+                      height="14"
+                      style={{ display: 'block' }}
+                    />
                   </IconSlot>
                   <Text
                     as="span"
@@ -420,13 +429,17 @@ function FileRow({ file, onClick }: { file: DiffFile; onClick: () => void }) {
       <Box flex="1" minW="0">
         <Flex align="center" gap="1.5" minW="0">
           <Box
-            color={statusColor(file.status)}
             flexShrink={0}
             display="flex"
             alignItems="center"
             title={statusLabel(file.status)}
           >
-            <FileGlyph />
+            <Icon
+              icon={iconNameForFile(name)}
+              width="14"
+              height="14"
+              style={{ display: 'block' }}
+            />
           </Box>
           <Text
             fontFamily="var(--grove-mono)"
@@ -452,20 +465,6 @@ function FileRow({ file, onClick }: { file: DiffFile; onClick: () => void }) {
   );
 }
 
-function statusColor(s: DiffFile['status']): string {
-  switch (s) {
-    case 'added':
-      return '#7ee787';
-    case 'deleted':
-      return '#ff7b72';
-    case 'modified':
-      return '#e3b341';
-    case 'renamed':
-      return '#79c0ff';
-    default:
-      return '#7d8590';
-  }
-}
 function statusLabel(s: DiffFile['status']): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
@@ -697,26 +696,6 @@ function CheckIcon() {
   );
 }
 
-function FileGlyph() {
-  return (
-    <svg
-      width="11"
-      height="12"
-      viewBox="0 0 11 13"
-      fill="none"
-      stroke="currentColor"
-      style={{ display: 'block' }}
-    >
-      <path
-        d="M2 0.5h4.5l3 3v8a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V1.5a1 1 0 0 1 1-1z"
-        strokeWidth="1"
-        strokeLinejoin="round"
-      />
-      <path d="M6.5 0.5v3h3" strokeWidth="1" />
-    </svg>
-  );
-}
-
 interface Gap {
   from: number;
   to: number | null;
@@ -736,6 +715,7 @@ function FileDiffView({
   onToggleGap: (gapIndex: number) => void;
 }) {
   const hunks = useMemo(() => parseHunks(file.patch), [file.patch]);
+  const language = useMemo(() => detectLanguage(file.path), [file.path]);
   const fullHunk = useMemo(() => (fullPatch ? parseHunks(fullPatch)[0] : null), [fullPatch]);
   const gaps = useMemo<Gap[]>(() => {
     const out: Gap[] = hunks.map((h, i) => {
@@ -782,7 +762,7 @@ function FileDiffView({
           return (
             <Fragment key={i}>
               {expandedLines?.map((line, j) => (
-                <DiffLine key={j} line={line} />
+                <DiffLine key={j} line={line} language={language} />
               ))}
               <HunkHeaderLine
                 text={h.headerLine}
@@ -792,7 +772,7 @@ function FileDiffView({
                 onToggle={() => onToggleGap(i)}
               />
               {h.body.map((line, j) => (
-                <DiffLine key={j} line={line} />
+                <DiffLine key={j} line={line} language={language} />
               ))}
             </Fragment>
           );
@@ -809,7 +789,7 @@ function FileDiffView({
             return (
               <>
                 {expandedLines?.map((line, j) => (
-                  <DiffLine key={j} line={line} />
+                  <DiffLine key={j} line={line} language={language} />
                 ))}
                 <HunkToggleRow
                   isExpanded={isExpanded}
@@ -952,28 +932,36 @@ function HunkToggleRow({
   );
 }
 
-function DiffLine({ line }: { line: string }) {
+function DiffLine({ line, language }: { line: string; language: Language }) {
   let bg = 'transparent';
-  let color = '#c9d1d9';
   let gutter = 'transparent';
+  let prefix = '';
+  let code = line;
   const isHunk = line.startsWith('@@');
-  if (line.startsWith('+') && !line.startsWith('+++')) {
+  const isAdd = line.startsWith('+') && !line.startsWith('+++');
+  const isDel = line.startsWith('-') && !line.startsWith('---');
+  if (isAdd) {
     bg = 'rgba(126, 231, 135, 0.08)';
-    color = '#7ee787';
     gutter = '#3fb950';
-  } else if (line.startsWith('-') && !line.startsWith('---')) {
+    prefix = '+';
+    code = line.slice(1);
+  } else if (isDel) {
     bg = 'rgba(255, 123, 114, 0.08)';
-    color = '#ff7b72';
     gutter = '#f85149';
+    prefix = '-';
+    code = line.slice(1);
   } else if (isHunk) {
     bg = 'rgba(56, 139, 253, 0.12)';
-    color = '#79c0ff';
     gutter = '#1f6feb';
+  } else if (line.startsWith(' ')) {
+    prefix = ' ';
+    code = line.slice(1);
   }
+  const prefixColor = isAdd ? '#7ee787' : isDel ? '#ff7b72' : '#6e7681';
   return (
     <Flex
       bg={bg}
-      color={color}
+      color="#c9d1d9"
       minH="18px"
       pl="9px"
       pr="12px"
@@ -981,9 +969,40 @@ function DiffLine({ line }: { line: string }) {
       style={{ borderLeft: `3px solid ${gutter}` }}
     >
       <Box as="span" whiteSpace="pre" flex="1" minW="0">
-        {line || ' '}
+        {isHunk ? (
+          <Box as="span" color="#79c0ff">
+            {line || ' '}
+          </Box>
+        ) : (
+          <>
+            <Box as="span" color={prefixColor} pr="2">
+              {prefix}
+            </Box>
+            <HighlightedCode code={code} language={language} />
+          </>
+        )}
       </Box>
     </Flex>
+  );
+}
+
+function HighlightedCode({ code, language }: { code: string; language: Language }) {
+  if (!code) return <>{' '}</>;
+  return (
+    <Highlight code={code} language={language} theme={themes.vsDark}>
+      {({ tokens, getTokenProps }) => (
+        <>
+          {tokens[0]?.map((token, j) => {
+            const tp = getTokenProps({ token });
+            return (
+              <span key={j} className={tp.className} style={tp.style}>
+                {token.content}
+              </span>
+            );
+          })}
+        </>
+      )}
+    </Highlight>
   );
 }
 

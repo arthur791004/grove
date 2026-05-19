@@ -1,15 +1,11 @@
 import { Box, Flex, Text } from '@chakra-ui/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso } from 'react-virtuoso';
-import { Highlight, themes, type Language } from 'prism-react-renderer';
-import { Icon, addCollection } from '@iconify/react';
-import materialIcons from '@iconify-json/material-icon-theme/icons.json';
+import { Highlight, themes } from 'prism-react-renderer';
+import { detectLanguage } from './codeLanguage';
+import { Icon } from '@iconify/react';
 import { useStore } from './store';
-
-// Register the Material Icon Theme set once at module load. Iconify keeps it
-// in memory so all <Icon icon="material-icon-theme:..."/> calls render
-// without a network fetch.
-addCollection(materialIcons as Parameters<typeof addCollection>[0]);
+import { iconNameForFile } from './fileIcon';
 
 // Module-level home-dir cache. Filled by the first /env/home call; lets the
 // frontend resolve `~/foo` paths to absolute without a per-render fetch.
@@ -825,40 +821,6 @@ function renderWithWhitespace(s: string): React.ReactNode {
   return parts;
 }
 
-// Map filename to a Prism language id. prism-react-renderer ships ~20 langs
-// out of the box; falls back to plain rendering for unknown extensions.
-function detectLanguage(file: string | null): Language {
-  if (!file) return 'tsx';
-  const lower = file.toLowerCase();
-  if (lower.endsWith('.tsx')) return 'tsx';
-  if (lower.endsWith('.ts')) return 'typescript';
-  if (lower.endsWith('.jsx')) return 'jsx';
-  if (lower.endsWith('.js') || lower.endsWith('.mjs') || lower.endsWith('.cjs'))
-    return 'javascript';
-  if (lower.endsWith('.json')) return 'json';
-  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown';
-  if (lower.endsWith('.py')) return 'python';
-  if (lower.endsWith('.rb')) return 'ruby';
-  if (lower.endsWith('.go')) return 'go';
-  if (lower.endsWith('.rs')) return 'rust';
-  if (lower.endsWith('.java')) return 'java';
-  if (lower.endsWith('.kt')) return 'kotlin';
-  if (lower.endsWith('.swift')) return 'swift';
-  if (lower.endsWith('.c') || lower.endsWith('.h')) return 'c';
-  if (lower.endsWith('.cpp') || lower.endsWith('.cc') || lower.endsWith('.hpp')) return 'cpp';
-  if (lower.endsWith('.css')) return 'css';
-  if (lower.endsWith('.scss') || lower.endsWith('.sass')) return 'scss';
-  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'markup';
-  if (lower.endsWith('.xml') || lower.endsWith('.svg')) return 'markup';
-  if (lower.endsWith('.yml') || lower.endsWith('.yaml')) return 'yaml';
-  if (lower.endsWith('.toml')) return 'toml';
-  if (lower.endsWith('.sh') || lower.endsWith('.bash') || lower.endsWith('.zsh')) return 'bash';
-  if (lower.endsWith('dockerfile') || lower.endsWith('.dockerfile')) return 'docker';
-  if (lower.endsWith('.sql')) return 'sql';
-  if (lower.endsWith('.graphql') || lower.endsWith('.gql')) return 'graphql';
-  return 'tsx';
-}
-
 function FileRow({
   entry,
   onClick,
@@ -972,166 +934,3 @@ function FolderIcon() {
   );
 }
 
-// Map a filename to a Material Icon Theme icon key. Iconify renders these
-// via the bundled material-icon-theme collection. Unknown files fall back
-// to the generic "document" icon — still a real file glyph, just neutral.
-function iconNameForFile(name: string): string {
-  const lower = name.toLowerCase();
-  // Whole-filename specials beat extension rules.
-  const fullMap: Record<string, string> = {
-    'package.json': 'nodejs',
-    'package-lock.json': 'nodejs',
-    'yarn.lock': 'yarn',
-    'pnpm-lock.yaml': 'pnpm',
-    'tsconfig.json': 'tsconfig',
-    'tsconfig.base.json': 'tsconfig',
-    'vite.config.ts': 'vite',
-    'vite.config.js': 'vite',
-    'webpack.config.js': 'webpack',
-    'rollup.config.js': 'rollup',
-    'esbuild.config.js': 'esbuild',
-    'babel.config.js': 'babel',
-    '.babelrc': 'babel',
-    '.eslintrc': 'eslint',
-    '.eslintrc.js': 'eslint',
-    '.eslintrc.json': 'eslint',
-    '.prettierrc': 'prettier',
-    '.prettierrc.json': 'prettier',
-    dockerfile: 'docker',
-    '.dockerignore': 'docker',
-    'docker-compose.yml': 'docker',
-    'docker-compose.yaml': 'docker',
-    makefile: 'makefile',
-    '.gitignore': 'git',
-    '.gitattributes': 'git',
-    '.gitmodules': 'git',
-    '.editorconfig': 'editorconfig',
-    '.npmrc': 'npm',
-    '.nvmrc': 'nodejs',
-    'readme.md': 'readme',
-    license: 'certificate',
-    'license.md': 'certificate',
-    'cargo.toml': 'rust',
-    'cargo.lock': 'rust',
-    'go.mod': 'go',
-    'go.sum': 'go',
-    gemfile: 'ruby',
-    'gemfile.lock': 'ruby',
-    'pyproject.toml': 'python',
-    'requirements.txt': 'python',
-    pipfile: 'python',
-    'pipfile.lock': 'python',
-  };
-  if (fullMap[lower]) return `material-icon-theme:${fullMap[lower]}`;
-
-  // Match `.env`, `.env.local`, `.env.production`, etc.
-  if (lower === '.env' || lower.startsWith('.env.')) return 'material-icon-theme:tune';
-
-  const ext = lower.includes('.') ? lower.slice(lower.lastIndexOf('.') + 1) : '';
-  const extMap: Record<string, string> = {
-    ts: 'typescript',
-    tsx: 'react-ts',
-    js: 'javascript',
-    mjs: 'javascript',
-    cjs: 'javascript',
-    jsx: 'react',
-    json: 'json',
-    jsonl: 'json',
-    json5: 'json', // jsonl/json5 fall back to json
-    yaml: 'yaml',
-    yml: 'yaml',
-    toml: 'settings',
-    ini: 'settings',
-    md: 'markdown',
-    markdown: 'markdown',
-    mdx: 'mdx',
-    py: 'python',
-    pyc: 'python',
-    pyi: 'python',
-    ipynb: 'jupyter',
-    rb: 'ruby',
-    erb: 'ruby',
-    go: 'go',
-    rs: 'rust',
-    java: 'java',
-    kt: 'kotlin',
-    kts: 'kotlin',
-    scala: 'scala',
-    swift: 'swift',
-    cs: 'csharp',
-    fs: 'fsharp',
-    fsi: 'fsharp',
-    c: 'c',
-    h: 'h',
-    cpp: 'cpp',
-    cc: 'cpp',
-    cxx: 'cpp',
-    hpp: 'hpp',
-    php: 'php',
-    blade: 'php',
-    lua: 'lua',
-    dart: 'dart',
-    vue: 'vue',
-    svelte: 'svelte',
-    elm: 'elm',
-    ex: 'elixir',
-    exs: 'elixir',
-    erl: 'erlang',
-    hrl: 'erlang',
-    r: 'r',
-    sql: 'database',
-    graphql: 'graphql',
-    gql: 'graphql',
-    html: 'html',
-    htm: 'html',
-    xml: 'xml',
-    svg: 'svg',
-    css: 'css',
-    scss: 'sass',
-    sass: 'sass',
-    less: 'less',
-    postcss: 'postcss',
-    sh: 'console',
-    bash: 'console',
-    zsh: 'console',
-    fish: 'console',
-    ps1: 'powershell',
-    csv: 'table',
-    tsv: 'table',
-    xlsx: 'table',
-    xls: 'table',
-    png: 'image',
-    jpg: 'image',
-    jpeg: 'image',
-    gif: 'image',
-    webp: 'image',
-    ico: 'image',
-    avif: 'image',
-    bmp: 'image',
-    mp3: 'audio',
-    wav: 'audio',
-    flac: 'audio',
-    ogg: 'audio',
-    mp4: 'video',
-    mov: 'video',
-    webm: 'video',
-    mkv: 'video',
-    pdf: 'pdf',
-    zip: 'zip',
-    tar: 'zip',
-    gz: 'zip',
-    bz2: 'zip',
-    '7z': 'zip',
-    rar: 'zip',
-    dmg: 'zip',
-    woff: 'font',
-    woff2: 'font',
-    ttf: 'font',
-    otf: 'font',
-    eot: 'font',
-    txt: 'document',
-    log: 'log',
-  };
-  if (extMap[ext]) return `material-icon-theme:${extMap[ext]}`;
-  return 'material-icon-theme:document';
-}
