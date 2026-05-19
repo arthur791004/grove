@@ -323,6 +323,13 @@ export function TerminalView({ tabId, active }: Props) {
   const rawMode = altScreen || cursorHide || forcedRaw || replayRaw;
   const rawKind: RawKind = altScreen || forcedRaw ? 'alt' : 'cursor';
   const rawModeRef = useRef(false);
+  // True while the backend is streaming captured raw history on reattach.
+  // During this window xterm fields any terminal queries the remote sent
+  // originally (DA, CPR, OSC 11 background-color, …) and emits auto-replies
+  // through term.onData. The remote already got its answers ages ago, so
+  // forwarding the replies now paints garbage like `;rgb:.../...;R` into the
+  // shell's input buffer.
+  const replayRawRef = useRef(false);
   const activeRef = useRef(active);
   useEffect(() => {
     activeRef.current = active;
@@ -457,10 +464,12 @@ export function TerminalView({ tabId, active }: Props) {
             // hidden underneath it. replay-end clears the flag once the
             // live raw stream has reconstructed the TUI.
             if (msg.raw) setReplayRaw(true);
+            replayRawRef.current = true;
             return;
           }
           if (msg.type === 'replay-end') {
             setReplayRaw(false);
+            replayRawRef.current = false;
             setLoading(false);
             if (loadingTimerRef.current !== null) {
               clearTimeout(loadingTimerRef.current);
@@ -699,6 +708,8 @@ export function TerminalView({ tabId, active }: Props) {
       // Only forward to PTY in raw mode. Otherwise xterm's auto-responses to
       // terminal queries (DA, cursor position, etc.) pollute the input stream.
       if (!rawModeRef.current) return;
+      // Suppress auto-replies during reattach replay — see replayRawRef.
+      if (replayRawRef.current) return;
       const ws = wsRef.current;
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'input', data }));
