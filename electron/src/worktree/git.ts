@@ -11,16 +11,36 @@ interface RunResult {
 export function runGit(args: string[], cwd: string, timeoutMs = 5000): RunResult {
   try {
     const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: timeoutMs });
+    let stderr = (r.stderr ?? '').toString();
+    // A null exit status means git never exited normally — it was killed by
+    // the timeout or a signal, or failed to spawn. spawnSync reports that via
+    // `error`/`signal`, not stderr, so fold it in or the caller is left with
+    // a useless "git exited null".
+    if (!stderr.trim()) {
+      if (r.error) {
+        stderr =
+          (r.error as NodeJS.ErrnoException).code === 'ETIMEDOUT'
+            ? `git timed out after ${timeoutMs}ms`
+            : String(r.error);
+      } else if (r.signal) {
+        stderr = `git killed by ${r.signal}`;
+      }
+    }
     return {
       ok: r.status === 0,
       stdout: (r.stdout ?? '').toString(),
-      stderr: (r.stderr ?? '').toString(),
+      stderr,
       status: r.status,
     };
   } catch (err) {
     return { ok: false, stdout: '', stderr: String(err), status: null };
   }
 }
+
+// Worktree add/remove touch the filesystem heavily (checking out a tree,
+// deleting a worktree dir that may carry a large node_modules), so they need
+// a far more generous timeout than the quick metadata queries above.
+const FS_HEAVY_TIMEOUT_MS = 120_000;
 
 // Uses --git-common-dir so it returns the *main* checkout when called from
 // inside a linked worktree (rather than the worktree dir itself).
@@ -89,14 +109,18 @@ export function addWorktree(
   worktreePath: string,
   fromSha: string,
 ): RunResult {
-  return runGit(['worktree', 'add', '-b', branch, worktreePath, fromSha], repoRoot);
+  return runGit(
+    ['worktree', 'add', '-b', branch, worktreePath, fromSha],
+    repoRoot,
+    FS_HEAVY_TIMEOUT_MS,
+  );
 }
 
 export function removeWorktree(repoRoot: string, worktreePath: string, force: boolean): RunResult {
   const args = ['worktree', 'remove'];
   if (force) args.push('--force');
   args.push(worktreePath);
-  return runGit(args, repoRoot);
+  return runGit(args, repoRoot, FS_HEAVY_TIMEOUT_MS);
 }
 
 export function listGroveBranches(repoRoot: string): string[] {
