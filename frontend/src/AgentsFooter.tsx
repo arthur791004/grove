@@ -4,7 +4,7 @@ import { DndContext } from '@dnd-kit/core';
 import { SortableContext } from '@dnd-kit/sortable';
 import { useStore, type AgentPrompt, type AgentState, type Tab } from './store';
 import { COLOR_HEX } from './colors';
-import { API_BASE } from './api';
+import { sendSessionInput } from './api';
 import { TabCard } from './Sidebar';
 
 interface AgentRow {
@@ -166,15 +166,7 @@ function AgentsFooterRow({
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
 
-  async function sendRaw(data: string) {
-    try {
-      await fetch(`${API_BASE}/session/${tab.id}/input`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data }),
-      });
-    } catch {}
-  }
+  const sendRaw = (data: string) => sendSessionInput(tab.id, data);
 
   async function send() {
     const text = draft;

@@ -40,6 +40,8 @@ const groveStorage = createJSONStorage(() => ({
 export type TabColor = 'default' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan';
 export type AgentState = 'working' | 'blocked';
 
+export type NewTabMode = 'shell' | 'claude';
+
 export interface AgentPrompt {
   question: string;
   choices: string[];
@@ -103,6 +105,10 @@ interface State {
   // Empty string = use the default CSS stack defined in styles.css.
   monoFontFamily: string;
   monoFontSize: number;
+  newTabMode: NewTabMode;
+  // Tabs awaiting the `claude` bootstrap on next replay-end. Not persisted —
+  // a queued bootstrap is meaningless once the tab's pty is recreated fresh.
+  claudeBootstrapTabs: Record<string, true>;
 }
 
 interface Actions {
@@ -117,7 +123,7 @@ interface Actions {
     force?: boolean,
   ): Promise<{ ok: true } | { needsConfirm: true; status: WorktreeStatus } | { error: string }>;
   _dropGroup(id: string): void;
-  newTab(groupId?: string, title?: string): string;
+  newTab(groupId?: string, title?: string, opts?: { mode?: NewTabMode }): string;
   closeTab(id: string): void;
   renameTab(id: string, title: string): void;
   setTabColor(id: string, color: TabColor): void;
@@ -149,14 +155,13 @@ interface Actions {
   clearTabUnread(tabId: string): void;
   setMonoFontFamily(v: string): void;
   setMonoFontSize(n: number): void;
+  setNewTabMode(v: NewTabMode): void;
+  consumeClaudeBootstrap(tabId: string): boolean;
 }
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-function agentPromptsEqual(
-  a: AgentPrompt | undefined,
-  b: AgentPrompt | undefined,
-): boolean {
+function agentPromptsEqual(a: AgentPrompt | undefined, b: AgentPrompt | undefined): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
   if (a.question !== b.question) return false;
@@ -199,6 +204,8 @@ export const useStore = create<State & Actions>()(
       unreadTabs: {},
       monoFontFamily: '',
       monoFontSize: 13,
+      newTabMode: 'shell',
+      claudeBootstrapTabs: {},
 
       newGroup(name, cwd = '~') {
         const id = uid();
@@ -338,7 +345,7 @@ export const useStore = create<State & Actions>()(
         return { ok: true };
       },
 
-      newTab(groupId, title) {
+      newTab(groupId, title, opts) {
         const s = get();
         const gid =
           groupId ??
@@ -351,20 +358,33 @@ export const useStore = create<State & Actions>()(
           )?.id ??
           s.groupOrder[0];
         const id = uid();
-        const tab: Tab = { id, title: title ?? 'shell', color: pickRandomColor(), groupId: gid };
-        set((st) => ({
-          tabs: [...st.tabs, tab],
-          tabOrderByGroup: {
-            ...st.tabOrderByGroup,
-            [gid]: [...(st.tabOrderByGroup[gid] ?? []), id],
-          },
-          activeTabId: id,
-        }));
+        const mode = opts?.mode ?? s.newTabMode;
+        const tab: Tab = {
+          id,
+          title: title ?? mode,
+          color: pickRandomColor(),
+          groupId: gid,
+        };
+        set((st) => {
+          const next: Partial<State> = {
+            tabs: [...st.tabs, tab],
+            tabOrderByGroup: {
+              ...st.tabOrderByGroup,
+              [gid]: [...(st.tabOrderByGroup[gid] ?? []), id],
+            },
+            activeTabId: id,
+          };
+          if (mode === 'claude') {
+            next.claudeBootstrapTabs = { ...st.claudeBootstrapTabs, [id]: true };
+          }
+          return next;
+        });
         return id;
       },
 
       closeTab(id) {
         fetch(`${API_BASE}/session/${id}`, { method: 'DELETE' }).catch(() => {});
+        window.grove?.mcp?.deleteConfig(id).catch(() => {});
         set((s) => {
           const tab = s.tabs.find((t) => t.id === id);
           if (!tab) return s;
@@ -381,6 +401,7 @@ export const useStore = create<State & Actions>()(
           const { [id]: _agent, ...agentStates } = s.agentStates;
           const { [id]: _reply, ...agentReplies } = s.agentReplies;
           const { [id]: _prompt, ...agentPrompts } = s.agentPrompts;
+          const { [id]: _boot, ...claudeBootstrapTabs } = s.claudeBootstrapTabs;
           return {
             tabs: remaining,
             tabOrderByGroup: newOrder,
@@ -390,6 +411,7 @@ export const useStore = create<State & Actions>()(
             agentStates,
             agentReplies,
             agentPrompts,
+            claudeBootstrapTabs,
           };
         });
       },
@@ -533,6 +555,17 @@ export const useStore = create<State & Actions>()(
       setMonoFontSize(n) {
         set({ monoFontSize: Math.max(8, Math.min(28, Math.round(n))) });
       },
+      setNewTabMode(v) {
+        set({ newTabMode: v });
+      },
+      consumeClaudeBootstrap(tabId) {
+        if (!get().claudeBootstrapTabs[tabId]) return false;
+        set((s) => {
+          const { [tabId]: _drop, ...rest } = s.claudeBootstrapTabs;
+          return { claudeBootstrapTabs: rest };
+        });
+        return true;
+      },
 
       setRunningCmd(tabId, cmd) {
         set((s) => {
@@ -612,6 +645,7 @@ export const useStore = create<State & Actions>()(
         browserHistory: s.browserHistory,
         monoFontFamily: s.monoFontFamily,
         monoFontSize: s.monoFontSize,
+        newTabMode: s.newTabMode,
       }),
       version: 1,
       // Lift any prior per-panel boolean into the new activePanelId /

@@ -7,7 +7,6 @@ export function useShortcuts(openPalette: () => void) {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
 
-      // ⌘T new tab
       if (e.key === 't' && !e.shiftKey) {
         e.preventDefault();
         useStore.getState().newTab();

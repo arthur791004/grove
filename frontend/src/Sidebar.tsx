@@ -30,7 +30,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { useStore, type Tab, type Group } from './store';
 import { COLOR_HEX, COLOR_ORDER } from './colors';
 import { useTabContext, subscribeAllTabContexts } from './useTabContext';
-import { API_BASE } from './api';
+import { API_BASE, sendSessionInput } from './api';
 import { Tooltip } from './Tooltip';
 import { AgentsFooter } from './AgentsFooter';
 import { shortPath } from './paths';
@@ -927,7 +927,13 @@ function resolveIconBox({
       icon: Cmd ? <Cmd size={12} /> : <StopIcon />,
     };
   }
-  return { bg: baseBg, border: baseBorder, color: baseColor, title: undefined, icon: <TerminalIcon /> };
+  return {
+    bg: baseBg,
+    border: baseBorder,
+    color: baseColor,
+    title: undefined,
+    icon: <TerminalIcon />,
+  };
 }
 
 export function TabCard({
@@ -1050,11 +1056,7 @@ export function TabCard({
                 runningCmd
                   ? (e: React.MouseEvent) => {
                       e.stopPropagation();
-                      fetch(`${API_BASE}/session/${tab.id}/input`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ data: '\x03' }),
-                      }).catch(() => {});
+                      void sendSessionInput(tab.id, '\x03');
                     }
                   : undefined
               }
@@ -1128,39 +1130,35 @@ export function TabCard({
             </Text>
           )}
         </Box>
-        {branch &&
-          rawBranch !== workspaceBranch &&
-          !hovered &&
-          !showColors &&
-          !runningCmd && (
-            <Tooltip label={branch}>
-              <Box
-                flexShrink={0}
-                px="1.5"
-                py="0.5"
-                maxW="80px"
-                bg="#161b22"
-                border="1px solid #21262d"
-                borderRadius="4px"
-                color="#7ee787"
-                fontSize="10px"
-                fontFamily="var(--grove-mono)"
-                lineHeight="1"
-                display="inline-flex"
-                alignItems="center"
-                gap="1"
-                minW="0"
-                overflow="hidden"
-              >
-                <Box flexShrink={0} display="inline-flex" alignItems="center">
-                  <BranchIcon />
-                </Box>
-                <Box truncate minW="0">
-                  {branch}
-                </Box>
+        {branch && rawBranch !== workspaceBranch && !hovered && !showColors && !runningCmd && (
+          <Tooltip label={branch}>
+            <Box
+              flexShrink={0}
+              px="1.5"
+              py="0.5"
+              maxW="80px"
+              bg="#161b22"
+              border="1px solid #21262d"
+              borderRadius="4px"
+              color="#7ee787"
+              fontSize="10px"
+              fontFamily="var(--grove-mono)"
+              lineHeight="1"
+              display="inline-flex"
+              alignItems="center"
+              gap="1"
+              minW="0"
+              overflow="hidden"
+            >
+              <Box flexShrink={0} display="inline-flex" alignItems="center">
+                <BranchIcon />
               </Box>
-            </Tooltip>
-          )}
+              <Box truncate minW="0">
+                {branch}
+              </Box>
+            </Box>
+          </Tooltip>
+        )}
 
         {!compact && (hovered || showColors) && (
           <HStack

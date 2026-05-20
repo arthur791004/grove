@@ -106,4 +106,9 @@ contextBridge.exposeInMainWorld('grove', {
       lastFail = null;
     },
   },
+  mcp: {
+    writePlaywrightConfig: (tabId: string): Promise<string | null> =>
+      ipcRenderer.invoke('mcp:writePlaywrightConfig', tabId),
+    deleteConfig: (tabId: string): Promise<void> => ipcRenderer.invoke('mcp:deleteConfig', tabId),
+  },
 });

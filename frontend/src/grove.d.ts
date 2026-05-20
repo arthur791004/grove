@@ -50,6 +50,10 @@ declare global {
         onLoading(cb: (loading: boolean) => void): () => void;
         clearFail(): void;
       };
+      mcp: {
+        writePlaywrightConfig(tabId: string): Promise<string | null>;
+        deleteConfig(tabId: string): Promise<void>;
+      };
     };
   }
 }

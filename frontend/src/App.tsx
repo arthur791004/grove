@@ -4,9 +4,11 @@ import {
   CloseButton,
   Dialog,
   Flex,
+  Grid,
   IconButton,
   NativeSelect,
   Portal,
+  SegmentGroup,
   Text,
 } from '@chakra-ui/react';
 import { RefreshCw, SlidersHorizontal } from 'lucide-react';
@@ -16,7 +18,7 @@ import { Workspace } from './Workspace';
 import { CommandPalette } from './CommandPalette';
 import { ReconnectBanner } from './ReconnectBanner';
 import { useShortcuts } from './useShortcuts';
-import { useStore, type Group } from './store';
+import { useStore, type Group, type NewTabMode } from './store';
 import { shortPath } from './paths';
 import './extensions/builtins';
 import { usePanels } from './extensions/registry';
@@ -479,6 +481,8 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
   const monoFontSize = useStore((s) => s.monoFontSize);
   const setMonoFontFamily = useStore((s) => s.setMonoFontFamily);
   const setMonoFontSize = useStore((s) => s.setMonoFontSize);
+  const newTabMode = useStore((s) => s.newTabMode);
+  const setNewTabMode = useStore((s) => s.setNewTabMode);
 
   const refresh = async () => {
     if (!window.grove?.workspace) return;
@@ -615,6 +619,36 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
                   The quick brown fox 0123
                 </Text>
               </Flex>
+              <Box borderTop="1px solid #30363d" my="3" />
+              <Text fontSize="13px" color="#f0f6fc" fontWeight="600" mb="2">
+                Tabs
+              </Text>
+              <Grid templateColumns="80px 1fr" gap="3" alignItems="center" mb="4">
+                <Text fontSize="12px" color="#7d8590">
+                  New tab opens as
+                </Text>
+                <Box>
+                  <SegmentGroup.Root
+                    size="sm"
+                    value={newTabMode}
+                    onValueChange={(e) => {
+                      if (e.value) setNewTabMode(e.value as NewTabMode);
+                    }}
+                  >
+                    <SegmentGroup.Indicator />
+                    <SegmentGroup.Items
+                      items={[
+                        { value: 'shell', label: 'Shell' },
+                        { value: 'claude', label: 'Claude' },
+                      ]}
+                    />
+                  </SegmentGroup.Root>
+                  <Text fontSize="11px" color="#7d8590" mt="1.5">
+                    Claude mode auto-runs <code>claude</code> in new tabs. Requires Claude Code
+                    installed and authenticated.
+                  </Text>
+                </Box>
+              </Grid>
               <Box borderTop="1px solid #30363d" my="3" />
               <Flex align="center" justify="space-between" mb="2">
                 <Text fontSize="13px" color="#f0f6fc" fontWeight="600">

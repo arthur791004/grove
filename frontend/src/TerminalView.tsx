@@ -10,7 +10,7 @@ import { isLocalUrl } from './urlRouting';
 import '@xterm/xterm/css/xterm.css';
 import { useTabContext, setTabContext, type TabContext } from './useTabContext';
 import { useStore, type AgentState } from './store';
-import { API_BASE, WS_BASE } from './api';
+import { API_BASE, WS_BASE, sendSessionInput } from './api';
 import { TerminalOutput } from './TerminalOutput';
 import { SquareLoader } from './SquareLoader';
 import { BranchIcon, DiffIcon, FileIcon, FolderIcon, NodeIcon, PrIcon, ScriptIcon } from './icons';
@@ -210,6 +210,16 @@ function useCmdHeld(): boolean {
 // Matches git's "fatal: 'main' is already used by worktree at '/path'" so
 // the renderer can replace git's wall-of-text with a workspace-aware hint.
 const FORK_LOCK_RE = /fatal: '([^']+)' is already (?:checked out|used by worktree) at/;
+
+// Boot `claude` into a freshly-attached pty for tabs created in Claude mode.
+// If the workspace has a live browser panel target we splice in
+// `--mcp-config <path>` so Claude Code can drive it via CDP; otherwise we
+// fall back to plain `claude` so the session still comes up.
+async function bootstrapClaude(tabId: string): Promise<void> {
+  const configPath = await window.grove?.mcp?.writePlaywrightConfig(tabId).catch(() => null);
+  const cmd = configPath ? `claude --mcp-config ${configPath}\r` : 'claude\r';
+  await sendSessionInput(tabId, cmd);
+}
 
 function applyCarriageReturns(prev: string, incoming: string): string {
   if (
@@ -491,6 +501,10 @@ export function TerminalView({ tabId, active }: Props) {
             if (loadingTimerRef.current !== null) {
               clearTimeout(loadingTimerRef.current);
               loadingTimerRef.current = null;
+            }
+            // Drain-on-consume so reconnects don't re-fire the bootstrap.
+            if (useStore.getState().consumeClaudeBootstrap(tabId)) {
+              void bootstrapClaude(tabId);
             }
             return;
           }

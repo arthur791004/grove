@@ -17,6 +17,8 @@ import { inspect } from 'node:util';
 import { registerWorktreeHandlers } from './worktree/ipc';
 import { atomicWriteFile } from './atomicWrite';
 import { ensureDaemon, shutdownDaemon } from './daemon';
+import { startCdpProxy, type CdpProxyHandle } from './cdpProxy';
+import { writePlaywrightMcpConfig, deleteMcpConfig, pruneStaleMcpConfigs } from './mcpConfig';
 
 // Custom scheme used to serve the built renderer in packaged builds. Loading
 // the bundle from file:// breaks dynamic import() of code-split chunks because
@@ -32,6 +34,16 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 app.setName('Grove');
+
+// Expose Chromium's CDP endpoint so Playwright MCP (and other CDP clients)
+// can drive the embedded browser panel. Must be set before app.whenReady().
+// Port is `GROVE_CDP_PORT` env var or 9222 (Chrome's default). Conflicts with
+// VS Code's JS debugger and other Electron apps using the same port.
+const CDP_PORT = (() => {
+  const raw = Number(process.env.GROVE_CDP_PORT);
+  return Number.isFinite(raw) && raw > 0 ? raw : 9222;
+})();
+app.commandLine.appendSwitch('remote-debugging-port', String(CDP_PORT));
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const windowStateKeeper = require('electron-window-state');
 
@@ -44,6 +56,11 @@ let attentionPending = false;
 // survives toggling; destroyed only when the window closes.
 let browserView: WebContentsView | null = null;
 let browserViewUrl: string | null = null;
+
+// Lazy-started filtering proxy in front of the raw CDP port. See cdpProxy.ts.
+// The proxy itself binds on a fresh ephemeral port each launch; nothing
+// persisted.
+let cdpProxy: CdpProxyHandle | null = null;
 
 // --- Crash/error logging ---------------------------------------------------
 // "Aw Snap" renderer crashes and uncaught main-process errors leave nothing
@@ -333,6 +350,66 @@ ipcMain.handle('grove:browser-forward', () => {
   if (nav?.canGoForward()) nav.goForward();
 });
 
+// --- Playwright MCP wiring -------------------------------------------------
+// Resolves the CDP target id of the active browser panel by matching its
+// current URL against /json. Fragile if two targets share a URL — fine for
+// v1 where Grove has a single browser panel.
+async function resolveActiveTargetId(): Promise<string | null> {
+  if (!browserView) return null;
+  const url = browserView.webContents.getURL();
+  if (!url || !/^https?:\/\//i.test(url)) return null;
+  try {
+    const res = await fetch(`http://127.0.0.1:${CDP_PORT}/json`);
+    if (!res.ok) return null;
+    const targets = (await res.json()) as Array<{ id: string; type: string; url: string }>;
+    const match = targets.find((t) => t.type === 'page' && t.url === url);
+    return match?.id ?? null;
+  } catch (err) {
+    logLine(`[grove] resolveActiveTargetId failed: ${err instanceof Error ? err.message : err}`);
+    return null;
+  }
+}
+
+// Lazy-starts the filtering proxy on first use; subsequent calls reuse it.
+// Tear-down happens at before-quit alongside the daemon.
+async function ensureCdpProxy(): Promise<number | null> {
+  if (cdpProxy) return cdpProxy.port;
+  try {
+    cdpProxy = await startCdpProxy({
+      realPort: CDP_PORT,
+      getActiveTargetId: resolveActiveTargetId,
+    });
+    logLine(`[grove] cdp proxy listening on 127.0.0.1:${cdpProxy.port}`);
+    return cdpProxy.port;
+  } catch (err) {
+    logLine(`[grove] cdp proxy failed to start: ${err instanceof Error ? err.message : err}`);
+    return null;
+  }
+}
+
+// Called by a Claude-mode tab before spawning `claude` so its `--mcp-config`
+// flag has a file to point at. Returns null — and the caller falls back to
+// plain `claude` — when there's no browser panel on a page to wire up.
+ipcMain.handle('mcp:writePlaywrightConfig', async (_e, tabId: string) => {
+  if (typeof tabId !== 'string' || !tabId) return null;
+  const [targetId, proxyPort] = await Promise.all([resolveActiveTargetId(), ensureCdpProxy()]);
+  if (!targetId || !proxyPort) return null;
+  try {
+    return writePlaywrightMcpConfig(tabId, {
+      cdpEndpoint: `http://127.0.0.1:${proxyPort}`,
+    });
+  } catch (err) {
+    logLine(
+      `[grove] mcp:writePlaywrightConfig failed: ${err instanceof Error ? err.message : err}`,
+    );
+    return null;
+  }
+});
+
+ipcMain.handle('mcp:deleteConfig', (_e, tabId: string) => {
+  if (typeof tabId === 'string' && tabId) deleteMcpConfig(tabId);
+});
+
 // app.dock is undefined off-darwin, so this is a no-op on Win/Linux.
 // `attentionPending` coalesces bursts: one bounce per away-period, not one per command.
 ipcMain.handle('grove:notify-attention', () => {
@@ -363,6 +440,7 @@ function registerAppProtocol() {
 
 app.whenReady().then(async () => {
   setupLogging();
+  pruneStaleMcpConfigs();
   if (!process.env.GROVE_DEV_URL) {
     try {
       await ensureDaemon();
@@ -399,9 +477,14 @@ app.on('before-quit', (event) => {
   if (process.env.GROVE_DEV_URL) return; // dev runs its own backend
   event.preventDefault();
   quitting = true;
-  shutdownDaemon()
-    .catch((err) =>
+  Promise.all([
+    shutdownDaemon().catch((err) =>
       logLine(`[grove] shutdownDaemon failed: ${err instanceof Error ? err.stack : String(err)}`),
-    )
-    .finally(() => app.exit(0));
+    ),
+    cdpProxy
+      ?.close()
+      .catch((err) =>
+        logLine(`[grove] cdp proxy close failed: ${err instanceof Error ? err.message : err}`),
+      ),
+  ]).finally(() => app.exit(0));
 });
