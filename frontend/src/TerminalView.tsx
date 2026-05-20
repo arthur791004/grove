@@ -1557,6 +1557,17 @@ function BlockCard({
             onRerun={block.cmd ? onRerun : undefined}
             onCopyCmd={() => navigator.clipboard.writeText(block.cmd || '').catch(() => {})}
             onCopyOutput={() => navigator.clipboard.writeText(block.output || '').catch(() => {})}
+            onPin={
+              block.cmd
+                ? () =>
+                    useStore.getState().setPendingPinDraft({
+                      label: block.cmd!.slice(0, 20),
+                      type: 'shell',
+                      command: block.cmd!,
+                      scope: 'global',
+                    })
+                : undefined
+            }
             onDelete={onDelete}
           />
         </Box>
@@ -1605,11 +1616,13 @@ function BlockMenu({
   onRerun,
   onCopyCmd,
   onCopyOutput,
+  onPin,
   onDelete,
 }: {
   onRerun?: () => void;
   onCopyCmd: () => void;
   onCopyOutput: () => void;
+  onPin?: () => void;
   onDelete: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -1634,7 +1647,7 @@ function BlockMenu({
   const openMenu = () => {
     const rect = btnRef.current?.getBoundingClientRect();
     if (rect) {
-      const MENU_H = 108; // ~3 items * ~32px + padding/border; close enough for flip
+      const MENU_H = 170; // ~5 items * ~32px + padding/border; close enough for flip
       const right = window.innerWidth - rect.right;
       const spaceBelow = window.innerHeight - rect.bottom;
       if (spaceBelow < MENU_H + 8 && rect.top > MENU_H + 8) {
@@ -1716,6 +1729,7 @@ function BlockMenu({
             {onRerun && item('Rerun command', onRerun)}
             {item('Copy command', onCopyCmd)}
             {item('Copy output', onCopyOutput)}
+            {onPin && item('Pin this command', onPin)}
             <Box my="1" h="1px" bg="#30363d" />
             {item('Delete', onDelete, true)}
           </Box>,

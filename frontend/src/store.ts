@@ -42,6 +42,48 @@ export type AgentState = 'working' | 'blocked';
 
 export type NewTabMode = 'shell' | 'claude';
 
+export type PinType = 'shell' | 'claude';
+export type PinScope = 'global' | 'workspace';
+
+// A one-click command or Claude prompt shown in the footer pin bar. Global
+// pins show everywhere; workspace pins (groupId set) show only in their
+// group. Display order is the pins[] array position within each scope — no
+// separate order field.
+export interface Pin {
+  id: string;
+  label: string;
+  type: PinType;
+  command: string;
+  scope: PinScope;
+  groupId?: string;
+}
+
+const DEFAULT_PINS: Pin[] = [
+  { id: 'pin-run-tests', label: 'run tests', type: 'shell', command: 'npm test', scope: 'global' },
+  { id: 'pin-git-push', label: 'git push', type: 'shell', command: 'git push', scope: 'global' },
+  {
+    id: 'pin-explain-error',
+    label: 'explain error',
+    type: 'claude',
+    command: 'explain the last error in the terminal',
+    scope: 'global',
+  },
+  {
+    id: 'pin-fix-lint',
+    label: 'fix lint',
+    type: 'claude',
+    command: 'fix all lint errors',
+    scope: 'global',
+  },
+  {
+    id: 'pin-write-tests',
+    label: 'write tests',
+    type: 'claude',
+    command: 'write tests for the code I just changed',
+    scope: 'global',
+  },
+];
+
 export interface AgentPrompt {
   question: string;
   choices: string[];
@@ -109,6 +151,13 @@ interface State {
   // Tabs awaiting the `claude` bootstrap on next replay-end. Not persisted —
   // a queued bootstrap is meaningless once the tab's pty is recreated fresh.
   claudeBootstrapTabs: Record<string, true>;
+  // Footer pin bar. Flat list of global + workspace pins; the bar filters by
+  // scope/groupId. Persisted. Seeded with DEFAULT_PINS on first launch — a
+  // user who clears every pin persists `[]`, which is kept (not re-seeded).
+  pins: Pin[];
+  // Pre-filled draft to open the pin editor with (e.g. "Pin this command"
+  // from a terminal block). Transient — the PinBar consumes and clears it.
+  pendingPinDraft: Omit<Pin, 'id'> | null;
 }
 
 interface Actions {
@@ -157,6 +206,11 @@ interface Actions {
   setMonoFontSize(n: number): void;
   setNewTabMode(v: NewTabMode): void;
   consumeClaudeBootstrap(tabId: string): boolean;
+  addPin(pin: Omit<Pin, 'id'>): void;
+  removePin(id: string): void;
+  updatePin(id: string, patch: Partial<Omit<Pin, 'id'>>): void;
+  movePin(id: string, direction: -1 | 1): void;
+  setPendingPinDraft(draft: Omit<Pin, 'id'> | null): void;
 }
 
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -206,6 +260,8 @@ export const useStore = create<State & Actions>()(
       monoFontSize: 13,
       newTabMode: 'shell',
       claudeBootstrapTabs: {},
+      pins: DEFAULT_PINS,
+      pendingPinDraft: null,
 
       newGroup(name, cwd = '~') {
         const id = uid();
@@ -566,6 +622,41 @@ export const useStore = create<State & Actions>()(
         });
         return true;
       },
+      addPin(pin) {
+        set((s) => ({ pins: [...s.pins, { ...pin, id: uid() }] }));
+      },
+      removePin(id) {
+        set((s) => ({ pins: s.pins.filter((p) => p.id !== id) }));
+      },
+      updatePin(id, patch) {
+        set((s) => ({
+          pins: s.pins.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+        }));
+      },
+      movePin(id, direction) {
+        set((s) => {
+          const idx = s.pins.findIndex((p) => p.id === id);
+          if (idx === -1) return s;
+          const pin = s.pins[idx];
+          // Only swap with the nearest pin in the same scope/group — the bar
+          // renders global and workspace pins as separate runs.
+          let j = idx + direction;
+          while (
+            j >= 0 &&
+            j < s.pins.length &&
+            (s.pins[j].scope !== pin.scope || s.pins[j].groupId !== pin.groupId)
+          ) {
+            j += direction;
+          }
+          if (j < 0 || j >= s.pins.length) return s;
+          const pins = [...s.pins];
+          [pins[idx], pins[j]] = [pins[j], pins[idx]];
+          return { pins };
+        });
+      },
+      setPendingPinDraft(draft) {
+        set({ pendingPinDraft: draft });
+      },
 
       setRunningCmd(tabId, cmd) {
         set((s) => {
@@ -646,6 +737,7 @@ export const useStore = create<State & Actions>()(
         monoFontFamily: s.monoFontFamily,
         monoFontSize: s.monoFontSize,
         newTabMode: s.newTabMode,
+        pins: s.pins,
       }),
       version: 1,
       // Lift any prior per-panel boolean into the new activePanelId /

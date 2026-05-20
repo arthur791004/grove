@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useStore } from './store';
+import { executePin } from './PinBar';
 
 export function useShortcuts(openPalette: () => void) {
   useEffect(() => {
@@ -41,6 +42,20 @@ export function useShortcuts(openPalette: () => void) {
         }
         const idx = parseInt(e.key, 10) - 1;
         if (flat[idx]) s.setActiveTab(flat[idx]);
+        return;
+      }
+      // ⌘⇧1..9 fire pin N. (Plain ⌘1-9 is taken by tab-jump above; matched on
+      // e.code since Shift mutates the printed digit to a symbol.)
+      if (e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
+        e.preventDefault();
+        const s = useStore.getState();
+        const activeGroupId = s.tabs.find((t) => t.id === s.activeTabId)?.groupId ?? null;
+        const ordered = [
+          ...s.pins.filter((p) => p.scope === 'global'),
+          ...s.pins.filter((p) => p.scope === 'workspace' && p.groupId === activeGroupId),
+        ];
+        const pin = ordered[Number(e.code.slice(5)) - 1];
+        if (pin) executePin(pin);
         return;
       }
       // ⌘⇧[ / ⌘⇧] cycle tabs
