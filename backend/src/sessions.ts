@@ -369,6 +369,22 @@ function processChunk(session: Session, chunk: string) {
           saveBlocks(session.tabId, session.blocks);
         }
         setAgent(session, null, null, null);
+        // Back at the shell prompt: no TUI is running. A program that exited
+        // abnormally (e.g. a dropped ssh session) never emits its ?1049l /
+        // ?25h restore sequence, which would otherwise leave the raw-mode
+        // flags stuck on. Worse, the rawBuffer replayed to a reconnecting
+        // client still carries the unbalanced ?1049h / ?25l, so the frontend
+        // re-derives raw mode from the bytes even after the flags are reset.
+        // Synthesize the missing restore into the buffer so both the flags
+        // and the replayed history reflect reality (shell at a prompt).
+        if (session.altScreen || session.cursorHide) {
+          session.rawBuffer +=
+            (session.altScreen ? '\x1b[?1049l' : '') + (session.cursorHide ? '\x1b[?25h' : '');
+          if (session.rawBuffer.length > MAX_BUFFER)
+            session.rawBuffer = session.rawBuffer.slice(-MAX_BUFFER);
+          session.altScreen = false;
+          session.cursorHide = false;
+        }
         broadcast(session, { type: 'block-end', exit: event.exit, durationMs: event.durationMs });
         pushCtx(session);
       }
@@ -437,12 +453,21 @@ const PROMPT_CHOICE_MAX_LEN = 80;
 // `Overwrite? [Y/n]`, etc. Tolerates `yes`/`no` spelled out and either order.
 const YES_NO_RE = /[([]\s*y(?:es)?\s*\/\s*n(?:o)?\s*[)\]]/i;
 const NO_YES_RE = /[([]\s*n(?:o)?\s*\/\s*y(?:es)?\s*[)\]]/i;
+// Strips every ANSI control sequence — CSI (SGR colors, cursor moves, line
+// erases) and OSC. SGR_RE only removes color codes; the prompt parser splits
+// the buffer into lines and matches anchored regexes, so a redrawn TUI frame's
+// leftover cursor/erase escapes (e.g. `\x1b[2K`) on a choice line would break
+// the match. Stripping all of them leaves the plain `❯ 1. Yes` text.
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;:<=>?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 
 function extractAgentPrompt(session: Session): AgentPrompt | null {
   if (!isClaudeSession(session)) return null;
   const buf = session.rawBuffer;
   const rawTail = buf.length > DETECT_TAIL ? buf.slice(-DETECT_TAIL) : buf;
-  const tail = rawTail.replace(SGR_RE, '');
+  // Strip ALL ANSI sequences (not just SGR) — cursor moves / line erases left
+  // on a redrawn menu line would otherwise break the anchored choice regex.
+  const tail = rawTail.replace(ANSI_RE, '');
   // Split into trimmed text lines, stripping the box-drawing decoration.
   const lines = tail
     .split(/\r?\n/)

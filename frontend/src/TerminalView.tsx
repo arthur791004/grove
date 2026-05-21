@@ -312,6 +312,11 @@ function applyCarriageReturns(prev: string, incoming: string): string {
   return result;
 }
 
+// Tallest the prompt textarea grows before it scrolls internally (~10 lines).
+const MAX_INPUT_HEIGHT = 220;
+// Prompt line height in px — must match the textarea/mirror `lineHeight`.
+const INPUT_LINE_HEIGHT = 22;
+
 export function TerminalView({ tabId, active }: Props) {
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [input, setInput] = useState('');
@@ -325,11 +330,12 @@ export function TerminalView({ tabId, active }: Props) {
   const ctx = useTabContext(tabId, 0, 0, active || isRunning);
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const mirrorRef = useRef<HTMLDivElement>(null);
   const currentBlockRef = useRef<number | null>(null);
   const [caretLeft, setCaretLeft] = useState(0);
+  const [caretTop, setCaretTop] = useState(0);
   const [caretVisible, setCaretVisible] = useState(true);
-  const charWidthRef = useRef<number>(7.8);
   const [altScreen, setAltScreen] = useState(false);
   const [cursorHide, setCursorHide] = useState(false);
   const [forcedRaw, setForcedRaw] = useState(false);
@@ -655,7 +661,16 @@ export function TerminalView({ tabId, active }: Props) {
             }
             currentBlockRef.current = null;
             inPromptRef.current = true;
+            // The shell is back at its prompt, so no interactive program is
+            // running — force every raw-mode flag off, not just forcedRaw.
+            // A TUI that exits abnormally (e.g. an ssh session whose
+            // connection dropped) never emits its ?1049l / ?25h restore
+            // sequence, so altScreen / cursorHide would otherwise stay stuck
+            // true and keep the xterm overlay pinned over the block view.
             setForcedRaw(false);
+            setAltScreen(false);
+            setCursorHide(false);
+            altCarryRef.current = '';
             rawModeRef.current = false;
             useStore.getState().setRunningCmd(tabId, null);
           } else if (msg.type === 'agent-state') {
@@ -854,26 +869,42 @@ export function TerminalView({ tabId, active }: Props) {
     }
   }, [rawMode, active, isRunning]);
 
-  useEffect(() => {
-    const c = document.createElement('canvas');
-    const ctx = c.getContext('2d');
-    if (ctx) {
-      const fam =
-        getComputedStyle(document.documentElement).getPropertyValue('--grove-mono') || 'monospace';
-      ctx.font = `13px ${fam}`;
-      const w = ctx.measureText('M').width;
-      if (w > 0) charWidthRef.current = w;
-    }
-  }, []);
-
-  function updateCaret() {
+  // Grow the prompt textarea with its content up to MAX_INPUT_HEIGHT, after
+  // which it scrolls internally.
+  function autoGrow() {
     const el = inputRef.current;
     if (!el) return;
-    const pos = el.selectionStart ?? input.length;
-    setCaretLeft(pos * charWidthRef.current);
+    el.style.height = 'auto';
+    const h = Math.min(el.scrollHeight, MAX_INPUT_HEIGHT);
+    el.style.height = `${h}px`;
+    el.style.overflowY = el.scrollHeight > MAX_INPUT_HEIGHT ? 'auto' : 'hidden';
+  }
+
+  // The native caret is hidden (caretColor: transparent) so we can draw our
+  // own terminal-style block. A hidden mirror div replays the textarea's text
+  // and soft-wrapping, letting us read the caret's pixel row + column for any
+  // line of a multiline draft.
+  function updateCaret() {
+    const el = inputRef.current;
+    const mirror = mirrorRef.current;
+    if (!el || !mirror) return;
+    const pos = el.selectionStart ?? el.value.length;
+    mirror.style.width = `${el.clientWidth}px`;
+    mirror.textContent = el.value.slice(0, pos);
+    const marker = document.createElement('span');
+    // A zero-width space keeps the span measurable at the start of an empty
+    // line (a 0-width empty span still reports the right offsetTop/Left).
+    marker.textContent = '\u200b';
+    mirror.appendChild(marker);
+    setCaretLeft(marker.offsetLeft);
+    // offsetTop reports the inline-content box, which sits a few px below the
+    // line-box top; snap to the line grid so the caret stays line-centered.
+    const row = Math.round(marker.offsetTop / INPUT_LINE_HEIGHT);
+    setCaretTop(row * INPUT_LINE_HEIGHT - el.scrollTop);
   }
 
   useEffect(() => {
+    autoGrow();
     updateCaret();
   }, [input]);
 
@@ -901,6 +932,35 @@ export function TerminalView({ tabId, active }: Props) {
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [active]);
+
+  // Paste anywhere outside an editable field (e.g. right after selecting text
+  // in an output block) lands in the prompt input instead of being dropped.
+  // A paste straight into the textarea is left to the browser.
+  useEffect(() => {
+    if (!active) return;
+    function onPaste(e: ClipboardEvent) {
+      const el = inputRef.current;
+      if (!el || el.readOnly || rawMode) return;
+      const t = e.target as HTMLElement | null;
+      if (t === el) return;
+      if (t && t.closest('input, textarea, select, [contenteditable="true"]')) return;
+      const text = e.clipboardData?.getData('text') ?? '';
+      if (!text) return;
+      e.preventDefault();
+      const start = el.selectionStart ?? el.value.length;
+      const end = el.selectionEnd ?? el.value.length;
+      setInput(el.value.slice(0, start) + text + el.value.slice(end));
+      setHistoryIndex(null);
+      el.focus();
+      requestAnimationFrame(() => {
+        const caret = start + text.length;
+        el.setSelectionRange(caret, caret);
+        updateCaret();
+      });
+    }
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  }, [active, rawMode]);
 
   function send(data: string) {
     const ws = wsRef.current;
@@ -1003,7 +1063,7 @@ export function TerminalView({ tabId, active }: Props) {
     if (suggestion) setInput(suggestion);
   }
 
-  function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+  function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.ctrlKey && e.key === 'c') {
       e.preventDefault();
       if (input.length > 0) {
@@ -1051,11 +1111,16 @@ export function TerminalView({ tabId, active }: Props) {
       }
     }
     if (e.key === 'ArrowUp') {
-      e.preventDefault();
       if (showDropdown) {
+        e.preventDefault();
         setDropdownIndex((i) => Math.max(0, i - 1));
         return;
       }
+      // In a multiline draft ArrowUp moves the caret between lines; only
+      // recall history when the caret already sits on the first line.
+      const el = e.currentTarget;
+      if (el.value.slice(0, el.selectionStart ?? 0).includes('\n')) return;
+      e.preventDefault();
       // Combined history: persisted shell history (newest-first → reverse to
       // oldest-first) followed by in-session entries. Filter by the prefix the
       // user originally typed so ArrowUp walks matches, not all of history.
@@ -1082,11 +1147,16 @@ export function TerminalView({ tabId, active }: Props) {
       return;
     }
     if (e.key === 'ArrowDown') {
-      e.preventDefault();
       if (showDropdown) {
+        e.preventDefault();
         setDropdownIndex((i) => Math.min(contextual.length - 1, i + 1));
         return;
       }
+      // Only step history forward when the caret is on the last line;
+      // otherwise let ArrowDown move between lines of the draft.
+      const el = e.currentTarget;
+      if (el.value.slice(el.selectionStart ?? 0).includes('\n')) return;
+      e.preventDefault();
       if (historyIndex === null) return;
       const combined = [...shellHistory].reverse().concat(history);
       const prefix = historyPrefix;
@@ -1107,14 +1177,17 @@ export function TerminalView({ tabId, active }: Props) {
       return;
     }
     if (e.key === 'Enter') {
-      e.preventDefault();
       // When dropdown is open, Enter accepts the highlighted candidate into the
       // input instead of submitting the current input.
       if (showDropdown && contextual[dropdownIndex]) {
+        e.preventDefault();
         setInput(contextual[dropdownIndex].value);
         setDropdownOpen(false);
         return;
       }
+      // Shift+Enter inserts a newline (multiline draft); plain Enter submits.
+      if (e.shiftKey) return;
+      e.preventDefault();
       setDropdownOpen(false);
       const text = input;
       send(text + '\n');
@@ -1340,15 +1413,15 @@ export function TerminalView({ tabId, active }: Props) {
           pt="1"
           pb="3"
           display="flex"
-          alignItems="center"
+          alignItems="flex-start"
           gap="2"
           position="relative"
         >
           {runningBlock && showRunning && (
             <RunningBadge cmd={runningBlock.cmd} onStop={() => send('\x03')} />
           )}
-          <Box flex="1" position="relative" h="22px">
-            {suggestion && !runningBlock && (
+          <Box flex="1" position="relative" minH="22px">
+            {suggestion && !runningBlock && !input.includes('\n') && (
               <Box
                 position="absolute"
                 inset="0"
@@ -1399,10 +1472,11 @@ export function TerminalView({ tabId, active }: Props) {
                 )}
               </Box>
             )}
-            <input
+            <textarea
               ref={inputRef}
               value={input}
               readOnly={!!runningBlock}
+              rows={1}
               onChange={(e) => {
                 setInput(e.target.value);
                 setHistoryIndex(null);
@@ -1415,6 +1489,7 @@ export function TerminalView({ tabId, active }: Props) {
               onKeyUp={updateCaret}
               onClick={updateCaret}
               onSelect={updateCaret}
+              onScroll={updateCaret}
               onFocus={() => {
                 setCaretVisible(true);
                 updateCaret();
@@ -1425,7 +1500,7 @@ export function TerminalView({ tabId, active }: Props) {
               spellCheck={false}
               style={{
                 width: '100%',
-                height: '22px',
+                minHeight: '22px',
                 background: 'transparent',
                 border: 'none',
                 outline: 'none',
@@ -1437,8 +1512,12 @@ export function TerminalView({ tabId, active }: Props) {
                 verticalAlign: 'top',
                 appearance: 'none',
                 WebkitAppearance: 'none',
+                resize: 'none',
                 letterSpacing: 0,
                 wordSpacing: 0,
+                whiteSpace: 'pre-wrap',
+                overflowWrap: 'break-word',
+                wordBreak: 'break-word',
                 fontFamily: 'var(--grove-mono)',
                 fontSize: 'var(--grove-mono-size)',
                 lineHeight: '22px',
@@ -1451,12 +1530,39 @@ export function TerminalView({ tabId, active }: Props) {
                 textRendering: 'geometricPrecision',
               }}
             />
+            {/* Hidden mirror of the textarea — replays text + soft-wrapping so
+                updateCaret() can measure the caret's pixel row/column. */}
+            <div
+              ref={mirrorRef}
+              aria-hidden
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                visibility: 'hidden',
+                pointerEvents: 'none',
+                whiteSpace: 'pre-wrap',
+                overflowWrap: 'break-word',
+                wordBreak: 'break-word',
+                letterSpacing: 0,
+                wordSpacing: 0,
+                padding: 0,
+                margin: 0,
+                boxSizing: 'border-box',
+                fontFamily: 'var(--grove-mono)',
+                fontSize: 'var(--grove-mono-size)',
+                lineHeight: '22px',
+                fontFeatureSettings: '"liga" 0, "calt" 0',
+                fontVariantLigatures: 'none',
+                textRendering: 'geometricPrecision',
+              }}
+            />
             {caretVisible && !runningBlock && (
               <Box
                 className="grove-caret"
                 position="absolute"
                 left={`${caretLeft}px`}
-                top="4.5px"
+                top={`${caretTop + 4.5}px`}
                 w="2px"
                 h="13px"
                 bg="#83C2D7"
