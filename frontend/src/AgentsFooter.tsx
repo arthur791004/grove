@@ -190,7 +190,9 @@ function AgentsFooterRow({
   return (
     <Box pb="2">
       <TabCard tab={tab} workspaceBranch={null} compact />
-      <Box px="2" pt="1">
+      {/* px matches TabCard's own px="1.5" so the input/choices line up with
+          the tab's icon + label above. */}
+      <Box px="1.5" pt="1">
         {contextText && (
           <Text
             fontSize="10px"
@@ -211,30 +213,27 @@ function AgentsFooterRow({
         )}
         {showPrompt ? (
           <Box display="flex" flexDirection="column" gap="1">
-            {prompt.choices.map((c, i) => {
-              const digit = String(i + 1);
-              return (
-                <button
-                  key={i}
-                  onClick={() => sendRaw(digit + '\r')}
-                  style={{
-                    textAlign: 'left',
-                    background: '#0d1117',
-                    border: '1px solid #30363d',
-                    borderRadius: 4,
-                    color: '#c9d1d9',
-                    fontFamily: 'var(--grove-mono)',
-                    fontSize: 11,
-                    lineHeight: '1.4',
-                    padding: '4px 8px',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <span style={{ color: '#7d8590', marginRight: 8 }}>{digit}.</span>
-                  {c}
-                </button>
-              );
-            })}
+            {prompt.choices.map((c, i) => (
+              <button
+                key={i}
+                onClick={() => sendRaw(c.send + '\r')}
+                style={{
+                  textAlign: 'left',
+                  background: '#0d1117',
+                  border: '1px solid #30363d',
+                  borderRadius: 4,
+                  color: '#c9d1d9',
+                  fontFamily: 'var(--grove-mono)',
+                  fontSize: 11,
+                  lineHeight: '1.4',
+                  padding: '4px 8px',
+                  cursor: 'pointer',
+                }}
+              >
+                <span style={{ color: '#7d8590', marginRight: 8 }}>{c.send}</span>
+                {c.label}
+              </button>
+            ))}
           </Box>
         ) : (
           <Input

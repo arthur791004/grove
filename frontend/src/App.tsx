@@ -15,7 +15,6 @@ import { RefreshCw, SlidersHorizontal } from 'lucide-react';
 import { Sidebar } from './Sidebar';
 import { SquareLoader } from './SquareLoader';
 import { Workspace } from './Workspace';
-import { PinBar } from './PinBar';
 import { CommandPalette } from './CommandPalette';
 import { ReconnectBanner } from './ReconnectBanner';
 import { useShortcuts } from './useShortcuts';
@@ -163,12 +162,7 @@ export function App() {
               transition: 'padding-right 240ms cubic-bezier(0.22, 0.61, 0.36, 1)',
             }}
           >
-            <Flex direction="column" h="100%">
-              <Box flex="1" minH="0">
-                <Workspace />
-              </Box>
-              <PinBar />
-            </Flex>
+            <Workspace />
           </Box>
           <Box
             position="absolute"

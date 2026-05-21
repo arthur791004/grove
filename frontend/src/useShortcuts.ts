@@ -51,8 +51,10 @@ export function useShortcuts(openPalette: () => void) {
         const s = useStore.getState();
         const activeGroupId = s.tabs.find((t) => t.id === s.activeTabId)?.groupId ?? null;
         const ordered = [
-          ...s.pins.filter((p) => p.scope === 'global'),
-          ...s.pins.filter((p) => p.scope === 'workspace' && p.groupId === activeGroupId),
+          ...s.pins.filter((p) => p.scope === 'global' && !p.hidden),
+          ...s.pins.filter(
+            (p) => p.scope === 'workspace' && p.groupId === activeGroupId && !p.hidden,
+          ),
         ];
         const pin = ordered[Number(e.code.slice(5)) - 1];
         if (pin) executePin(pin);

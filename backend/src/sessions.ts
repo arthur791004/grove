@@ -35,12 +35,21 @@ interface Session {
 
 export type AgentState = 'working' | 'blocked';
 
-// When Claude pauses on a numbered permission menu we surface the question +
-// choices so the agents footer can render clickable buttons. `null` while
-// Claude is working / idle, or when the prompt couldn't be parsed.
+// One pickable answer. `label` is what the user sees; `send` is what gets
+// written to the pty (without the trailing CR) when the choice is picked —
+// a digit for numbered menus, `y` / `n` for inline yes/no prompts.
+export interface AgentPromptChoice {
+  label: string;
+  send: string;
+}
+
+// When Claude pauses on a numbered permission menu — or any inline `(y/n)`
+// prompt — we surface the question + choices so the agents footer can render
+// clickable buttons. `null` while Claude is working / idle, or when the
+// prompt couldn't be parsed.
 export interface AgentPrompt {
   question: string;
-  choices: string[];
+  choices: AgentPromptChoice[];
 }
 
 const MAX_BLOCKS = 200;
@@ -398,7 +407,8 @@ function agentPromptsEqual(a: AgentPrompt | null, b: AgentPrompt | null): boolea
   if (a.question !== b.question) return false;
   if (a.choices.length !== b.choices.length) return false;
   for (let i = 0; i < a.choices.length; i++) {
-    if (a.choices[i] !== b.choices[i]) return false;
+    if (a.choices[i].label !== b.choices[i].label) return false;
+    if (a.choices[i].send !== b.choices[i].send) return false;
   }
   return true;
 }
@@ -423,6 +433,10 @@ const PROMPT_CHOICE_RE = /^\s*[❯>]?\s*(\d+)\.\s+(.+?)\s*$/;
 const BOX_BORDER_RE = /^[\s│╭╮╰╯─┌┐└┘├┤]*$/;
 const PROMPT_QUESTION_MAX_LEN = 240;
 const PROMPT_CHOICE_MAX_LEN = 80;
+// Inline confirmations that aren't a numbered menu — `Continue? (y/n)`,
+// `Overwrite? [Y/n]`, etc. Tolerates `yes`/`no` spelled out and either order.
+const YES_NO_RE = /[([]\s*y(?:es)?\s*\/\s*n(?:o)?\s*[)\]]/i;
+const NO_YES_RE = /[([]\s*n(?:o)?\s*\/\s*y(?:es)?\s*[)\]]/i;
 
 function extractAgentPrompt(session: Session): AgentPrompt | null {
   if (!isClaudeSession(session)) return null;
@@ -446,7 +460,7 @@ function extractAgentPrompt(session: Session): AgentPrompt | null {
       break;
     }
   }
-  if (endIdx === -1) return null;
+  if (endIdx === -1) return extractYesNoPrompt(lines);
   let startIdx = endIdx;
   const choicesRev: Array<{ n: number; text: string }> = [];
   for (let i = endIdx; i >= 0; i--) {
@@ -462,11 +476,15 @@ function extractAgentPrompt(session: Session): AgentPrompt | null {
     }
   }
   if (choicesRev.length === 0) return null;
-  const choices = choicesRev.reverse().map((c) =>
-    c.text.length > PROMPT_CHOICE_MAX_LEN
-      ? c.text.slice(0, PROMPT_CHOICE_MAX_LEN - 1) + '…'
-      : c.text,
-  );
+  const choices: AgentPromptChoice[] = choicesRev.reverse().map((c) => ({
+    label:
+      c.text.length > PROMPT_CHOICE_MAX_LEN
+        ? c.text.slice(0, PROMPT_CHOICE_MAX_LEN - 1) + '…'
+        : c.text,
+    // Send the digit Claude printed, not the array index — keeps the keypress
+    // correct even if the run of choices doesn't start at 1.
+    send: String(c.n),
+  }));
   // Question = the non-empty text lines above the choices, up to the previous
   // box border / blank gap. Join multi-line wraps with a single space.
   const questionParts: string[] = [];
@@ -484,6 +502,33 @@ function extractAgentPrompt(session: Session): AgentPrompt | null {
     question = question.slice(0, PROMPT_QUESTION_MAX_LEN - 1) + '…';
   }
   return { question, choices };
+}
+
+// Fallback for prompts that aren't a numbered menu: an inline `(y/n)`
+// confirmation. The question is the line carrying the marker plus any
+// wrapped text above it (stopping at a blank line / box border).
+function extractYesNoPrompt(lines: string[]): AgentPrompt | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line || (!YES_NO_RE.test(line) && !NO_YES_RE.test(line))) continue;
+    const parts = [line];
+    for (let j = i - 1; j >= 0; j--) {
+      if (lines[j] === '' || BOX_BORDER_RE.test(lines[j])) break;
+      parts.unshift(lines[j]);
+    }
+    let question = parts.join(' ').replace(/\s+/g, ' ').trim();
+    if (question.length > PROMPT_QUESTION_MAX_LEN) {
+      question = question.slice(0, PROMPT_QUESTION_MAX_LEN - 1) + '…';
+    }
+    return {
+      question,
+      choices: [
+        { label: 'Yes', send: 'y' },
+        { label: 'No', send: 'n' },
+      ],
+    };
+  }
+  return null;
 }
 
 // Pull a one-line snippet from Claude's most recent assistant turn so the

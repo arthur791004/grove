@@ -1,14 +1,16 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Box, Flex, Input, Portal, SegmentGroup, Text } from '@chakra-ui/react';
-import { useStore, type Pin, type PinScope, type PinType } from './store';
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Box, Flex, Portal, Text } from '@chakra-ui/react';
+import { useStore, type Pin } from './store';
 import { sendSessionInput } from './api';
 import { Tooltip } from './Tooltip';
-import { ClaudeIcon, CloseIcon, PlusIcon, TerminalIcon } from './icons';
+import { PinManagerModal, type ManagerState } from './PinManagerModal';
+import { ClaudeIcon, PlusIcon, TerminalIcon } from './icons';
 
 const PIN_LABEL_MAX = 20;
-// Reserve room for the `[+]` button and a possible `…` overflow button when
-// deciding how many chips fit — both live in the fixed right cluster.
-const RIGHT_CLUSTER_RESERVE = 78;
+// Reserve room when deciding how many chips fit: the `[+]` button, a possible
+// `…` overflow button (both in the fixed right cluster), and the strip's own
+// px="6" left+right padding, which `barWidth` (clientWidth) still includes.
+const RIGHT_CLUSTER_RESERVE = 104;
 const CHIP_GAP = 6;
 
 // Sends a pin's command to the active tab's pty. Claude runs as a TUI inside
@@ -24,37 +26,52 @@ export function executePin(pin: Pin): 'ok' | 'no-tab' | 'mismatch' {
   return isClaudeTab && pin.type === 'shell' ? 'mismatch' : 'ok';
 }
 
-type EditorState =
-  | { mode: 'closed' }
-  | { mode: 'add'; draft?: Omit<Pin, 'id'> }
-  | { mode: 'edit'; pin: Pin };
-
-export function PinBar() {
+// The pin strip is pinned to the bottom of each tab's TerminalView, below the
+// shell input section and outside the raw-mode xterm overlay — so action chips
+// stay clickable on Claude tabs too. `active` gates draft consumption: every
+// mounted tab renders its own PinBar, but only the visible one should react to
+// a pending "Pin this command" draft. Memoized so a TerminalView frame doesn't
+// reconcile the whole strip.
+export const PinBar = memo(function PinBar({
+  tabId,
+  active,
+}: {
+  tabId: string;
+  active: boolean;
+}) {
   const pins = useStore((s) => s.pins);
-  const activeTabId = useStore((s) => s.activeTabId);
   const activeGroupId = useStore(
-    (s) => s.tabs.find((t) => t.id === s.activeTabId)?.groupId ?? null,
+    (s) => s.tabs.find((t) => t.id === tabId)?.groupId ?? null,
   );
   const pendingPinDraft = useStore((s) => s.pendingPinDraft);
   const setPendingPinDraft = useStore((s) => s.setPendingPinDraft);
 
-  const [editor, setEditor] = useState<EditorState>({ mode: 'closed' });
+  const [manager, setManager] = useState<ManagerState>({ mode: 'closed' });
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [warnedPinId, setWarnedPinId] = useState<string | null>(null);
 
   // "Pin this command" (and similar) hand a draft off through the store.
-  // Consume it here: open the editor pre-filled, then clear so it can't
-  // re-open on the next render.
+  // Consume it here: open the manager straight in the add form, then clear so
+  // it can't re-open on the next render. Only the active tab's strip consumes.
   useEffect(() => {
-    if (pendingPinDraft) {
-      setEditor({ mode: 'add', draft: pendingPinDraft });
+    if (active && pendingPinDraft) {
+      setManager({ mode: 'add', draft: pendingPinDraft });
       setPendingPinDraft(null);
     }
-  }, [pendingPinDraft, setPendingPinDraft]);
+  }, [active, pendingPinDraft, setPendingPinDraft]);
 
+  // The modal is portaled, so it would outlive its owning tab going inactive
+  // (e.g. the user switches tabs with it open) — close it when that happens.
+  useEffect(() => {
+    if (!active) setManager((m) => (m.mode === 'closed' ? m : { mode: 'closed' }));
+  }, [active]);
+
+  // Hidden pins stay out of the strip; they remain listed in the manager.
   const ordered = useMemo(() => {
-    const global = pins.filter((p) => p.scope === 'global');
-    const ws = pins.filter((p) => p.scope === 'workspace' && p.groupId === activeGroupId);
+    const global = pins.filter((p) => p.scope === 'global' && !p.hidden);
+    const ws = pins.filter(
+      (p) => p.scope === 'workspace' && p.groupId === activeGroupId && !p.hidden,
+    );
     return [...global, ...ws];
   }, [pins, activeGroupId]);
 
@@ -97,14 +114,10 @@ export function PinBar() {
   };
 
   return (
-    <Box flexShrink={0} borderTop="1px solid #21262d" bg="#0d1117">
-      {editor.mode !== 'closed' && (
-        <PinEditor
-          state={editor}
-          activeGroupId={activeGroupId}
-          onClose={() => setEditor({ mode: 'closed' })}
-        />
-      )}
+    // pb matches the gap above the strip (composer card's mb) so the chips
+    // sit with equal breathing room to the input section and the window edge.
+    <Box flexShrink={0} bg="#010409" pb="2">
+      <PinManagerModal state={manager} setState={setManager} activeGroupId={activeGroupId} />
       {/* Hidden measurement row — chips at their natural width so the overflow
           math sees real sizes even for chips currently in the popover. */}
       <Box position="absolute" visibility="hidden" pointerEvents="none" left="-9999px">
@@ -121,16 +134,24 @@ export function PinBar() {
           ))}
         </Flex>
       </Box>
-      <Flex ref={barRef} align="center" gap={`${CHIP_GAP}px`} px="2" h="34px" overflow="hidden">
+      <Flex
+        ref={barRef}
+        align="center"
+        justify="center"
+        gap={`${CHIP_GAP}px`}
+        px="6"
+        h="34px"
+        overflow="hidden"
+      >
         {ordered.length === 0 ? (
           <Text
             fontSize="11px"
             color="#7d8590"
             cursor="pointer"
-            onClick={() => setEditor({ mode: 'add' })}
+            onClick={() => setManager({ mode: 'list' })}
             _hover={{ color: '#c9d1d9' }}
           >
-            Add your first pin →
+            {pins.length === 0 ? 'Add your first pin →' : 'All pins hidden — manage →'}
           </Text>
         ) : (
           visible.map((pin, idx) => {
@@ -138,40 +159,39 @@ export function PinBar() {
             return (
               <Fragment key={pin.id}>
                 {prev?.scope === 'global' && pin.scope === 'workspace' && (
-                  <Box w="1px" h="16px" bg="#30363d" flexShrink={0} mx="1" />
+                  <Box w="1px" h="14px" bg="#21262d" flexShrink={0} mx="1" />
                 )}
                 <PinChip
                   pin={pin}
-                  disabled={!activeTabId}
+                  disabled={false}
                   warned={warnedPinId === pin.id}
                   shortcut={idx < 9 ? `⌘⇧${idx + 1}` : undefined}
                   onRun={() => run(pin)}
-                  onEdit={() => setEditor({ mode: 'edit', pin })}
+                  onEdit={() => setManager({ mode: 'edit', pin })}
                 />
               </Fragment>
             );
           })
         )}
-        <Box flex="1" />
         {overflow.length > 0 && (
           <OverflowPopover
             pins={overflow}
             startIndex={visibleCount}
             open={overflowOpen}
-            disabled={!activeTabId}
+            disabled={false}
             onToggle={() => setOverflowOpen((v) => !v)}
             onClose={() => setOverflowOpen(false)}
             onRun={run}
-            onEdit={(pin) => setEditor({ mode: 'edit', pin })}
+            onEdit={(pin) => setManager({ mode: 'edit', pin })}
           />
         )}
-        <RightClusterButton title="Add pin" onClick={() => setEditor({ mode: 'add' })}>
+        <RightClusterButton title="Manage pins" onClick={() => setManager({ mode: 'list' })}>
           <PlusIcon size={12} />
         </RightClusterButton>
       </Flex>
     </Box>
   );
-}
+});
 
 function RightClusterButton({
   title,
@@ -188,9 +208,9 @@ function RightClusterButton({
         as="button"
         onClick={onClick}
         flexShrink={0}
-        w="24px"
-        h="24px"
-        borderRadius="4px"
+        w="22px"
+        h="22px"
+        borderRadius="5px"
         display="inline-flex"
         alignItems="center"
         justifyContent="center"
@@ -232,17 +252,19 @@ function PinChip({
       align="center"
       gap="1.5"
       flexShrink={0}
-      h="24px"
+      h="22px"
       px="2"
-      borderRadius="4px"
+      borderRadius="5px"
+      // Borderless by default; the transparent 1px keeps the box size stable
+      // so the chip doesn't jitter when the warned border briefly appears.
       border="1px solid"
-      borderColor={warned ? '#d29922' : '#30363d'}
-      bg={warned ? '#d2992222' : '#161b22'}
+      borderColor={warned ? '#d29922' : 'transparent'}
+      bg={warned ? '#d2992222' : '#0d1117'}
       color={disabled ? '#484f58' : '#c9d1d9'}
-      fontSize="11px"
+      fontSize="12px"
       cursor={disabled ? 'not-allowed' : 'pointer'}
       opacity={disabled ? 0.4 : 1}
-      _hover={disabled ? undefined : { bg: '#21262d', borderColor: '#484f58' }}
+      _hover={disabled ? undefined : { bg: '#21262d' }}
       onClick={() => {
         if (!disabled) onRun();
       }}
@@ -315,9 +337,9 @@ function OverflowPopover({
           ref={triggerRef}
           onClick={onToggle}
           flexShrink={0}
-          w="24px"
-          h="24px"
-          borderRadius="4px"
+          w="22px"
+          h="22px"
+          borderRadius="5px"
           display="inline-flex"
           alignItems="center"
           justifyContent="center"
@@ -451,179 +473,5 @@ function PinContextMenu({
         ))}
       </Box>
     </Portal>
-  );
-}
-
-function PinEditor({
-  state,
-  activeGroupId,
-  onClose,
-}: {
-  state: Exclude<EditorState, { mode: 'closed' }>;
-  activeGroupId: string | null;
-  onClose: () => void;
-}) {
-  const addPin = useStore((s) => s.addPin);
-  const updatePin = useStore((s) => s.updatePin);
-
-  const seed = state.mode === 'edit' ? state.pin : state.draft;
-  const [label, setLabel] = useState(seed?.label ?? '');
-  const [type, setType] = useState<PinType>(seed?.type ?? 'shell');
-  const [command, setCommand] = useState(seed?.command ?? '');
-  const [scope, setScope] = useState<PinScope>(
-    seed?.scope === 'workspace' && activeGroupId ? 'workspace' : (seed?.scope ?? 'global'),
-  );
-
-  const canSave = label.trim().length > 0 && command.trim().length > 0;
-
-  const save = () => {
-    if (!canSave) return;
-    const fields = {
-      label: label.trim(),
-      type,
-      command: command.trim(),
-      scope,
-      groupId: scope === 'workspace' ? (activeGroupId ?? undefined) : undefined,
-    };
-    if (state.mode === 'edit') updatePin(state.pin.id, fields);
-    else addPin(fields);
-    onClose();
-  };
-
-  return (
-    <Box borderBottom="1px solid #21262d" bg="#161b22" px="3" py="2.5">
-      <Flex align="center" justify="space-between" mb="2">
-        <Text fontSize="12px" fontWeight="600" color="#f0f6fc">
-          {state.mode === 'edit' ? 'Edit pin' : 'New pin'}
-        </Text>
-        <Box as="button" onClick={onClose} color="#7d8590" _hover={{ color: '#c9d1d9' }}>
-          <CloseIcon size={10} />
-        </Box>
-      </Flex>
-      <Flex direction="column" gap="2">
-        <EditorRow label="Label">
-          <Input
-            size="xs"
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            placeholder="run tests"
-            autoFocus
-            bg="#0d1117"
-            border="1px solid #30363d"
-            color="#c9d1d9"
-            fontSize="12px"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') save();
-              if (e.key === 'Escape') onClose();
-            }}
-          />
-        </EditorRow>
-        <EditorRow label="Type">
-          <SegmentGroup.Root
-            size="sm"
-            value={type}
-            onValueChange={(e) => {
-              if (e.value) setType(e.value as PinType);
-            }}
-          >
-            <SegmentGroup.Indicator />
-            <SegmentGroup.Items
-              items={[
-                { value: 'shell', label: 'Shell' },
-                { value: 'claude', label: 'Claude' },
-              ]}
-            />
-          </SegmentGroup.Root>
-        </EditorRow>
-        <EditorRow label="Command">
-          <Input
-            size="xs"
-            value={command}
-            onChange={(e) => setCommand(e.target.value)}
-            placeholder={type === 'claude' ? 'explain the last error' : 'npm test'}
-            bg="#0d1117"
-            border="1px solid #30363d"
-            color="#c9d1d9"
-            fontSize="12px"
-            fontFamily="var(--grove-mono)"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') save();
-              if (e.key === 'Escape') onClose();
-            }}
-          />
-        </EditorRow>
-        <EditorRow label="Scope">
-          <SegmentGroup.Root
-            size="sm"
-            value={scope}
-            onValueChange={(e) => {
-              if (e.value && (e.value === 'global' || activeGroupId)) {
-                setScope(e.value as PinScope);
-              }
-            }}
-          >
-            <SegmentGroup.Indicator />
-            <SegmentGroup.Items
-              items={[
-                { value: 'global', label: 'Global' },
-                { value: 'workspace', label: 'This workspace', disabled: !activeGroupId },
-              ]}
-            />
-          </SegmentGroup.Root>
-        </EditorRow>
-        <Flex justify="flex-end" gap="2" mt="0.5">
-          <EditorButton onClick={onClose}>Cancel</EditorButton>
-          <EditorButton primary disabled={!canSave} onClick={save}>
-            {state.mode === 'edit' ? 'Save' : 'Add'}
-          </EditorButton>
-        </Flex>
-      </Flex>
-    </Box>
-  );
-}
-
-function EditorRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <Flex align="center" gap="3">
-      <Text fontSize="11px" color="#7d8590" w="64px" flexShrink={0}>
-        {label}
-      </Text>
-      <Box flex="1" minW="0">
-        {children}
-      </Box>
-    </Flex>
-  );
-}
-
-function EditorButton({
-  children,
-  onClick,
-  primary,
-  disabled,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  primary?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <Box
-      as="button"
-      onClick={() => {
-        if (!disabled) onClick();
-      }}
-      px="3"
-      h="24px"
-      borderRadius="4px"
-      fontSize="11px"
-      cursor={disabled ? 'not-allowed' : 'pointer'}
-      opacity={disabled ? 0.4 : 1}
-      bg={primary ? '#238636' : 'transparent'}
-      border={primary ? 'none' : '1px solid #30363d'}
-      color={primary ? '#ffffff' : '#c9d1d9'}
-      _hover={disabled ? undefined : { bg: primary ? '#2ea043' : '#21262d' }}
-    >
-      {children}
-    </Box>
   );
 }

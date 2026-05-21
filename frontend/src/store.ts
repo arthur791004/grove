@@ -56,6 +56,9 @@ export interface Pin {
   command: string;
   scope: PinScope;
   groupId?: string;
+  // Hidden pins are kept (and still listed in the pin manager modal) but not
+  // rendered in the strip or bound to a ⌘⇧N shortcut. Undefined = visible.
+  hidden?: boolean;
 }
 
 const DEFAULT_PINS: Pin[] = [
@@ -84,9 +87,16 @@ const DEFAULT_PINS: Pin[] = [
   },
 ];
 
+// One pickable answer: `label` is shown to the user, `send` is written to the
+// pty (a digit for numbered menus, `y` / `n` for inline yes/no prompts).
+export interface AgentPromptChoice {
+  label: string;
+  send: string;
+}
+
 export interface AgentPrompt {
   question: string;
-  choices: string[];
+  choices: AgentPromptChoice[];
 }
 
 const RANDOM_TAB_COLORS: TabColor[] = ['red', 'green', 'yellow', 'blue', 'magenta', 'cyan'];
@@ -210,6 +220,7 @@ interface Actions {
   removePin(id: string): void;
   updatePin(id: string, patch: Partial<Omit<Pin, 'id'>>): void;
   movePin(id: string, direction: -1 | 1): void;
+  reorderPins(orderedIds: string[]): void;
   setPendingPinDraft(draft: Omit<Pin, 'id'> | null): void;
 }
 
@@ -221,7 +232,8 @@ function agentPromptsEqual(a: AgentPrompt | undefined, b: AgentPrompt | undefine
   if (a.question !== b.question) return false;
   if (a.choices.length !== b.choices.length) return false;
   for (let i = 0; i < a.choices.length; i++) {
-    if (a.choices[i] !== b.choices[i]) return false;
+    if (a.choices[i].label !== b.choices[i].label) return false;
+    if (a.choices[i].send !== b.choices[i].send) return false;
   }
   return true;
 }
@@ -651,6 +663,20 @@ export const useStore = create<State & Actions>()(
           if (j < 0 || j >= s.pins.length) return s;
           const pins = [...s.pins];
           [pins[idx], pins[j]] = [pins[j], pins[idx]];
+          return { pins };
+        });
+      },
+      reorderPins(orderedIds) {
+        // Drag-reorder commits the new order of one scope group. Refill only
+        // the array slots those pins occupy, so pins outside the group (other
+        // scope / other workspaces) keep their positions.
+        set((s) => {
+          const idSet = new Set(orderedIds);
+          const moved = orderedIds.map((id) => s.pins.find((p) => p.id === id));
+          if (moved.some((p) => !p)) return s;
+          let mi = 0;
+          const pins = s.pins.map((p) => (idSet.has(p.id) ? moved[mi++]! : p));
+          if (pins.every((p, i) => p === s.pins[i])) return s;
           return { pins };
         });
       },

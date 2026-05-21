@@ -13,6 +13,7 @@ import { useStore, type AgentState } from './store';
 import { API_BASE, WS_BASE, sendSessionInput } from './api';
 import { TerminalOutput } from './TerminalOutput';
 import { SquareLoader } from './SquareLoader';
+import { PinBar } from './PinBar';
 import { BranchIcon, DiffIcon, FileIcon, FolderIcon, NodeIcon, PrIcon, ScriptIcon } from './icons';
 
 const ALT_ON = /\x1b\[\?(?:1049|47|1047)h/g;
@@ -1136,8 +1137,12 @@ export function TerminalView({ tabId, active }: Props) {
       overflow="hidden"
       position="relative"
     >
+      {/* Terminal region — output, shell footer, and the raw-mode xterm
+          overlay. Wrapped so the overlay's `inset: 0` stops above the pin
+          strip below, keeping action chips clickable on Claude tabs. */}
+      <Box flex="1" minH="0" position="relative" display="flex" flexDirection="column">
       {/* xterm overlay — visible only in raw mode. Horizontal padding matches
-          BlockCard's px="4" (16px) so ssh / claude / gum prompts line up with
+          BlockCard's px="6" (24px) so ssh / claude / gum prompts line up with
           the surrounding block content. Vertical buffer stays small — just
           enough to keep the cursor + bottom-line glyphs off the chrome. */}
       <Box
@@ -1146,7 +1151,7 @@ export function TerminalView({ tabId, active }: Props) {
         bg="#010409"
         zIndex={rawMode ? 5 : -1}
         visibility={rawMode ? 'visible' : 'hidden'}
-        px="16px"
+        px="24px"
         py="4px"
       >
         <Box ref={xtermHostRef} w="100%" h="100%" />
@@ -1182,7 +1187,6 @@ export function TerminalView({ tabId, active }: Props) {
           color="#c9d1d9"
           display="flex"
           flexDirection="column"
-          borderBottom="1px solid #21262d"
         >
           <Box flex="1" />
           {blocks.map((b) => (
@@ -1276,7 +1280,7 @@ export function TerminalView({ tabId, active }: Props) {
 
         {forkLockHint && (
           <Box
-            mx="4"
+            mx="6"
             mb="1"
             px="2.5"
             py="1.5"
@@ -1317,13 +1321,24 @@ export function TerminalView({ tabId, active }: Props) {
           </Box>
         )}
 
+        {/* Floating composer card — context chips + prompt row share one
+            rounded, bordered surface, styled after the Claude.ai composer. */}
+        <Box
+          mx="6"
+          mt="3"
+          mb="2"
+          border="1px solid #30363d"
+          borderRadius="14px"
+          bg="#0d1117"
+          overflow="hidden"
+        >
         <ChipStrip ctx={ctx} tabId={tabId} />
 
         <Box
-          bg="#010409"
+          bg="transparent"
           px="4"
           pt="1"
-          pb="4"
+          pb="3"
           display="flex"
           alignItems="center"
           gap="2"
@@ -1451,7 +1466,10 @@ export function TerminalView({ tabId, active }: Props) {
             )}
           </Box>
         </Box>
+        </Box>
       </Box>
+      </Box>
+      <PinBar tabId={tabId} active={active} />
     </Box>
   );
 }
@@ -1512,7 +1530,7 @@ function BlockCard({
   const durStr = formatDuration(block.durationMs, running);
   return (
     <Box
-      px="4"
+      px="6"
       py="2"
       borderTop="1px solid #21262d"
       borderLeft={failed ? '2px solid #f85149' : '2px solid transparent'}
@@ -1833,7 +1851,7 @@ function ChipStrip({ ctx, tabId }: { ctx: ReturnType<typeof useTabContext>; tabI
   const cwd = (ctx?.cwdReady && ctx.shortCwd) || (groupCwd ? shortPath(groupCwd) : '');
   const cwdLoading = !cwd;
   return (
-    <HStack px="4" pt="4" pb="0" gap="2" bg="#010409" flexWrap="wrap">
+    <HStack px="4" pt="3" pb="0" gap="2" bg="transparent" flexWrap="wrap">
       <Chip
         icon={<FolderIcon size={12} />}
         label={
