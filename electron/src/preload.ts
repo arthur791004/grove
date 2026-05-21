@@ -32,6 +32,14 @@ ipcRenderer.on('grove:browser-loading', (_e, loading: boolean) => {
   for (const fn of loadingSubs) fn(loading);
 });
 
+// A click on a blocked-Claude notification: `send` set = an action button
+// (route the answer to the tab's pty), `send` null = the body (just open it).
+type NotificationResponse = { tabId: string; send: string | null };
+const notifRespondSubs = new Set<(r: NotificationResponse) => void>();
+ipcRenderer.on('grove:notification-respond', (_e, r: NotificationResponse) => {
+  for (const fn of notifRespondSubs) fn(r);
+});
+
 type Bounds = { x: number; y: number; width: number; height: number; zoom?: number };
 
 import type {
@@ -50,6 +58,19 @@ contextBridge.exposeInMainWorld('grove', {
   stateSet: (content: string): Promise<void> => ipcRenderer.invoke('grove:state-set', content),
   revealPath: (target: string): Promise<void> => ipcRenderer.invoke('grove:reveal-path', target),
   notifyAttention: (): Promise<void> => ipcRenderer.invoke('grove:notify-attention'),
+  notifyBlocked: (notice: {
+    tabId: string;
+    title: string;
+    workspace: string;
+    question: string;
+    choices: Array<{ label: string; send: string }>;
+  }): Promise<void> => ipcRenderer.invoke('grove:notify-blocked', notice),
+  onNotificationRespond: (cb: (r: NotificationResponse) => void): (() => void) => {
+    notifRespondSubs.add(cb);
+    return () => {
+      notifRespondSubs.delete(cb);
+    };
+  },
   workspace: {
     fork: (req: ForkRequest): Promise<ForkResult> => ipcRenderer.invoke('workspace:fork', req),
     close: (req: CloseRequest): Promise<{ removed: boolean; branchDeleted: boolean }> =>

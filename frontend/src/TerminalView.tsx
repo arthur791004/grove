@@ -9,7 +9,7 @@ import { dispatch } from './extensions/actions';
 import { isLocalUrl } from './urlRouting';
 import '@xterm/xterm/css/xterm.css';
 import { useTabContext, setTabContext, type TabContext } from './useTabContext';
-import { useStore, type AgentState } from './store';
+import { useStore, type AgentState, type AgentPrompt } from './store';
 import { API_BASE, WS_BASE, sendSessionInput } from './api';
 import { bootstrapClaude } from './claudeLaunch';
 import { TerminalOutput } from './TerminalOutput';
@@ -131,14 +131,30 @@ function maybeNotifyLongCommand(tabId: string, durationMs: number | null): void 
 
 // Bounce on transitions into a "needs human" state: hit a permission prompt
 // (→ blocked) or finished working and dropped back to the input (working → null).
+// On entering `blocked` also raise an actionable desktop notification — its
+// buttons answer Claude's prompt without the user switching to the tab.
 function maybeNotifyAgentWaiting(
   tabId: string,
   prev: AgentState | undefined,
   next: AgentState | null,
+  prompt: AgentPrompt | null,
 ): void {
   if (next === 'blocked' || (prev === 'working' && next === null)) {
     notifyTabAttention(tabId);
   }
+  if (next !== 'blocked' || prev === 'blocked') return;
+  const st = useStore.getState();
+  // Same "can't currently see it" gate as notifyTabAttention.
+  if (st.activeTabId === tabId && document.hasFocus()) return;
+  const tab = st.tabs.find((t) => t.id === tabId);
+  const group = tab && st.groups.find((g) => g.id === tab.groupId);
+  window.grove?.notifyBlocked?.({
+    tabId,
+    title: 'Claude needs your input',
+    workspace: group?.name ?? '',
+    question: prompt?.question ?? 'Claude is waiting for your response.',
+    choices: (prompt?.choices ?? []).map((c) => ({ label: c.label, send: c.send })),
+  });
 }
 
 interface CompletionItem {
@@ -669,7 +685,7 @@ export function TerminalView({ tabId, active }: Props) {
             const prev = useStore.getState().agentStates[tabId];
             const next: AgentState | null = msg.state ?? null;
             useStore.getState().setAgentState(tabId, next, msg.reply ?? null, msg.prompt ?? null);
-            maybeNotifyAgentWaiting(tabId, prev, next);
+            maybeNotifyAgentWaiting(tabId, prev, next, msg.prompt ?? null);
           }
         } catch {}
       };

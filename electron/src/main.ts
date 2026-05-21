@@ -5,6 +5,7 @@ import {
   ipcMain,
   nativeImage,
   net,
+  Notification,
   protocol,
   shell,
   WebContentsView,
@@ -417,6 +418,56 @@ ipcMain.handle('grove:notify-attention', () => {
   attentionPending = true;
   app.dock?.setBadge('•');
   app.dock?.bounce('informational');
+});
+
+// Native notifications are held until dismissed/clicked — without a reference
+// the OS notification can be GC'd before the user interacts with it.
+const liveNotifications = new Set<Notification>();
+
+interface BlockedNotice {
+  tabId: string;
+  title: string;
+  workspace: string;
+  question: string;
+  choices: Array<{ label: string; send: string }>;
+}
+
+// Raised when a Claude tab the user isn't looking at hits a permission /
+// yes-no / multiple-choice prompt. Each choice becomes a notification action
+// button; clicking one routes the answer straight back to that tab's pty,
+// clicking the body just brings the tab forward.
+ipcMain.handle('grove:notify-blocked', (_e, notice: BlockedNotice) => {
+  if (!Notification.isSupported() || !notice || typeof notice.tabId !== 'string') return;
+  const choices = Array.isArray(notice.choices) ? notice.choices.slice(0, 6) : [];
+  const n = new Notification({
+    title: notice.title || 'Claude needs your input',
+    subtitle: notice.workspace || undefined,
+    body: notice.question || 'Claude is waiting for your response.',
+    actions: choices.map((c) => ({ type: 'button', text: c.label })),
+  });
+  liveNotifications.add(n);
+  n.on('close', () => liveNotifications.delete(n));
+  n.on('action', (_ev, index) => {
+    const choice = choices[index];
+    if (choice) {
+      mainWindow?.webContents.send('grove:notification-respond', {
+        tabId: notice.tabId,
+        send: choice.send,
+      });
+    }
+  });
+  n.on('click', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+    mainWindow?.webContents.send('grove:notification-respond', {
+      tabId: notice.tabId,
+      send: null,
+    });
+  });
+  n.show();
 });
 
 function registerAppProtocol() {

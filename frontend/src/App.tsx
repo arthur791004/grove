@@ -18,6 +18,7 @@ import { Workspace } from './Workspace';
 import { CommandPalette } from './CommandPalette';
 import { ReconnectBanner } from './ReconnectBanner';
 import { SessionChoiceDialog } from './SessionChoiceDialog';
+import { sendSessionInput } from './api';
 import { useShortcuts } from './useShortcuts';
 import { useStore, type Group, type NewTabMode } from './store';
 import { shortPath } from './paths';
@@ -69,6 +70,20 @@ export function App() {
   useEffect(() => {
     const s = useStore.getState();
     if (s.tabs.length === 0) s.newTab();
+  }, []);
+
+  // Route clicks on a blocked-Claude notification: an action button sends the
+  // chosen answer straight to that tab's pty; the body just opens the tab.
+  useEffect(() => {
+    return window.grove?.onNotificationRespond?.((r) => {
+      const s = useStore.getState();
+      if (r.send) {
+        // Drop a stale answer if the tab is no longer waiting on a prompt.
+        if (s.agentStates[r.tabId] === 'blocked') sendSessionInput(r.tabId, r.send + '\r');
+      } else {
+        s.setActiveTab(r.tabId);
+      }
+    });
   }, []);
 
   // Apply font-family / font-size prefs to the document root so CSS variables

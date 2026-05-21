@@ -14,6 +14,16 @@ declare global {
       stateSet(content: string): Promise<void>;
       revealPath(target: string): Promise<void>;
       notifyAttention(): Promise<void>;
+      notifyBlocked(notice: {
+        tabId: string;
+        title: string;
+        workspace: string;
+        question: string;
+        choices: Array<{ label: string; send: string }>;
+      }): Promise<void>;
+      onNotificationRespond(
+        cb: (r: { tabId: string; send: string | null }) => void,
+      ): () => void;
       workspace: {
         fork(req: { workspaceId: string; sourceCwd: string }): Promise<{
           branch: string;
