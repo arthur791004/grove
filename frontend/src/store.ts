@@ -112,6 +112,10 @@ export interface Tab {
   // session-sharing logic find a workspace's Claude tab. Absent on tabs
   // persisted before this field existed — treat as 'shell'.
   kind?: 'claude' | 'shell';
+  // The Claude Code session id this tab launched (`--session-id`) or joined
+  // (`--resume`). Set once `claude` is bootstrapped; lets a later Claude tab
+  // in the same workspace offer to join this session.
+  claudeSessionId?: string;
 }
 
 export interface Group {
@@ -175,6 +179,17 @@ interface State {
   // Pre-filled draft to open the pin editor with (e.g. "Pin this command"
   // from a terminal block). Transient — the PinBar consumes and clears it.
   pendingPinDraft: Omit<Pin, 'id'> | null;
+  // A pending New-session / Join-existing decision: set when a Claude tab is
+  // bootstrapped into a workspace that already runs a Claude session, cleared
+  // once SessionChoiceDialog launches `claude`. Transient.
+  sessionChoice: SessionChoice | null;
+}
+
+export interface SessionChoice {
+  tabId: string;
+  // The existing session a "join" would `--resume`.
+  joinSessionId: string;
+  workspaceName: string;
 }
 
 interface Actions {
@@ -224,6 +239,8 @@ interface Actions {
   setMonoFontSize(n: number): void;
   setNewTabMode(v: NewTabMode): void;
   consumeClaudeBootstrap(tabId: string): boolean;
+  setTabClaudeSession(tabId: string, sessionId: string): void;
+  setSessionChoice(v: SessionChoice | null): void;
   addPin(pin: Omit<Pin, 'id'>): void;
   removePin(id: string): void;
   updatePin(id: string, patch: Partial<Omit<Pin, 'id'>>): void;
@@ -282,6 +299,7 @@ export const useStore = create<State & Actions>()(
       claudeBootstrapTabs: {},
       pins: DEFAULT_PINS,
       pendingPinDraft: null,
+      sessionChoice: null,
 
       newGroup(name, cwd = '~') {
         const id = uid();
@@ -650,6 +668,14 @@ export const useStore = create<State & Actions>()(
           return { claudeBootstrapTabs: rest };
         });
         return true;
+      },
+      setTabClaudeSession(tabId, sessionId) {
+        set((s) => ({
+          tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, claudeSessionId: sessionId } : t)),
+        }));
+      },
+      setSessionChoice(v) {
+        set({ sessionChoice: v });
       },
       addPin(pin) {
         set((s) => ({ pins: [...s.pins, { ...pin, id: uid() }] }));

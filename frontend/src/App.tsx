@@ -17,6 +17,7 @@ import { SquareLoader } from './SquareLoader';
 import { Workspace } from './Workspace';
 import { CommandPalette } from './CommandPalette';
 import { ReconnectBanner } from './ReconnectBanner';
+import { SessionChoiceDialog } from './SessionChoiceDialog';
 import { useShortcuts } from './useShortcuts';
 import { useStore, type Group, type NewTabMode } from './store';
 import { shortPath } from './paths';
@@ -193,6 +194,7 @@ export function App() {
       </Flex>
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <SessionChoiceDialog />
       <ReconnectBanner />
     </Flex>
   );
