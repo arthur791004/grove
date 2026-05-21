@@ -804,3 +804,9 @@ export function sessionNodeVersion(tabId: string): string | null {
 export function sessionEnv(tabId: string): Record<string, string> {
   return sessions.get(tabId)?.env ?? {};
 }
+
+// Live block history for a tab, or null when the tab has no live session
+// (callers fall back to the on-disk copy via loadBlocks).
+export function getSessionBlocks(tabId: string): BlockRecord[] | null {
+  return sessions.get(tabId)?.blocks ?? null;
+}

@@ -108,6 +108,10 @@ export interface Tab {
   title: string;
   color: TabColor;
   groupId: string;
+  // How the tab was opened. Drives the `claude` bootstrap and lets fork /
+  // session-sharing logic find a workspace's Claude tab. Absent on tabs
+  // persisted before this field existed — treat as 'shell'.
+  kind?: 'claude' | 'shell';
 }
 
 export interface Group {
@@ -120,6 +124,9 @@ export interface Group {
   // updates, it captures origin only.
   forkBranch?: string;
   forkedFromId?: string;
+  // Set once the first Claude tab in this fork has been seeded with the
+  // parent workspace's context summary, so later Claude tabs don't re-inject.
+  forkContextConsumed?: boolean;
 }
 
 interface State {
@@ -182,6 +189,7 @@ interface Actions {
     force?: boolean,
   ): Promise<{ ok: true } | { needsConfirm: true; status: WorktreeStatus } | { error: string }>;
   _dropGroup(id: string): void;
+  markForkContextConsumed(groupId: string): void;
   newTab(groupId?: string, title?: string, opts?: { mode?: NewTabMode }): string;
   closeTab(id: string): void;
   renameTab(id: string, title: string): void;
@@ -344,6 +352,14 @@ export const useStore = create<State & Actions>()(
         }));
       },
 
+      markForkContextConsumed(groupId) {
+        set((s) => ({
+          groups: s.groups.map((g) =>
+            g.id === groupId ? { ...g, forkContextConsumed: true } : g,
+          ),
+        }));
+      },
+
       async forkGroup(sourceGroupId) {
         const source = get().groups.find((g) => g.id === sourceGroupId);
         if (!source) return { error: 'Source workspace not found.' };
@@ -432,6 +448,7 @@ export const useStore = create<State & Actions>()(
           title: title ?? mode,
           color: pickRandomColor(),
           groupId: gid,
+          kind: mode === 'claude' ? 'claude' : 'shell',
         };
         set((st) => {
           const next: Partial<State> = {

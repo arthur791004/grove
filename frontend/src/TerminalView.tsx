@@ -216,10 +216,38 @@ const FORK_LOCK_RE = /fatal: '([^']+)' is already (?:checked out|used by worktre
 // If the workspace has a live browser panel target we splice in
 // `--mcp-config <path>` so Claude Code can drive it via CDP; otherwise we
 // fall back to plain `claude` so the session still comes up.
+// One-time `--append-system-prompt` flag seeding a Claude tab opened in a
+// freshly-forked workspace with a summary of the parent's recent activity.
+// Returns '' for non-fork tabs or once the fork has already been seeded.
+async function forkContextFlag(tabId: string): Promise<string> {
+  const st = useStore.getState();
+  const tab = st.tabs.find((t) => t.id === tabId);
+  const group = tab && st.groups.find((g) => g.id === tab.groupId);
+  if (!group?.forkedFromId || group.forkContextConsumed) return '';
+  const parent = st.groups.find((g) => g.id === group.forkedFromId);
+  if (!parent) return '';
+  // Only the first Claude tab in a fork inherits parent context.
+  st.markForkContextConsumed(group.id);
+  // Prefer the parent's most-recent Claude tab for command history; fall back
+  // to any parent tab (the JSONL transcript itself is keyed by cwd, not tab).
+  const parentTab =
+    [...st.tabs].reverse().find((t) => t.groupId === parent.id && t.kind === 'claude') ??
+    [...st.tabs].reverse().find((t) => t.groupId === parent.id);
+  const qs = new URLSearchParams({ cwd: parent.cwd });
+  if (parentTab) qs.set('tabId', parentTab.id);
+  const res = await fetch(`${API_BASE}/fork-context?${qs.toString()}`);
+  if (!res.ok) return '';
+  const data = (await res.json()) as { path?: string | null };
+  return data?.path ? `--append-system-prompt "$(cat '${data.path}')"` : '';
+}
+
 async function bootstrapClaude(tabId: string): Promise<void> {
   const configPath = await window.grove?.mcp?.writePlaywrightConfig(tabId).catch(() => null);
-  const cmd = configPath ? `claude --mcp-config ${configPath}\r` : 'claude\r';
-  await sendSessionInput(tabId, cmd);
+  const flags: string[] = [];
+  if (configPath) flags.push(`--mcp-config ${configPath}`);
+  const ctxFlag = await forkContextFlag(tabId).catch(() => '');
+  if (ctxFlag) flags.push(ctxFlag);
+  await sendSessionInput(tabId, `claude${flags.length ? ' ' + flags.join(' ') : ''}\r`);
 }
 
 function applyCarriageReturns(prev: string, incoming: string): string {
