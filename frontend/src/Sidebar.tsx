@@ -57,10 +57,15 @@ function useWorkspaceBranch(groupId: string, cwd: string, enabled: boolean): str
     repoRoot: null,
   });
   useEffect(() => {
-    if (!enabled || !cwd) {
+    if (!cwd) {
       setState({ branch: null, repoRoot: null });
       return;
     }
+    // When a workspace collapses (`enabled` flips false) we deliberately keep
+    // the last-known branch/repoRoot. Clearing it to null would make every
+    // tab's badge condition (`rawBranch !== workspaceBranch`) momentarily true
+    // mid collapse/expand animation, flashing the branch badge on each tab.
+    if (!enabled) return;
     let cancelled = false;
     // One-shot seed: gives us the initial branch + the workspace's repoRoot
     // so subsequent tab pushes can be matched.
