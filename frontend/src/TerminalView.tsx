@@ -15,7 +15,9 @@ import { bootstrapClaude } from './claudeLaunch';
 import { TerminalOutput } from './TerminalOutput';
 import { SquareLoader } from './SquareLoader';
 import { PinBar } from './PinBar';
+import { MobileKeyBar } from './MobileKeyBar';
 import { BranchIcon, DiffIcon, FileIcon, FolderIcon, NodeIcon, PrIcon, ScriptIcon } from './icons';
+import { useIsMobile } from './useViewport';
 
 const ALT_ON = /\x1b\[\?(?:1049|47|1047)h/g;
 const ALT_OFF = /\x1b\[\?(?:1049|47|1047)l/g;
@@ -334,6 +336,7 @@ export function TerminalView({ tabId, active }: Props) {
   // ArrowDown past the newest match so it feels like fish/zsh substring-search.
   const [historyPrefix, setHistoryPrefix] = useState<string>('');
   const isRunning = useStore((s) => !!s.runningCmds[tabId]);
+  const isMobile = useIsMobile();
   const cmdHeld = useCmdHeld();
   const ctx = useTabContext(tabId, 0, 0, active || isRunning);
   const wsRef = useRef<WebSocket | null>(null);
@@ -456,9 +459,21 @@ export function TerminalView({ tabId, active }: Props) {
       // close, with attempt back to 0 every cycle.
       let stableTimer: ReturnType<typeof setTimeout> | null = null;
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'resize', cols: 200, rows: 50 }));
-        // Clear any stale readline buffer pollution (Ctrl-U = kill-whole-line)
-        ws.send(JSON.stringify({ type: 'input', data: '\x15' }));
+        // Sync the PTY to xterm's CURRENT size. On a reconnect (e.g. a phone
+        // returning from another app) the server-side PTY already holds the
+        // right dimensions — sending xterm's real size is a no-op, whereas the
+        // old hardcoded 200×50 forced a SIGWINCH that reflowed a running TUI
+        // every app-switch. Pre-fit xterm reports its 80×24 default; that
+        // first-connect reflow stays hidden behind the loading overlay.
+        const term = xtermRef.current;
+        ws.send(
+          JSON.stringify({ type: 'resize', cols: term?.cols ?? 200, rows: term?.rows ?? 50 }),
+        );
+        // Clear stale readline buffer pollution (Ctrl-U = kill-whole-line) —
+        // but only in cooked/shell mode. In raw mode this is a live keystroke
+        // into the TUI; on a reconnect it would wipe whatever the user had
+        // typed into Claude's prompt.
+        if (!rawModeRef.current) ws.send(JSON.stringify({ type: 'input', data: '\x15' }));
         stableTimer = setTimeout(() => {
           attempt = 0;
           stableTimer = null;
@@ -1244,15 +1259,18 @@ export function TerminalView({ tabId, active }: Props) {
       <Box flex="1" minH="0" position="relative" display="flex" flexDirection="column">
       {/* xterm overlay — visible only in raw mode. Horizontal padding matches
           BlockCard's px="6" (24px) so ssh / claude / gum prompts line up with
-          the surrounding block content. Vertical buffer stays small — just
-          enough to keep the cursor + bottom-line glyphs off the chrome. */}
+          the surrounding block content. On the mobile layout we shrink it to
+          8px: full-width TUIs (Claude Code's banner especially) need every
+          column they can get, and 48px of chrome wraps the logo on a phone.
+          Vertical buffer stays small — just enough to keep the cursor +
+          bottom-line glyphs off the chrome. */}
       <Box
         position="absolute"
         inset="0"
         bg="#010409"
         zIndex={rawMode ? 5 : -1}
         visibility={rawMode ? 'visible' : 'hidden'}
-        px="24px"
+        px={isMobile ? '8px' : '24px'}
         py="4px"
       >
         <Box ref={xtermHostRef} w="100%" h="100%" />
@@ -1607,6 +1625,20 @@ export function TerminalView({ tabId, active }: Props) {
       </Box>
       </Box>
       <PinBar tabId={tabId} active={active} />
+      {/* Phone-only on-screen key bar — soft keyboards lack arrow/Esc/Tab
+          keys, so without this a raw-mode TUI can't be navigated on mobile.
+          Writes straight to the PTY socket, the same channel xterm.onData
+          uses, so it works whether or not xterm currently holds focus. */}
+      {isMobile && rawMode && (
+        <MobileKeyBar
+          onKey={(seq) => {
+            const ws = wsRef.current;
+            if (ws?.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'input', data: seq }));
+            }
+          }}
+        />
+      )}
     </Box>
   );
 }

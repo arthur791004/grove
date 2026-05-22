@@ -319,12 +319,19 @@ function OverflowPopover({
   onEdit: (pin: Pin) => void;
 }) {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null);
+  // Anchored by its RIGHT edge: the `…` trigger lives in the strip's right
+  // cluster, so a left-anchored menu would overflow the viewport on narrow
+  // layouts. `right` is the gap from the window's right edge to the trigger's.
+  const [pos, setPos] = useState<{ right: number; bottom: number } | null>(null);
 
   useEffect(() => {
     if (!open) return;
     const rect = triggerRef.current?.getBoundingClientRect();
-    if (rect) setPos({ left: rect.left, bottom: window.innerHeight - rect.top + 6 });
+    if (rect)
+      setPos({
+        right: window.innerWidth - rect.right,
+        bottom: window.innerHeight - rect.top + 6,
+      });
     const onDoc = (e: PointerEvent) => {
       if (!triggerRef.current?.contains(e.target as Node)) onClose();
     };
@@ -359,7 +366,7 @@ function OverflowPopover({
         <Portal>
           <Flex
             position="fixed"
-            left={`${pos.left}px`}
+            right={`${pos.right}px`}
             bottom={`${pos.bottom}px`}
             direction="column"
             gap="1"
@@ -369,7 +376,9 @@ function OverflowPopover({
             p="1.5"
             boxShadow="0 8px 24px rgba(0,0,0,0.5)"
             zIndex={1000}
-            maxW="280px"
+            // Cap to the viewport so a long pin label can't push the menu off
+            // the left edge on a narrow (mobile) layout.
+            maxW="min(280px, calc(100vw - 16px))"
           >
             {pins.map((pin, i) => (
               <PinChip
