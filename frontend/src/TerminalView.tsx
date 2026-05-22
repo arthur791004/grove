@@ -692,8 +692,28 @@ export function TerminalView({ tabId, active }: Props) {
     }
 
     connect();
+
+    // Mobile browsers suspend background tabs and silently drop the WS;
+    // reconnect immediately when the tab becomes visible again instead of
+    // waiting out the exponential backoff.
+    const onVisible = () => {
+      if (document.hidden || closed) return;
+      const ws = wsRef.current;
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      attempt = 0;
+      connect();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
     return () => {
       closed = true;
+      document.removeEventListener('visibilitychange', onVisible);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (flushRafRef.current !== null) {
         cancelAnimationFrame(flushRafRef.current);
@@ -1263,6 +1283,9 @@ export function TerminalView({ tabId, active }: Props) {
           onScroll={onScroll}
           flex="1"
           overflowY="auto"
+          // Never scroll the block list sideways — blocks that need it (diff,
+          // interactive snapshots) carry their own inner horizontal scroll.
+          overflowX="hidden"
           fontFamily="var(--grove-mono)"
           fontSize="var(--grove-mono-size)"
           color="#c9d1d9"
@@ -1659,6 +1682,9 @@ function BlockCard({
         fontFamily="var(--grove-mono)"
         align="center"
         lineHeight="1.4"
+        // Wrap the metadata to a second line on narrow viewports rather than
+        // overflowing the block width.
+        flexWrap="wrap"
       >
         {block.cwd && <Text color="#79c0ff">{shortPath(block.cwd)}</Text>}
         {ctxNode && <Text color="#7ee787">{ctxNode}</Text>}
@@ -1683,8 +1709,14 @@ function BlockCard({
             interactive
           </Text>
         )}
-        <Box flex="1" />
-        <Box className="block-actions" opacity="0" transition="opacity 0.12s" color="#7d8590">
+        <Box flex="1" display={{ base: 'none', md: 'block' }} />
+        <Box
+          className="block-actions"
+          display={{ base: 'none', md: 'block' }}
+          opacity="0"
+          transition="opacity 0.12s"
+          color="#7d8590"
+        >
           <BlockMenu
             onRerun={block.cmd ? onRerun : undefined}
             onCopyCmd={() => navigator.clipboard.writeText(block.cmd || '').catch(() => {})}

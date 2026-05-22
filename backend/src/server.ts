@@ -11,6 +11,7 @@ import { registerDiffRoutes } from './diff.js';
 import { registerFileRoutes } from './files.js';
 import { registerServiceRoutes } from './services.js';
 import { registerForkContextRoutes } from './forkContext.js';
+import { registerStateRoutes } from './state.js';
 import { sessionCwd } from './sessions.js';
 import { isLoopback, isTailscale } from './remoteConfig.js';
 
@@ -89,6 +90,7 @@ export async function startServer(opts: StartServerOptions): Promise<FastifyInst
   registerFileRoutes(app);
   registerServiceRoutes(app);
   registerForkContextRoutes(app);
+  registerStateRoutes(app);
 
   app.get<{ Params: { tabId: string } }>('/session/:tabId/cwd', async (req) => {
     return { cwd: sessionCwd(req.params.tabId) };

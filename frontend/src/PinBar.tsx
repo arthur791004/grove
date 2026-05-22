@@ -255,6 +255,9 @@ function PinChip({
       h="22px"
       px="2"
       borderRadius="5px"
+      // A pin label is a single chip — never let it wrap to a second line
+      // (the overflow popover is narrow enough to trigger it otherwise).
+      whiteSpace="nowrap"
       // Borderless by default; the transparent 1px keeps the box size stable
       // so the chip doesn't jitter when the warned border briefly appears.
       border="1px solid"

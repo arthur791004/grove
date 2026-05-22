@@ -2,38 +2,70 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { API_BASE } from './api';
 
-// Persist via Electron IPC → ~/Library/Application Support/Grove/grove-state.json.
-// Origin-independent so dev (http://127.0.0.1:5173) and packaged (file://)
-// renderers share the same state. Falls back to localStorage in non-Electron
-// contexts (e.g. running Vite in a browser tab) and migrates legacy
-// localStorage data into the file on first read.
+// Persist the workspace/tab state. The Electron app reads/writes
+// ~/Library/Application Support/Grove/grove-state.json via IPC. The web build
+// has no IPC bridge, so it reads/writes that *same file* through the daemon's
+// /state endpoint — a browser or phone then sees the same workspaces as the
+// desktop app. localStorage is only a fallback for when the daemon has no
+// state yet or is unreachable.
+
+// Web build only: the daemon mirrors the desktop app's grove-state.json.
+async function fetchDaemonState(): Promise<string | null> {
+  try {
+    const res = await fetch(`${API_BASE}/state`);
+    if (!res.ok) return null;
+    const json = (await res.json()) as { value?: unknown };
+    return typeof json.value === 'string' ? json.value : null;
+  } catch {
+    return null;
+  }
+}
+
+async function postDaemonState(value: string): Promise<void> {
+  try {
+    await fetch(`${API_BASE}/state`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    });
+  } catch {
+    /* daemon unreachable — localStorage already holds the value */
+  }
+}
+
 const groveStorage = createJSONStorage(() => ({
   getItem: async (name: string) => {
-    if (!window.grove?.stateGet) return localStorage.getItem(name);
-    const fromFile = await window.grove.stateGet();
-    if (fromFile != null) return fromFile;
-    const legacy = localStorage.getItem(name);
-    if (legacy) {
-      try {
-        await window.grove.stateSet(legacy);
-      } catch {}
-      return legacy;
+    if (window.grove?.stateGet) {
+      const fromFile = await window.grove.stateGet();
+      if (fromFile != null) return fromFile;
+      const legacy = localStorage.getItem(name);
+      if (legacy) {
+        try {
+          await window.grove.stateSet(legacy);
+        } catch {}
+        return legacy;
+      }
+      return null;
     }
-    return null;
+    const fromDaemon = await fetchDaemonState();
+    if (fromDaemon != null) return fromDaemon;
+    return localStorage.getItem(name);
   },
   setItem: async (name: string, value: string) => {
-    if (!window.grove?.stateSet) {
-      localStorage.setItem(name, value);
+    if (window.grove?.stateSet) {
+      await window.grove.stateSet(value);
       return;
     }
-    await window.grove.stateSet(value);
+    localStorage.setItem(name, value);
+    await postDaemonState(value);
   },
   removeItem: async (name: string) => {
-    if (!window.grove?.stateSet) {
-      localStorage.removeItem(name);
+    if (window.grove?.stateSet) {
+      await window.grove.stateSet('');
       return;
     }
-    await window.grove.stateSet('');
+    localStorage.removeItem(name);
+    await postDaemonState('');
   },
 }));
 

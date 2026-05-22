@@ -4,6 +4,9 @@
   --grove-mono:
     'Hack', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Menlo, Monaco, monospace;
   --grove-mono-size: 13px;
+  /* Height of the iOS software keyboard — set by trackKeyboardInset() in
+     main.tsx, read by the mobile layout to keep the composer visible. */
+  --keyboard-height: 0px;
 }
 
 html,
@@ -117,6 +120,20 @@ body,
 
 .ansi-bold {
   font-weight: 600;
+}
+
+/* Mobile: terminal output must wrap, never scroll sideways — a horizontal
+   scrollbar on a phone is unusable. This overrides the inline `white-space:
+   pre` that interactive (TUI snapshot) blocks use on desktop; box-drawing
+   layout degrades on wrap, but raw TUI isn't a mobile target anyway. Plain
+   output blocks already wrap, so this is a no-op for them. */
+@media (max-width: 767px) {
+  .grove-output {
+    white-space: pre-wrap !important;
+    word-break: break-word !important;
+    overflow-wrap: anywhere !important;
+    overflow-x: hidden !important;
+  }
 }
 
 ::-webkit-scrollbar {

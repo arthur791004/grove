@@ -3,6 +3,7 @@ import {
   Box,
   CloseButton,
   Dialog,
+  Drawer,
   Flex,
   Grid,
   IconButton,
@@ -14,6 +15,9 @@ import {
 } from '@chakra-ui/react';
 import { RefreshCw, SlidersHorizontal } from 'lucide-react';
 import QRCode from 'qrcode';
+import { useIsMobile } from './useViewport';
+import { MobileHeader } from './MobileHeader';
+import { IS_ELECTRON } from './env';
 import { Sidebar } from './Sidebar';
 import { SquareLoader } from './SquareLoader';
 import { Workspace } from './Workspace';
@@ -52,6 +56,19 @@ export function App() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
+  // Phone-sized viewport: the layout drops the sidebar and right panel in
+  // favour of a slide-in drawer and a fullscreen panel overlay.
+  const isMobile = useIsMobile();
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  const activeTabId = useStore((s) => s.activeTabId);
+  // Picking a workspace in the drawer switches the active tab — close the
+  // drawer whenever that (or any other tab switch) happens.
+  useEffect(() => setMobileDrawerOpen(false), [activeTabId]);
+  const activeGroupName = useStore((s) => {
+    const tab = s.tabs.find((t) => t.id === s.activeTabId);
+    return (tab && s.groups.find((g) => g.id === tab.groupId)?.name) || 'Grove';
+  });
+
   // Registry-driven panel state. activePanelId is the registry id (or null);
   // the active panel is looked up from the registry.
   const panels = usePanels();
@@ -60,13 +77,22 @@ export function App() {
   const activeUserFullscreen = useStore((s) =>
     activePanelId ? !!s.panelFullscreen[activePanelId] : false,
   );
-  const activePanel = activePanelId ? (panels.find((p) => p.id === activePanelId) ?? null) : null;
+  const registryPanel = activePanelId
+    ? (panels.find((p) => p.id === activePanelId) ?? null)
+    : null;
+  // The embedded browser panel is Electron-only (WebContentsView) — in any
+  // browser build it's neither offered in the titlebar nor rendered if a
+  // desktop session left it active.
+  const titlebarPanels = IS_ELECTRON ? panels : panels.filter((p) => p.id !== 'browser');
+  const activePanel =
+    !IS_ELECTRON && registryPanel?.id === 'browser' ? null : registryPanel;
 
-  const contentW = windowWidth - (sidebarOpen ? SIDEBAR_WIDTH : 0);
+  const contentW = windowWidth - (!isMobile && sidebarOpen ? SIDEBAR_WIDTH : 0);
   const panelOpen = !!activePanel;
   const activePanelBaseW = panelOpen ? Math.max(PANEL_MIN, Math.round(contentW * PANEL_RATIO)) : 0;
   const forcedFullscreen = panelOpen && contentW - activePanelBaseW < MIN_WORKSPACE_WIDTH;
-  const effectiveFullscreen = activeUserFullscreen || forcedFullscreen;
+  // On mobile an open panel always takes the whole workspace area.
+  const effectiveFullscreen = isMobile || activeUserFullscreen || forcedFullscreen;
   useShortcuts(() => setPaletteOpen(true));
 
   useEffect(() => {
@@ -100,68 +126,105 @@ export function App() {
   }, [monoFontFamily, monoFontSize]);
 
   return (
-    <Flex direction="column" h="100vh" w="100vw" bg="#0d1117" overflow="hidden">
-      <Flex
-        h="36px"
-        flexShrink={0}
-        align="center"
-        borderBottom="1px solid #21262d"
-        position="relative"
-        zIndex={50}
-        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-      >
-        <Box w="76px" h="100%" flexShrink={0} />
+    <Flex
+      direction="column"
+      h="100dvh"
+      w="100vw"
+      bg="#0d1117"
+      overflow="hidden"
+      style={
+        isMobile
+          ? {
+              // Clear the notch at the top; clear the keyboard + home
+              // indicator at the bottom so the composer is never covered.
+              paddingTop: 'env(safe-area-inset-top, 0px)',
+              paddingBottom:
+                'calc(var(--keyboard-height, 0px) + env(safe-area-inset-bottom, 0px))',
+              boxSizing: 'border-box',
+            }
+          : undefined
+      }
+    >
+      {isMobile ? (
+        <MobileHeader
+          workspaceName={activeGroupName}
+          panels={titlebarPanels}
+          activePanelId={activePanelId}
+          onTogglePanel={togglePanel}
+          onOpenDrawer={() => setMobileDrawerOpen((o) => !o)}
+          settingsOpen={settingsOpen}
+          onToggleSettings={() => setSettingsOpen((o) => !o)}
+          isElectron={IS_ELECTRON}
+        />
+      ) : (
         <Flex
-          align="center"
-          justify="center"
-          h="100%"
-          mr="8px"
-          gap="4px"
-          pt="2px"
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-        >
-          <SidebarToggleButton open={sidebarOpen} onClick={toggleSidebar} />
-          <AddWorkspaceSplitButton />
-        </Flex>
-        <Box flex="1" h="100%" />
-        <Flex
-          align="center"
-          h="100%"
-          pr="8px"
-          pt="2px"
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-        >
-          {panels.map((p) => (
-            <TitlebarIconButton
-              key={p.id}
-              active={activePanelId === p.id}
-              title={
-                activePanelId === p.id
-                  ? `Hide ${p.title.toLowerCase()}`
-                  : `Show ${p.title.toLowerCase()}`
-              }
-              onClick={() => togglePanel(p.id)}
-            >
-              {p.icon}
-            </TitlebarIconButton>
-          ))}
-          <SettingsButton open={settingsOpen} onClick={() => setSettingsOpen((o) => !o)} />
-        </Flex>
-      </Flex>
-      <Flex flex="1" minH="0" minW="0" overflow="hidden">
-        <Box
-          w={sidebarOpen ? `${SIDEBAR_WIDTH}px` : '0px'}
+          h="36px"
           flexShrink={0}
-          borderRight={sidebarOpen ? '1px solid #21262d' : '1px solid transparent'}
-          overflow="hidden"
-          style={{
-            transition: 'width 220ms cubic-bezier(0.22, 0.61, 0.36, 1), border-color 220ms ease',
-          }}
+          align="center"
+          borderBottom="1px solid #21262d"
+          bg="#0d1117"
+          position="relative"
+          zIndex={50}
+          style={IS_ELECTRON ? ({ WebkitAppRegion: 'drag' } as React.CSSProperties) : undefined}
         >
-          <Box w={`${SIDEBAR_WIDTH}px`} h="100%">
-            <Sidebar />
+          {/* macOS traffic-light spacer — only meaningful inside Electron. */}
+          <Box w={IS_ELECTRON ? '76px' : '8px'} h="100%" flexShrink={0} />
+          <Flex
+            align="center"
+            justify="center"
+            h="100%"
+            mr="8px"
+            gap="4px"
+            pt="2px"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          >
+            <SidebarToggleButton open={sidebarOpen} onClick={toggleSidebar} />
+            {/* Adding a workspace needs a native folder picker — Electron only. */}
+            {IS_ELECTRON && <AddWorkspaceSplitButton />}
+          </Flex>
+          <Box flex="1" h="100%" />
+          <Flex
+            align="center"
+            h="100%"
+            pr="8px"
+            pt="2px"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          >
+            {titlebarPanels.map((p) => (
+              <TitlebarIconButton
+                key={p.id}
+                active={activePanelId === p.id}
+                title={
+                  activePanelId === p.id
+                    ? `Hide ${p.title.toLowerCase()}`
+                    : `Show ${p.title.toLowerCase()}`
+                }
+                onClick={() => togglePanel(p.id)}
+              >
+                {p.icon}
+              </TitlebarIconButton>
+            ))}
+            <SettingsButton open={settingsOpen} onClick={() => setSettingsOpen((o) => !o)} />
+          </Flex>
+        </Flex>
+      )}
+      <Flex flex="1" minH="0" minW="0" overflow="hidden">
+        {!isMobile && (
+          <Box
+            w={sidebarOpen ? `${SIDEBAR_WIDTH}px` : '0px'}
+            flexShrink={0}
+            borderRight={sidebarOpen ? '1px solid #21262d' : '1px solid transparent'}
+            overflow="hidden"
+            style={{
+              transition:
+                'width 220ms cubic-bezier(0.22, 0.61, 0.36, 1), border-color 220ms ease',
+            }}
+          >
+            <Box w={`${SIDEBAR_WIDTH}px`} h="100%">
+              <Sidebar />
+            </Box>
           </Box>
-        </Box>
+        )}
         <Box flex="1" position="relative" minW="0">
           {/* The workspace stays full-width when the diff panel is fullscreen so
               the terminal never re-layouts on max/min. Only opening/closing the
@@ -169,7 +232,7 @@ export function App() {
           <Box
             position="absolute"
             inset="0"
-            pr={panelOpen && !forcedFullscreen ? `${activePanelBaseW}px` : '0px'}
+            pr={!isMobile && panelOpen && !forcedFullscreen ? `${activePanelBaseW}px` : '0px'}
             // `isolation: isolate` keeps the TerminalView's raw-mode xterm
             // overlay (zIndex 5) and other inner z-indexed nodes contained in
             // their own stacking context. Without it, those positive z-indices
@@ -200,7 +263,7 @@ export function App() {
               <Suspense fallback={<PanelLoading />}>
                 {activePanel && (
                   <activePanel.component
-                    forcedFullscreen={forcedFullscreen}
+                    forcedFullscreen={isMobile || forcedFullscreen}
                     panelWidth={effectiveFullscreen ? contentW : activePanelBaseW}
                   />
                 )}
@@ -209,6 +272,34 @@ export function App() {
           </Box>
         </Box>
       </Flex>
+      {/* Workspace drawer — Chakra Drawer handles the slide animation,
+          backdrop, focus trap, scroll lock, ESC-to-close and ARIA wiring. */}
+      {isMobile && (
+        <Drawer.Root
+          open={mobileDrawerOpen}
+          onOpenChange={(e) => setMobileDrawerOpen(e.open)}
+          placement="start"
+        >
+          <Portal>
+            <Drawer.Backdrop bg="rgba(1,4,9,0.6)" />
+            <Drawer.Positioner>
+              <Drawer.Content
+                bg="#0d1117"
+                w="80vw"
+                maxW="300px"
+                p="0"
+                borderRight="1px solid #21262d"
+                style={{
+                  paddingTop: 'env(safe-area-inset-top, 0px)',
+                  paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+                }}
+              >
+                <Sidebar />
+              </Drawer.Content>
+            </Drawer.Positioner>
+          </Portal>
+        </Drawer.Root>
+      )}
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <SessionChoiceDialog />
@@ -946,14 +1037,20 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
         <Dialog.Positioner>
           <Dialog.Content
             bg="#161b22"
-            border="1px solid #30363d"
-            borderRadius="8px"
+            border={{ base: 'none', md: '1px solid #30363d' }}
+            borderRadius={{ base: '0', md: '8px' }}
             boxShadow="0 20px 60px rgba(0,0,0,0.6)"
-            w="700px"
-            h="520px"
-            maxW="700px"
+            w={{ base: '100vw', md: '700px' }}
+            h={{ base: '100dvh', md: '520px' }}
+            maxW={{ base: '100vw', md: '700px' }}
+            maxH={{ base: '100dvh', md: '520px' }}
             display="flex"
             flexDirection="column"
+            style={{
+              // Full-screen on a phone — clear the notch / home indicator.
+              paddingTop: 'env(safe-area-inset-top, 0px)',
+              paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+            }}
           >
             <Dialog.Header
               px="4"
@@ -972,7 +1069,7 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
             </Dialog.Header>
             <Flex flex="1" minH="0">
               <Box
-                w="176px"
+                w={{ base: '116px', md: '176px' }}
                 flexShrink={0}
                 borderRight="1px solid #30363d"
                 py="3"
@@ -1001,7 +1098,7 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
                   </Box>
                 ))}
               </Box>
-              <Box flex="1" minW="0" overflowY="auto" px="5" py="4">
+              <Box flex="1" minW="0" overflowY="auto" overflowX="hidden" px="5" py="4">
                 <Text fontSize="15px" color="#f0f6fc" fontWeight="600" mb="4">
                   {activeLabel}
                 </Text>

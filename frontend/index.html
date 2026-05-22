@@ -3,7 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <title>Grove</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover exposes env(safe-area-inset-*) for the iPhone
+         notch / home indicator; maximum-scale=1 stops iOS auto-zooming when
+         the composer (sub-16px font) is focused. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1"
+    />
   </head>
   <body>
     <div id="root"></div>
