@@ -9,9 +9,11 @@ import {
   NativeSelect,
   Portal,
   SegmentGroup,
+  Switch,
   Text,
 } from '@chakra-ui/react';
 import { RefreshCw, SlidersHorizontal } from 'lucide-react';
+import QRCode from 'qrcode';
 import { Sidebar } from './Sidebar';
 import { SquareLoader } from './SquareLoader';
 import { Workspace } from './Workspace';
@@ -492,14 +494,264 @@ const MONO_FONT_OPTIONS: Array<{ label: string; value: string }> = [
   { label: 'Monaco', value: 'Monaco, monospace' },
 ];
 
-function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [cleanup, setCleanup] = useState<CleanupState>({ status: 'idle' });
+// Remote access: lets a phone reach this Grove over Tailscale. The toggle and
+// status come from the Electron main process (window.grove.remote) — flipping
+// it restarts the backend daemon. See electron/src/remote.ts.
+function RemoteAccessSection() {
+  const [status, setStatus] = useState<RemoteStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [qr, setQr] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    window.grove?.remote?.status().then((s) => {
+      if (!cancelled) setStatus(s);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const url = status?.enabled ? status.url : null;
+  useEffect(() => {
+    if (!url) {
+      setQr(null);
+      return;
+    }
+    let cancelled = false;
+    QRCode.toDataURL(url, { width: 176, margin: 1 })
+      .then((d) => !cancelled && setQr(d))
+      .catch(() => !cancelled && setQr(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+
+  // Remote access is a desktop-only control: the phone-side UI (served by the
+  // daemon) has no Electron IPC bridge, so just explain where to find it.
+  if (!window.grove?.remote) {
+    return (
+      <Text fontSize="12px" color="#7d8590">
+        Remote access can only be managed from the Grove desktop app.
+      </Text>
+    );
+  }
+
+  const onToggle = async (next: boolean) => {
+    // Toggling rebinds the daemon, which can only happen by restarting it —
+    // and that kills every running PTY. Make sure the user expects it.
+    const ok = window.confirm(
+      `${next ? 'Enable' : 'Disable'} remote access?\n\n` +
+        'This restarts the Grove backend, which closes every running terminal session.',
+    );
+    if (!ok) return;
+    setBusy(true);
+    try {
+      setStatus(await window.grove!.remote.setEnabled(next));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyUrl = () => {
+    if (!status?.url) return;
+    void navigator.clipboard?.writeText(status.url).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
+  return (
+    <>
+      <Flex align="center" justify="space-between" mb="1">
+        <Text fontSize="13px" color="#f0f6fc">
+          Allow connections from your phone
+        </Text>
+        <Switch.Root
+          colorPalette="green"
+          checked={status?.enabled ?? false}
+          disabled={busy || !status}
+          onCheckedChange={(e) => onToggle(e.checked)}
+        >
+          <Switch.HiddenInput />
+          <Switch.Control>
+            <Switch.Thumb />
+          </Switch.Control>
+        </Switch.Root>
+      </Flex>
+      <Text fontSize="11px" color="#7d8590" mb="2">
+        Reach this Grove from your phone over Tailscale. Connections are limited to your
+        tailnet and require the one-time access token below.
+      </Text>
+      {busy && (
+        <Text fontSize="12px" color="#7d8590">
+          Restarting backend…
+        </Text>
+      )}
+      {!busy && status?.enabled && status.url && (
+        <Flex gap="3" align="flex-start">
+          {qr && (
+            <img
+              src={qr}
+              width={128}
+              height={128}
+              alt="Connect QR code"
+              style={{ borderRadius: 6, background: '#fff', padding: 4, flexShrink: 0 }}
+            />
+          )}
+          <Box flex="1" minW="0">
+            <Text fontSize="11px" color="#7d8590" mb="1">
+              Scan the code, or open this URL on your phone:
+            </Text>
+            <Box
+              fontFamily="var(--grove-mono)"
+              fontSize="11px"
+              color="#c9d1d9"
+              bg="#0d1117"
+              border="1px solid #30363d"
+              borderRadius="4px"
+              px="2"
+              py="1.5"
+              mb="2"
+              wordBreak="break-all"
+            >
+              {status.url}
+            </Box>
+            <button
+              onClick={copyUrl}
+              style={{
+                background: 'transparent',
+                border: '1px solid #30363d',
+                color: '#c9d1d9',
+                cursor: 'pointer',
+                padding: '4px 12px',
+                borderRadius: 4,
+                fontSize: 12,
+              }}
+            >
+              {copied ? 'Copied' : 'Copy URL'}
+            </button>
+          </Box>
+        </Flex>
+      )}
+      {!busy && status?.enabled && !status.url && (
+        <Text fontSize="12px" color="#d29922">
+          Tailscale isn't running, so there's no address to connect to yet. Remote mode is on
+          — start Tailscale and reopen Settings to get the connect URL.
+        </Text>
+      )}
+    </>
+  );
+}
+
+function AppearanceSection() {
   const monoFontFamily = useStore((s) => s.monoFontFamily);
   const monoFontSize = useStore((s) => s.monoFontSize);
   const setMonoFontFamily = useStore((s) => s.setMonoFontFamily);
   const setMonoFontSize = useStore((s) => s.setMonoFontSize);
+  return (
+    <>
+      <Flex align="center" gap="3" mb="3">
+        <Text fontSize="12px" color="#7d8590" w="80px" flexShrink={0}>
+          Font family
+        </Text>
+        <Box flex="1">
+          <NativeSelect.Root size="sm">
+            <NativeSelect.Field
+              value={monoFontFamily}
+              onChange={(e) => setMonoFontFamily(e.target.value)}
+              bg="#0d1117"
+              color="#c9d1d9"
+              borderColor="#30363d"
+              fontSize="12px"
+            >
+              {MONO_FONT_OPTIONS.map((opt) => (
+                <option key={opt.label} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </NativeSelect.Field>
+            <NativeSelect.Indicator color="#7d8590" />
+          </NativeSelect.Root>
+        </Box>
+      </Flex>
+      <Flex align="center" gap="3">
+        <Text fontSize="12px" color="#7d8590" w="80px" flexShrink={0}>
+          Font size
+        </Text>
+        <input
+          type="number"
+          min={8}
+          max={28}
+          value={monoFontSize}
+          onChange={(e) => setMonoFontSize(Number(e.target.value) || 13)}
+          style={{
+            width: 64,
+            background: '#0d1117',
+            color: '#c9d1d9',
+            border: '1px solid #30363d',
+            borderRadius: 4,
+            padding: '4px 8px',
+            fontSize: 12,
+            outline: 'none',
+          }}
+        />
+        <Text fontSize="11px" color="#7d8590">
+          px
+        </Text>
+        <Box flex="1" />
+        <Text
+          color="#c9d1d9"
+          style={{
+            fontFamily:
+              monoFontFamily ||
+              "'Hack', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Menlo, Monaco, monospace",
+            fontSize: `${monoFontSize}px`,
+          }}
+        >
+          The quick brown fox 0123
+        </Text>
+      </Flex>
+    </>
+  );
+}
+
+function TabsSection() {
   const newTabMode = useStore((s) => s.newTabMode);
   const setNewTabMode = useStore((s) => s.setNewTabMode);
+  return (
+    <Grid templateColumns="100px 1fr" gap="3" alignItems="center">
+      <Text fontSize="12px" color="#7d8590">
+        New tab opens as
+      </Text>
+      <Box>
+        <SegmentGroup.Root
+          size="xs"
+          value={newTabMode}
+          onValueChange={(e) => {
+            if (e.value) setNewTabMode(e.value as NewTabMode);
+          }}
+        >
+          <SegmentGroup.Indicator />
+          <SegmentGroup.Items
+            items={[
+              { value: 'shell', label: 'Shell' },
+              { value: 'claude', label: 'Claude' },
+            ]}
+          />
+        </SegmentGroup.Root>
+        <Text fontSize="11px" color="#7d8590" mt="1.5">
+          Claude mode auto-runs <code>claude</code> in new tabs. Requires Claude Code installed
+          and authenticated.
+        </Text>
+      </Box>
+    </Grid>
+  );
+}
+
+function MaintenanceSection() {
+  const [cleanup, setCleanup] = useState<CleanupState>({ status: 'idle' });
 
   const refresh = async () => {
     if (!window.grove?.workspace) return;
@@ -520,11 +772,10 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
     }
   };
 
-  // Re-scan each time the dialog opens (don't keep stale lists after deletes
-  // or closures from other surfaces).
+  // Scan once when the section is first shown.
   useEffect(() => {
-    if (open) refresh();
-  }, [open]);
+    refresh();
+  }, []);
 
   const deleteAll = async () => {
     if (cleanup.status !== 'list' || !window.grove?.workspace) return;
@@ -533,6 +784,154 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
     const res = await window.grove.workspace.deleteBranches({ entries });
     setCleanup({ status: 'done', deleted: res.deleted, errors: res.errors });
   };
+
+  if (!window.grove?.workspace) {
+    return (
+      <Text fontSize="12px" color="#7d8590">
+        Branch cleanup can only be managed from the Grove desktop app.
+      </Text>
+    );
+  }
+
+  return (
+    <>
+      <Flex align="center" justify="space-between" mb="1">
+        <Text fontSize="13px" color="#f0f6fc">
+          Grove branches
+        </Text>
+        {(cleanup.status === 'list' || cleanup.status === 'done') && (
+          <IconButton
+            aria-label="Refresh"
+            onClick={refresh}
+            variant="outline"
+            size="xs"
+            borderColor="#30363d"
+            color="#c9d1d9"
+            _hover={{ bg: '#21262d' }}
+          >
+            <RefreshCw size={14} strokeWidth={1.6} />
+          </IconButton>
+        )}
+      </Flex>
+      <Text fontSize="11px" color="#7d8590" mb="3">
+        Orphan grove/* branches and worktree directories with no live workspace backing them.
+      </Text>
+      {cleanup.status === 'loading' && (
+        <Text fontSize="12px" color="#7d8590">
+          Scanning…
+        </Text>
+      )}
+      {cleanup.status === 'empty' && (
+        <Text fontSize="12px" color="#c9d1d9">
+          Nothing to clean up.
+        </Text>
+      )}
+      {cleanup.status === 'list' && (
+        <>
+          <Box border="1px solid #30363d" borderRadius="6px" maxH="280px" overflowY="auto" mb="3">
+            {cleanup.entries.map((e) => (
+              <Flex
+                key={`${e.repoRoot}\0${e.branch}`}
+                px="3"
+                py="2"
+                borderBottom="1px solid #21262d"
+                align="center"
+                gap="2"
+              >
+                <Box flex="1" minW="0">
+                  <Text
+                    fontSize="12px"
+                    color="#f0f6fc"
+                    fontFamily="var(--grove-mono)"
+                    truncate
+                    title={`${e.branch}\n${shortPath(e.repoRoot)}`}
+                  >
+                    {e.branch}
+                  </Text>
+                  <Text fontSize="10px" color="#7d8590" truncate>
+                    {shortPath(e.repoRoot)}
+                  </Text>
+                </Box>
+                {e.worktreePath && (
+                  <Text
+                    fontSize="10px"
+                    color="#d29922"
+                    fontFamily="var(--grove-mono)"
+                    flexShrink={0}
+                    title={shortPath(e.worktreePath)}
+                  >
+                    orphan worktree
+                  </Text>
+                )}
+              </Flex>
+            ))}
+          </Box>
+          <button
+            onClick={deleteAll}
+            style={{
+              background: 'transparent',
+              border: '1px solid #30363d',
+              color: '#c9d1d9',
+              cursor: 'pointer',
+              padding: '4px 12px',
+              borderRadius: 4,
+              fontSize: 12,
+            }}
+          >
+            Delete {cleanup.entries.length} {cleanup.entries.length === 1 ? 'entry' : 'entries'}
+          </button>
+        </>
+      )}
+      {cleanup.status === 'done' && (
+        <>
+          <Text fontSize="12px" color="#c9d1d9">
+            Deleted {cleanup.deleted} branch{cleanup.deleted === 1 ? '' : 'es'}.
+          </Text>
+          {cleanup.errors.length > 0 && (
+            <Box mt="2">
+              <Text fontSize="11px" color="#f85149" mb="1">
+                {cleanup.errors.length} failed:
+              </Text>
+              {cleanup.errors.map((err) => (
+                <Text
+                  key={err.branch}
+                  fontSize="10px"
+                  color="#7d8590"
+                  fontFamily="var(--grove-mono)"
+                  mb="0.5"
+                >
+                  {err.branch} — {err.message}
+                </Text>
+              ))}
+            </Box>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
+// Settings is a two-pane dialog: a category list on the left, the selected
+// category's controls on the right. Each category is its own component so it
+// mounts fresh (and re-reads its data) when navigated to.
+const SETTINGS_SECTIONS = [
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'tabs', label: 'Tabs' },
+  { id: 'remote', label: 'Remote access' },
+  { id: 'maintenance', label: 'Maintenance' },
+] as const;
+
+type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
+
+function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [section, setSection] = useState<SettingsSectionId>('appearance');
+
+  // Always land on the first category when the dialog is reopened.
+  useEffect(() => {
+    if (open) setSection('appearance');
+  }, [open]);
+
+  const activeLabel = SETTINGS_SECTIONS.find((s) => s.id === section)?.label ?? '';
 
   return (
     <Dialog.Root
@@ -550,9 +949,9 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
             border="1px solid #30363d"
             borderRadius="8px"
             boxShadow="0 20px 60px rgba(0,0,0,0.6)"
-            w="520px"
-            h="560px"
-            maxW="520px"
+            w="700px"
+            h="520px"
+            maxW="700px"
             display="flex"
             flexDirection="column"
           >
@@ -571,223 +970,47 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
                 <CloseButton size="sm" color="#7d8590" />
               </Dialog.CloseTrigger>
             </Dialog.Header>
-            <Dialog.Body flex="1" overflowY="auto" px="4" py="3">
-              <Text fontSize="13px" color="#f0f6fc" fontWeight="600" mb="2">
-                Appearance
-              </Text>
-              <Flex align="center" gap="3" mb="2">
-                <Text fontSize="12px" color="#7d8590" w="80px" flexShrink={0}>
-                  Font family
-                </Text>
-                <Box flex="1">
-                  <NativeSelect.Root size="sm">
-                    <NativeSelect.Field
-                      value={monoFontFamily}
-                      onChange={(e) => setMonoFontFamily(e.target.value)}
-                      bg="#0d1117"
-                      color="#c9d1d9"
-                      borderColor="#30363d"
-                      fontSize="12px"
-                    >
-                      {MONO_FONT_OPTIONS.map((opt) => (
-                        <option key={opt.label} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </NativeSelect.Field>
-                    <NativeSelect.Indicator color="#7d8590" />
-                  </NativeSelect.Root>
-                </Box>
-              </Flex>
-              <Flex align="center" gap="3" mb="4">
-                <Text fontSize="12px" color="#7d8590" w="80px" flexShrink={0}>
-                  Font size
-                </Text>
-                <input
-                  type="number"
-                  min={8}
-                  max={28}
-                  value={monoFontSize}
-                  onChange={(e) => setMonoFontSize(Number(e.target.value) || 13)}
-                  style={{
-                    width: 64,
-                    background: '#0d1117',
-                    color: '#c9d1d9',
-                    border: '1px solid #30363d',
-                    borderRadius: 4,
-                    padding: '4px 8px',
-                    fontSize: 12,
-                    outline: 'none',
-                  }}
-                />
-                <Text fontSize="11px" color="#7d8590">
-                  px
-                </Text>
-                <Box flex="1" />
-                <Text
-                  color="#c9d1d9"
-                  style={{
-                    fontFamily:
-                      monoFontFamily ||
-                      "'Hack', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Menlo, Monaco, monospace",
-                    fontSize: `${monoFontSize}px`,
-                  }}
-                >
-                  The quick brown fox 0123
-                </Text>
-              </Flex>
-              <Box borderTop="1px solid #30363d" my="3" />
-              <Text fontSize="13px" color="#f0f6fc" fontWeight="600" mb="2">
-                Tabs
-              </Text>
-              <Grid templateColumns="80px 1fr" gap="3" alignItems="center" mb="4">
-                <Text fontSize="12px" color="#7d8590">
-                  New tab opens as
-                </Text>
-                <Box>
-                  <SegmentGroup.Root
-                    size="sm"
-                    value={newTabMode}
-                    onValueChange={(e) => {
-                      if (e.value) setNewTabMode(e.value as NewTabMode);
-                    }}
-                  >
-                    <SegmentGroup.Indicator />
-                    <SegmentGroup.Items
-                      items={[
-                        { value: 'shell', label: 'Shell' },
-                        { value: 'claude', label: 'Claude' },
-                      ]}
-                    />
-                  </SegmentGroup.Root>
-                  <Text fontSize="11px" color="#7d8590" mt="1.5">
-                    Claude mode auto-runs <code>claude</code> in new tabs. Requires Claude Code
-                    installed and authenticated.
-                  </Text>
-                </Box>
-              </Grid>
-              <Box borderTop="1px solid #30363d" my="3" />
-              <Flex align="center" justify="space-between" mb="2">
-                <Text fontSize="13px" color="#f0f6fc" fontWeight="600">
-                  Clean up Grove branches
-                </Text>
-                {(cleanup.status === 'list' || cleanup.status === 'done') && (
-                  <IconButton
-                    aria-label="Refresh"
-                    onClick={refresh}
-                    variant="outline"
-                    size="xs"
-                    borderColor="#30363d"
-                    color="#c9d1d9"
-                    _hover={{ bg: '#21262d' }}
-                  >
-                    <RefreshCw size={14} strokeWidth={1.6} />
-                  </IconButton>
-                )}
-              </Flex>
-              <Text fontSize="11px" color="#7d8590" mb="3">
-                Orphan grove/* branches and worktree directories with no live workspace backing
-                them.
-              </Text>
-              {cleanup.status === 'loading' && (
-                <Text fontSize="12px" color="#7d8590">
-                  Scanning…
-                </Text>
-              )}
-              {cleanup.status === 'empty' && (
-                <Text fontSize="12px" color="#c9d1d9">
-                  Nothing to clean up.
-                </Text>
-              )}
-              {cleanup.status === 'list' && (
-                <>
+            <Flex flex="1" minH="0">
+              <Box
+                w="176px"
+                flexShrink={0}
+                borderRight="1px solid #30363d"
+                py="3"
+                px="2"
+                overflowY="auto"
+              >
+                {SETTINGS_SECTIONS.map((s) => (
                   <Box
-                    border="1px solid #30363d"
+                    as="button"
+                    key={s.id}
+                    onClick={() => setSection(s.id)}
+                    w="100%"
+                    textAlign="left"
+                    px="3"
+                    py="2"
+                    mb="0.5"
                     borderRadius="6px"
-                    maxH="280px"
-                    overflowY="auto"
-                    mb="3"
+                    fontSize="13px"
+                    cursor="pointer"
+                    bg={section === s.id ? '#21262d' : 'transparent'}
+                    color={section === s.id ? '#f0f6fc' : '#7d8590'}
+                    fontWeight={section === s.id ? '600' : '400'}
+                    _hover={{ bg: section === s.id ? '#21262d' : '#1c2128', color: '#c9d1d9' }}
                   >
-                    {cleanup.entries.map((e) => (
-                      <Flex
-                        key={`${e.repoRoot}\0${e.branch}`}
-                        px="3"
-                        py="2"
-                        borderBottom="1px solid #21262d"
-                        align="center"
-                        gap="2"
-                      >
-                        <Box flex="1" minW="0">
-                          <Text
-                            fontSize="12px"
-                            color="#f0f6fc"
-                            fontFamily="var(--grove-mono)"
-                            truncate
-                            title={`${e.branch}\n${shortPath(e.repoRoot)}`}
-                          >
-                            {e.branch}
-                          </Text>
-                          <Text fontSize="10px" color="#7d8590" truncate>
-                            {shortPath(e.repoRoot)}
-                          </Text>
-                        </Box>
-                        {e.worktreePath && (
-                          <Text
-                            fontSize="10px"
-                            color="#d29922"
-                            fontFamily="var(--grove-mono)"
-                            flexShrink={0}
-                            title={shortPath(e.worktreePath)}
-                          >
-                            orphan worktree
-                          </Text>
-                        )}
-                      </Flex>
-                    ))}
+                    {s.label}
                   </Box>
-                  <button
-                    onClick={deleteAll}
-                    style={{
-                      background: 'transparent',
-                      border: '1px solid #30363d',
-                      color: '#c9d1d9',
-                      cursor: 'pointer',
-                      padding: '4px 12px',
-                      borderRadius: 4,
-                      fontSize: 12,
-                    }}
-                  >
-                    Delete {cleanup.entries.length}{' '}
-                    {cleanup.entries.length === 1 ? 'entry' : 'entries'}
-                  </button>
-                </>
-              )}
-              {cleanup.status === 'done' && (
-                <>
-                  <Text fontSize="12px" color="#c9d1d9">
-                    Deleted {cleanup.deleted} branch{cleanup.deleted === 1 ? '' : 'es'}.
-                  </Text>
-                  {cleanup.errors.length > 0 && (
-                    <Box mt="2">
-                      <Text fontSize="11px" color="#f85149" mb="1">
-                        {cleanup.errors.length} failed:
-                      </Text>
-                      {cleanup.errors.map((err) => (
-                        <Text
-                          key={err.branch}
-                          fontSize="10px"
-                          color="#7d8590"
-                          fontFamily="var(--grove-mono)"
-                          mb="0.5"
-                        >
-                          {err.branch} — {err.message}
-                        </Text>
-                      ))}
-                    </Box>
-                  )}
-                </>
-              )}
-            </Dialog.Body>
+                ))}
+              </Box>
+              <Box flex="1" minW="0" overflowY="auto" px="5" py="4">
+                <Text fontSize="15px" color="#f0f6fc" fontWeight="600" mb="4">
+                  {activeLabel}
+                </Text>
+                {section === 'appearance' && <AppearanceSection />}
+                {section === 'tabs' && <TabsSection />}
+                {section === 'remote' && <RemoteAccessSection />}
+                {section === 'maintenance' && <MaintenanceSection />}
+              </Box>
+            </Flex>
           </Dialog.Content>
         </Dialog.Positioner>
       </Portal>

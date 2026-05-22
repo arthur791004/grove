@@ -37,11 +37,20 @@ async function pingHealth(): Promise<boolean> {
   }
 }
 
+// Both backend/dist and frontend/dist are in the electron-builder asarUnpack
+// list, so in packaged builds their resolved paths point inside app.asar and
+// must be rewritten to the on-disk app.asar.unpacked copy.
+function toUnpacked(p: string): string {
+  return p.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
+}
+
 function resolveDaemonEntry(): string {
-  // In packaged builds the daemon lives under app.asar.unpacked (see the
-  // electron-builder asarUnpack list) so spawn can find a real on-disk path.
-  const raw = path.resolve(__dirname, '../../backend/dist/daemon.js');
-  return raw.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
+  return toUnpacked(path.resolve(__dirname, '../../backend/dist/daemon.js'));
+}
+
+// The built renderer the daemon serves over HTTP when remote mode is on.
+function resolveFrontendDist(): string {
+  return toUnpacked(path.resolve(__dirname, '../../frontend/dist'));
 }
 
 function spawnDaemon(): void {
@@ -54,6 +63,8 @@ function spawnDaemon(): void {
       // Electron binary needs this to behave as plain Node for the daemon script.
       ELECTRON_RUN_AS_NODE: '1',
       GROVE_BACKEND_PORT: String(PORT),
+      // Remote mode serves this bundle; the daemon ignores it unless enabled.
+      GROVE_FRONTEND_DIST: resolveFrontendDist(),
     },
   });
   child.unref();
@@ -80,6 +91,15 @@ export async function ensureDaemon(): Promise<void> {
   spawnDaemon();
   await waitForDaemon();
   console.log(`[grove] daemon ready (pid ${readPid() ?? '?'})`);
+}
+
+// Stop and respawn the daemon so it re-reads ~/.grove/remote.json and rebinds.
+// A live Fastify listener can't change its bind host, so toggling remote mode
+// necessarily restarts the process — which kills every running PTY session.
+export async function restartDaemon(): Promise<void> {
+  await shutdownDaemon();
+  spawnDaemon();
+  await waitForDaemon();
 }
 
 export async function shutdownDaemon(timeoutMs = 2000): Promise<void> {

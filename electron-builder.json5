@@ -16,8 +16,11 @@
     // node-pty is native — its prebuilt binary must live on disk so dlopen
     // can load it. Backend code is unpacked too because main spawns it as a
     // child node process, which can't read from inside an asar archive.
+    // frontend/dist is unpacked for the same reason: in remote mode the
+    // daemon serves it with @fastify/static, reading the files from disk.
     '**/node_modules/node-pty/**',
     'backend/**',
+    'frontend/dist/**',
   ],
 
   directories: {

@@ -50,6 +50,7 @@ import type {
   StatusRequest,
 } from './worktree/ipc';
 import type { WorktreeStatus } from './worktree/git';
+import type { RemoteStatus } from './remote';
 
 contextBridge.exposeInMainWorld('grove', {
   pickFolder: (): Promise<string | null> => ipcRenderer.invoke('grove:pick-folder'),
@@ -131,5 +132,10 @@ contextBridge.exposeInMainWorld('grove', {
     writePlaywrightConfig: (tabId: string): Promise<string | null> =>
       ipcRenderer.invoke('mcp:writePlaywrightConfig', tabId),
     deleteConfig: (tabId: string): Promise<void> => ipcRenderer.invoke('mcp:deleteConfig', tabId),
+  },
+  remote: {
+    status: (): Promise<RemoteStatus> => ipcRenderer.invoke('grove:remote-status'),
+    setEnabled: (enabled: boolean): Promise<RemoteStatus> =>
+      ipcRenderer.invoke('grove:remote-set', enabled),
   },
 });

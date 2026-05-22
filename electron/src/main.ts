@@ -17,7 +17,8 @@ import { pathToFileURL } from 'node:url';
 import { inspect } from 'node:util';
 import { registerWorktreeHandlers } from './worktree/ipc';
 import { atomicWriteFile } from './atomicWrite';
-import { ensureDaemon, shutdownDaemon } from './daemon';
+import { ensureDaemon, shutdownDaemon, restartDaemon } from './daemon';
+import { remoteStatus, setRemoteEnabled } from './remote';
 import { startCdpProxy, type CdpProxyHandle } from './cdpProxy';
 import { writePlaywrightMcpConfig, deleteMcpConfig, pruneStaleMcpConfigs } from './mcpConfig';
 
@@ -240,6 +241,25 @@ ipcMain.handle('grove:pick-folder', async () => {
   });
   if (result.canceled || !result.filePaths.length) return null;
   return result.filePaths[0];
+});
+
+// --- Remote access ---------------------------------------------------------
+// Lets a phone (or any device on the user's Tailscale network) reach the
+// daemon. Toggling rewrites ~/.grove/remote.json and restarts the daemon so it
+// rebinds — see electron/src/remote.ts and backend/src/server.ts.
+ipcMain.handle('grove:remote-status', () => remoteStatus());
+
+ipcMain.handle('grove:remote-set', async (_e, enabled: unknown) => {
+  setRemoteEnabled(enabled === true);
+  // In dev the backend is `npm run dev`, not the daemon — nothing to restart.
+  if (!process.env.GROVE_DEV_URL) {
+    try {
+      await restartDaemon();
+    } catch (err) {
+      logLine(`[grove] restartDaemon failed: ${err instanceof Error ? err.stack : String(err)}`);
+    }
+  }
+  return remoteStatus();
 });
 
 // --- Embedded browser (BrowserPanel) ---------------------------------------

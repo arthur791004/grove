@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { startServer } from './server.js';
+import { readRemoteConfig } from './remoteConfig.js';
 
 const GROVE_DIR = path.join(os.homedir(), '.grove');
 const PID_FILE = path.join(GROVE_DIR, 'daemon.pid');
@@ -89,10 +90,30 @@ async function startDaemon(): Promise<void> {
     );
   });
 
+  // Remote mode (toggled from Settings, persisted to ~/.grove/remote.json):
+  // bind 0.0.0.0 so the daemon is reachable over Tailscale, and serve the
+  // renderer bundle whose path Electron passes in GROVE_FRONTEND_DIST. The
+  // token + Tailscale-range checks in startServer are what actually gate it.
+  const remote = readRemoteConfig();
+  const remoteEnabled = remote?.enabled === true;
+  const staticRoot = process.env.GROVE_FRONTEND_DIST;
+  if (remoteEnabled && !staticRoot) {
+    console.warn(
+      '[daemon] remote mode enabled but GROVE_FRONTEND_DIST is unset — remote clients will be rejected',
+    );
+  }
+  const host = remoteEnabled ? '0.0.0.0' : '127.0.0.1';
+
   console.log(
-    `[daemon] starting on 127.0.0.1:${PORT} (pid ${process.pid}, node ${process.versions.node})`,
+    `[daemon] starting on ${host}:${PORT} (pid ${process.pid}, node ${process.versions.node})` +
+      (remoteEnabled ? ' [remote mode]' : ''),
   );
-  await startServer({ port: PORT });
+  await startServer({
+    port: PORT,
+    host,
+    staticRoot: remoteEnabled ? staticRoot : undefined,
+    remoteToken: remoteEnabled ? remote?.token : undefined,
+  });
   console.log(`[daemon] ready`);
 }
 

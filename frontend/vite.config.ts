@@ -4,7 +4,9 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   base: './',
-  server: { port: 5173, host: '127.0.0.1' },
+  // GROVE_HOST=0.0.0.0 exposes the dev server on the LAN / Tailscale so a
+  // phone can load the UI; unset, it stays localhost-only as before.
+  server: { port: 5173, host: process.env.GROVE_HOST ?? '127.0.0.1' },
   build: {
     outDir: 'dist',
     rollupOptions: {

@@ -64,8 +64,20 @@ declare global {
         writePlaywrightConfig(tabId: string): Promise<string | null>;
         deleteConfig(tabId: string): Promise<void>;
       };
+      remote: {
+        status(): Promise<RemoteStatus>;
+        setEnabled(enabled: boolean): Promise<RemoteStatus>;
+      };
     };
   }
+
+  type RemoteStatus = {
+    enabled: boolean;
+    token: string | null;
+    tailscaleIp: string | null;
+    port: number;
+    url: string | null;
+  };
 }
 
 export {};
