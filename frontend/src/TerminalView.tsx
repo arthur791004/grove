@@ -971,7 +971,10 @@ export function TerminalView({ tabId, active }: Props) {
           }
         }
         if (rawMode) t?.focus();
-        else if (!isRunning) inputRef.current?.focus();
+        // Focus the prompt textarea even when a block is running: it now
+        // doubles as line-buffered stdin for password prompts and the like,
+        // so the user can start typing as soon as scp asks.
+        else inputRef.current?.focus();
       });
     }
   }, [rawMode, active, isRunning]);
@@ -1597,14 +1600,34 @@ export function TerminalView({ tabId, active }: Props) {
             <textarea
               ref={inputRef}
               value={input}
-              readOnly={!!runningBlock}
               rows={1}
               onChange={(e) => {
                 setInput(e.target.value);
                 setHistoryIndex(null);
               }}
               onKeyDown={(e) => {
-                if (runningBlock) return;
+                // While a non-raw block is running the textarea doubles as a
+                // line-buffered stdin: scp/ssh/sudo password prompts, `read -p`,
+                // npm yes/no prompts — none of these trip raw-mode detection,
+                // so without this they're unreachable. Enter sends the typed
+                // line + \n to the PTY; Ctrl+C / Ctrl+D still signal. Skip the
+                // composer-only logic (history walk, dropdown, autocomplete)
+                // since the user isn't typing the next command yet.
+                if (runningBlock) {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    send(input + '\n');
+                    setInput('');
+                    return;
+                  }
+                  if (e.ctrlKey && (e.key === 'c' || e.key === 'd')) {
+                    e.preventDefault();
+                    send(e.key === 'c' ? '\x03' : '\x04');
+                    if (e.key === 'c') setInput('');
+                    return;
+                  }
+                  return;
+                }
                 onKeyDown(e);
                 requestAnimationFrame(updateCaret);
               }}
