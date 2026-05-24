@@ -18,6 +18,7 @@ import { PinBar } from './PinBar';
 import { MobileKeyBar } from './MobileKeyBar';
 import { BranchIcon, DiffIcon, FileIcon, FolderIcon, NodeIcon, PrIcon, ScriptIcon } from './icons';
 import { useIsMobile } from './useViewport';
+import { Tooltip } from './Tooltip';
 
 const ALT_ON = /\x1b\[\?(?:1049|47|1047)h/g;
 const ALT_OFF = /\x1b\[\?(?:1049|47|1047)l/g;
@@ -336,6 +337,7 @@ export function TerminalView({ tabId, active }: Props) {
   // ArrowDown past the newest match so it feels like fish/zsh substring-search.
   const [historyPrefix, setHistoryPrefix] = useState<string>('');
   const isRunning = useStore((s) => !!s.runningCmds[tabId]);
+  const tabKind = useStore((s) => s.tabs.find((t) => t.id === tabId)?.kind);
   const isMobile = useIsMobile();
   const cmdHeld = useCmdHeld();
   const ctx = useTabContext(tabId, 0, 0, active || isRunning);
@@ -797,6 +799,23 @@ export function TerminalView({ tabId, active }: Props) {
     fitRef.current = fit;
     serializeRef.current = serialize;
 
+    // xterm.js mounts a hidden .xterm-helper-textarea that receives all key
+    // input. On iOS the soft keyboard's defaults rewrite what the user types:
+    // straight quotes become smart quotes, the first letter of a prompt gets
+    // capitalized, autocomplete inserts whole words on space. None of that is
+    // wanted inside a TUI — Claude's slash menu breaks if "/" gets autoreplaced
+    // and a prompt to "fix the bug" arrives as "Fix the bug." Strip all of it
+    // at mount; harmless on desktop where these attributes do nothing.
+    const helperTa = xtermHostRef.current.querySelector(
+      'textarea.xterm-helper-textarea',
+    ) as HTMLTextAreaElement | null;
+    if (helperTa) {
+      helperTa.setAttribute('autocorrect', 'off');
+      helperTa.setAttribute('autocapitalize', 'off');
+      helperTa.setAttribute('autocomplete', 'off');
+      helperTa.setAttribute('spellcheck', 'false');
+    }
+
     term.onData((data) => {
       // Only forward to PTY in raw mode. Otherwise xterm's auto-responses to
       // terminal queries (DA, cursor position, etc.) pollute the input stream.
@@ -886,6 +905,51 @@ export function TerminalView({ tabId, active }: Props) {
   useEffect(() => {
     rawModeRef.current = rawMode;
   }, [rawMode]);
+
+  // Pinch-to-zoom on the xterm overlay (mobile web only). Two-finger pinch
+  // scales monoFontSize, which the effect above pushes into xterm + a refit.
+  // When non-raw mode the overlay sits at zIndex -1 + visibility:hidden, so it
+  // can't receive touches — safe to keep the listener attached unconditionally
+  // on mobile. We must use native touch events with passive:false to suppress
+  // the browser's own pinch-zoom.
+  useEffect(() => {
+    if (!isMobile) return;
+    const host = xtermHostRef.current;
+    if (!host) return;
+    let startDist = 0;
+    let startSize = 0;
+    let active = false;
+    const dist = (a: Touch, b: Touch) =>
+      Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    const onStart = (e: TouchEvent) => {
+      if (e.touches.length !== 2) return;
+      startDist = dist(e.touches[0], e.touches[1]);
+      startSize = useStore.getState().monoFontSize;
+      active = startDist > 10;
+      if (active) e.preventDefault();
+    };
+    const onMove = (e: TouchEvent) => {
+      if (!active || e.touches.length !== 2) return;
+      e.preventDefault();
+      const d = dist(e.touches[0], e.touches[1]);
+      const next = Math.round(startSize * (d / startDist));
+      const store = useStore.getState();
+      if (next !== store.monoFontSize) store.setMonoFontSize(next);
+    };
+    const onEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) active = false;
+    };
+    host.addEventListener('touchstart', onStart, { passive: false });
+    host.addEventListener('touchmove', onMove, { passive: false });
+    host.addEventListener('touchend', onEnd);
+    host.addEventListener('touchcancel', onEnd);
+    return () => {
+      host.removeEventListener('touchstart', onStart);
+      host.removeEventListener('touchmove', onMove);
+      host.removeEventListener('touchend', onEnd);
+      host.removeEventListener('touchcancel', onEnd);
+    };
+  }, [isMobile]);
 
   useEffect(() => {
     if (active) {
@@ -1273,7 +1337,16 @@ export function TerminalView({ tabId, active }: Props) {
         px={isMobile ? '8px' : '24px'}
         py="4px"
       >
-        <Box ref={xtermHostRef} w="100%" h="100%" />
+        <Box
+          ref={xtermHostRef}
+          w="100%"
+          h="100%"
+          // iOS only summons the soft keyboard from a real user gesture, not a
+          // programmatic .focus(). Routing the tap through onClick → term.focus()
+          // makes that gesture explicit: any tap on the overlay re-summons the
+          // keyboard if it had collapsed (e.g. after switching tabs).
+          onClick={() => xtermRef.current?.focus()}
+        />
       </Box>
 
       {/* Initial-load overlay — shown from mount until subscribe replay
@@ -1631,6 +1704,7 @@ export function TerminalView({ tabId, active }: Props) {
           uses, so it works whether or not xterm currently holds focus. */}
       {isMobile && rawMode && (
         <MobileKeyBar
+          agent={tabKind === 'claude' ? 'claude' : undefined}
           onKey={(seq) => {
             const ws = wsRef.current;
             if (ws?.readyState === WebSocket.OPEN) {
@@ -2028,10 +2102,21 @@ function ChipStrip({ ctx, tabId }: { ctx: ReturnType<typeof useTabContext>; tabI
   // catches up. groupCwd is the workspace folder, the right pre-ready value.
   const cwd = (ctx?.cwdReady && ctx.shortCwd) || (groupCwd ? shortPath(groupCwd) : '');
   const cwdLoading = !cwd;
+  // On phone-width viewports each chip collapses to its icon — the value moves
+  // into a tooltip. Without this the long path / branch wrap inside the fixed
+  // 22px box and spill past the rounded border.
+  const compact = useIsMobile();
+  const branch = ctx?.branch
+    ? isFork && ctx.branch.startsWith('grove/')
+      ? ctx.branch.slice('grove/'.length)
+      : ctx.branch
+    : '';
   return (
     <HStack px="4" pt="3" pb="0" gap="2" bg="transparent" flexWrap="wrap">
       <Chip
         icon={<FolderIcon size={12} />}
+        compact={compact}
+        tooltip={cwdLoading ? undefined : cwd}
         label={
           cwdLoading ? (
             <Text
@@ -2046,29 +2131,69 @@ function ChipStrip({ ctx, tabId }: { ctx: ReturnType<typeof useTabContext>; tabI
           )
         }
       />
-      {ctx?.node && <Chip icon={<NodeIcon />} label={ctx.node} labelColor="#7ee787" />}
-      {ctx?.branch && (
+      {ctx?.node && (
+        <Chip
+          icon={<NodeIcon />}
+          label={ctx.node}
+          labelColor="#7ee787"
+          compact={compact}
+          tooltip={`node ${ctx.node}`}
+        />
+      )}
+      {branch && (
         <Chip
           icon={<BranchIcon size={12} />}
-          label={
-            isFork && ctx.branch.startsWith('grove/')
-              ? ctx.branch.slice('grove/'.length)
-              : ctx.branch
-          }
+          label={branch}
           labelColor="#7ee787"
+          compact={compact}
+          tooltip={`branch ${branch}`}
         />
       )}
       {ctx?.diff && ctx.diff.files > 0 && (
         <Chip
           icon={<DiffIcon />}
           label={<DiffLabel added={ctx.diff.added} removed={ctx.diff.removed} />}
+          compact={compact}
+          tooltip={`${ctx.diff.files} file${ctx.diff.files === 1 ? '' : 's'} changed · +${ctx.diff.added} −${ctx.diff.removed}`}
         />
       )}
-      {ctx?.pr && <PrChip pr={ctx.pr} />}
-      {ctx?.env?.venv && <Chip prefix="venv" label={ctx.env.venv} labelColor="#79c0ff" />}
-      {ctx?.env?.conda && <Chip prefix="conda" label={ctx.env.conda} labelColor="#d2a8ff" />}
-      {ctx?.env?.aws && <Chip prefix="aws" label={ctx.env.aws} labelColor="#f59e0b" />}
-      {ctx?.env?.k8s && <Chip prefix="k8s" label={ctx.env.k8s} labelColor="#56d4dd" />}
+      {ctx?.pr && <PrChip pr={ctx.pr} compact={compact} />}
+      {ctx?.env?.venv && (
+        <Chip
+          prefix="venv"
+          label={ctx.env.venv}
+          labelColor="#79c0ff"
+          compact={compact}
+          tooltip={`venv ${ctx.env.venv}`}
+        />
+      )}
+      {ctx?.env?.conda && (
+        <Chip
+          prefix="conda"
+          label={ctx.env.conda}
+          labelColor="#d2a8ff"
+          compact={compact}
+          tooltip={`conda ${ctx.env.conda}`}
+        />
+      )}
+      {ctx?.env?.aws && (
+        <Chip
+          prefix="aws"
+          label={ctx.env.aws}
+          labelColor="#f59e0b"
+          compact={compact}
+          tooltip={`aws ${ctx.env.aws}`}
+        />
+      )}
+      {ctx?.env?.k8s && (
+        <Chip
+          prefix="k8s"
+          label={ctx.env.k8s}
+          labelColor="#56d4dd"
+          compact={compact}
+          tooltip={`k8s ${ctx.env.k8s}`}
+        />
+      )}
     </HStack>
   );
 }
@@ -2078,22 +2203,37 @@ function Chip({
   prefix,
   label,
   labelColor,
+  tooltip,
+  compact,
 }: {
   icon?: React.ReactNode;
   prefix?: string;
   label: React.ReactNode;
   labelColor?: string;
+  tooltip?: React.ReactNode;
+  compact?: boolean;
 }) {
-  return (
+  // In compact mode the chip shrinks to just its icon (or its prefix, for the
+  // icon-less env chips) and the value lives in the tooltip. Otherwise the
+  // label stays on one line and ellipsis-truncates rather than wrapping out of
+  // the fixed-height box. tabIndex makes the collapsed chip focusable so a tap
+  // can surface the tooltip on touch devices.
+  const showLabel = !compact;
+  const showPrefix = prefix && (showLabel || !icon);
+  const body = (
     <HStack
       gap="1.5"
       px="2"
       h="22px"
+      maxW="100%"
+      flexShrink={0}
       bg="#0d1117"
       border="1px solid #21262d"
       borderRadius="5px"
       align="center"
       lineHeight="1"
+      tabIndex={compact ? 0 : undefined}
+      cursor={compact ? 'default' : undefined}
     >
       {icon && (
         <Box
@@ -2103,11 +2243,12 @@ function Chip({
           justifyContent="center"
           w="12px"
           h="12px"
+          flexShrink={0}
         >
           {icon}
         </Box>
       )}
-      {prefix && (
+      {showPrefix && (
         <Text
           fontSize="12px"
           color="#7d8590"
@@ -2115,21 +2256,29 @@ function Chip({
           fontWeight="600"
           lineHeight="1"
           textTransform="lowercase"
+          flexShrink={0}
         >
           {prefix}
         </Text>
       )}
-      <Text
-        fontSize="12px"
-        color={labelColor ?? '#c9d1d9'}
-        fontFamily="var(--grove-mono)"
-        fontWeight="500"
-        lineHeight="1"
-      >
-        {label}
-      </Text>
+      {showLabel && (
+        <Text
+          fontSize="12px"
+          color={labelColor ?? '#c9d1d9'}
+          fontFamily="var(--grove-mono)"
+          fontWeight="500"
+          lineHeight="1"
+          minW="0"
+          whiteSpace="nowrap"
+          overflow="hidden"
+          textOverflow="ellipsis"
+        >
+          {label}
+        </Text>
+      )}
     </HStack>
   );
+  return tooltip == null ? body : <Tooltip label={tooltip}>{body}</Tooltip>;
 }
 
 function CompletionDropdown({
@@ -2210,7 +2359,7 @@ function CompletionDropdown({
   );
 }
 
-function PrChip({ pr }: { pr: NonNullable<TabContext['pr']> }) {
+function PrChip({ pr, compact }: { pr: NonNullable<TabContext['pr']>; compact?: boolean }) {
   const color = pr.draft
     ? '#8b949e'
     : pr.state === 'MERGED'
@@ -2230,12 +2379,13 @@ function PrChip({ pr }: { pr: NonNullable<TabContext['pr']> }) {
       bg="transparent"
       border="none"
       p="0"
-      title={`${pr.draft ? 'Draft ' : ''}${pr.state}: ${pr.title || `#${pr.number}`}`}
     >
       <Chip
         icon={<PrIcon />}
         label={`#${pr.number}${pr.draft ? ' draft' : ''}`}
         labelColor={color}
+        compact={compact}
+        tooltip={`${pr.draft ? 'Draft ' : ''}${pr.state}: ${pr.title || `#${pr.number}`}`}
       />
     </Box>
   );
