@@ -1319,6 +1319,19 @@ export function TerminalView({ tabId, active }: Props) {
       bg="#010409"
       overflow="hidden"
       position="relative"
+      // Refocus xterm after any pointerdown inside the terminal area while in
+      // raw mode. Otherwise tapping/clicking on chrome (PinBar, chip strip, a
+      // pinned action button, the on-screen key bar) silently steals focus
+      // from xterm's helper textarea — the overlay still renders, the cursor
+      // still blinks, but keystrokes go nowhere. The focus useEffect only
+      // fires on rawMode/active/isRunning changes, so quiet focus drift wasn't
+      // covered. PointerDown unifies mouse + touch so it works on iOS / Android
+      // too; rAF lets the gesture's own focus change settle first before we
+      // override it.
+      onPointerDown={() => {
+        if (!rawMode) return;
+        requestAnimationFrame(() => xtermRef.current?.focus());
+      }}
     >
       {/* Terminal region — output, shell footer, and the raw-mode xterm
           overlay. Wrapped so the overlay's `inset: 0` stops above the pin
