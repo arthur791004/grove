@@ -32,7 +32,6 @@ import { COLOR_HEX, COLOR_ORDER } from './colors';
 import { useTabContext, subscribeAllTabContexts } from './useTabContext';
 import { API_BASE, sendSessionInput } from './api';
 import { Tooltip } from './Tooltip';
-import { AgentsFooter } from './AgentsFooter';
 import { shortPath } from './paths';
 import { GitFork, Hand, MessageSquareMore } from 'lucide-react';
 import {
@@ -210,7 +209,6 @@ export function Sidebar() {
             </DragOverlay>
           </DndContext>
         </Box>
-        <AgentsFooter />
       </Box>
     </ColorPopupContext.Provider>
   );

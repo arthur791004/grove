@@ -120,7 +120,10 @@ function isInteractiveCmd(cmd: string): boolean {
 // avoiding the IPC round-trip is cheaper.
 function notifyTabAttention(tabId: string): void {
   const st = useStore.getState();
-  if (st.activeTabId === tabId && document.hasFocus()) return;
+  // AgentsView covers the workspace, so even when this tab is "active" the
+  // user is not actually looking at the terminal. Treat that as away.
+  const visibleHere = st.activeTabId === tabId && document.hasFocus() && !st.agentsViewOpen;
+  if (visibleHere) return;
   const alreadyUnread = !!st.unreadTabs[tabId];
   st.markTabUnread(tabId);
   if (!alreadyUnread) window.grove?.notifyAttention?.();
@@ -148,7 +151,7 @@ function maybeNotifyAgentWaiting(
   if (next !== 'blocked' || prev === 'blocked') return;
   const st = useStore.getState();
   // Same "can't currently see it" gate as notifyTabAttention.
-  if (st.activeTabId === tabId && document.hasFocus()) return;
+  if (st.activeTabId === tabId && document.hasFocus() && !st.agentsViewOpen) return;
   const tab = st.tabs.find((t) => t.id === tabId);
   const group = tab && st.groups.find((g) => g.id === tab.groupId);
   window.grove?.notifyBlocked?.({

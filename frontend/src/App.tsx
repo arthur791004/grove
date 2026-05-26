@@ -13,7 +13,7 @@ import {
   Switch,
   Text,
 } from '@chakra-ui/react';
-import { RefreshCw, SlidersHorizontal } from 'lucide-react';
+import { Bot, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import QRCode from 'qrcode';
 import { useIsMobile } from './useViewport';
 import { MobileHeader } from './MobileHeader';
@@ -21,6 +21,7 @@ import { IS_ELECTRON } from './env';
 import { Sidebar } from './Sidebar';
 import { SquareLoader } from './SquareLoader';
 import { Workspace } from './Workspace';
+import { AgentsView } from './AgentsView';
 import { CommandPalette } from './CommandPalette';
 import { ReconnectBanner } from './ReconnectBanner';
 import { SessionChoiceDialog } from './SessionChoiceDialog';
@@ -48,6 +49,11 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
+  const agentsViewOpen = useStore((s) => s.agentsViewOpen);
+  const toggleAgentsView = useStore((s) => s.toggleAgentsView);
+  const blockedAgentCount = useStore(
+    (s) => Object.values(s.agentStates).filter((x) => x === 'blocked').length,
+  );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
   useEffect(() => {
@@ -110,6 +116,27 @@ export function App() {
         if (s.agentStates[r.tabId] === 'blocked') sendSessionInput(r.tabId, r.send + '\r');
       } else {
         s.setActiveTab(r.tabId);
+      }
+    });
+  }, []);
+
+  // Type a queued first message into a newly-created Claude tab once the
+  // backend agent-state ticker confirms the TUI is up. Lives at App level
+  // (not inside AgentsView) so the message still gets delivered if the user
+  // toggles the Agents View off while claude is still booting.
+  //
+  // Trigger condition: state hits 'blocked' — that's the marker for "prompt
+  // shown, accepting input". 'working' would mean claude is mid-turn and
+  // typing into it would be ignored or appended to the in-flight prompt.
+  useEffect(() => {
+    return useStore.subscribe((s, prev) => {
+      if (s.agentStates === prev.agentStates && s.pendingFirstMessages === prev.pendingFirstMessages) {
+        return;
+      }
+      for (const tabId of Object.keys(s.pendingFirstMessages)) {
+        if (s.agentStates[tabId] !== 'blocked') continue;
+        const msg = s.consumePendingFirstMessage(tabId);
+        if (msg) void sendSessionInput(tabId, msg + '\r');
       }
     });
   }, []);
@@ -181,6 +208,11 @@ export function App() {
             <SidebarToggleButton open={sidebarOpen} onClick={toggleSidebar} />
             {/* Adding a workspace needs a native folder picker — Electron only. */}
             {IS_ELECTRON && <AddWorkspaceSplitButton />}
+            <AgentsToggleButton
+              active={agentsViewOpen}
+              blocked={blockedAgentCount}
+              onClick={toggleAgentsView}
+            />
           </Flex>
           <Box flex="1" h="100%" />
           <Flex
@@ -243,7 +275,18 @@ export function App() {
               transition: 'padding-right 240ms cubic-bezier(0.22, 0.61, 0.36, 1)',
             }}
           >
-            <Workspace />
+            {/* Keep Workspace mounted even when the Agents View is showing,
+                so existing TerminalViews stay alive and new agent tabs can
+                bootstrap (spawn claude, fire agentStates) in the background
+                while the user is on the Agents View. */}
+            <Box
+              w="100%"
+              h="100%"
+              display={agentsViewOpen ? 'none' : 'block'}
+            >
+              <Workspace />
+            </Box>
+            {agentsViewOpen && <AgentsView />}
           </Box>
           <Box
             position="absolute"
@@ -363,6 +406,49 @@ function TitlebarIconButton({
     >
       {children}
     </button>
+  );
+}
+
+function AgentsToggleButton({
+  active,
+  blocked,
+  onClick,
+}: {
+  active: boolean;
+  blocked: number;
+  onClick: () => void;
+}) {
+  return (
+    <Box position="relative" display="inline-flex">
+      <TitlebarIconButton
+        active={active}
+        title={active ? 'Hide agents view' : 'Show agents view'}
+        onClick={onClick}
+      >
+        <Bot size={16} strokeWidth={1.6} />
+      </TitlebarIconButton>
+      {blocked > 0 && (
+        <Box
+          position="absolute"
+          top="0"
+          right="0"
+          minW="14px"
+          h="14px"
+          px="1"
+          borderRadius="999px"
+          bg="#f85149"
+          color="#fff"
+          fontSize="9px"
+          fontWeight={700}
+          display="flex"
+          alignItems="center"
+          justifyContent="center"
+          style={{ pointerEvents: 'none', boxShadow: '0 0 0 1.5px #0d1117' }}
+        >
+          {blocked}
+        </Box>
+      )}
+    </Box>
   );
 }
 

@@ -459,14 +459,28 @@ interface BlockedNotice {
 ipcMain.handle('grove:notify-blocked', (_e, notice: BlockedNotice) => {
   if (!Notification.isSupported() || !notice || typeof notice.tabId !== 'string') return;
   const choices = Array.isArray(notice.choices) ? notice.choices.slice(0, 6) : [];
+  // No multiple-choice prompt → claude is waiting on freeform input; offer
+  // a reply field on the notification itself (macOS only, requires the
+  // notification style to be Alert in System Settings → Notifications).
+  const hasReply = choices.length === 0;
   const n = new Notification({
     title: notice.title || 'Claude needs your input',
     subtitle: notice.workspace || undefined,
     body: notice.question || 'Claude is waiting for your response.',
     actions: choices.map((c) => ({ type: 'button', text: c.label })),
+    hasReply,
+    replyPlaceholder: hasReply ? 'Reply to Claude…' : undefined,
   });
   liveNotifications.add(n);
   n.on('close', () => liveNotifications.delete(n));
+  n.on('reply', (_ev, reply: string) => {
+    const trimmed = (reply ?? '').trim();
+    if (!trimmed) return;
+    mainWindow?.webContents.send('grove:notification-respond', {
+      tabId: notice.tabId,
+      send: trimmed,
+    });
+  });
   n.on('action', (_ev, index) => {
     const choice = choices[index];
     if (choice) {

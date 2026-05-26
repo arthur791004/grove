@@ -148,6 +148,10 @@ export interface Tab {
   // (`--resume`). Set once `claude` is bootstrapped; lets a later Claude tab
   // in the same workspace offer to join this session.
   claudeSessionId?: string;
+  // Short task label shown on the agents-view card. Set when a Claude tab is
+  // created from the agents view's "+ new agent" flow; absent on tabs that
+  // were opened from the sidebar (where `title` plays the same role).
+  agentLabel?: string;
 }
 
 export interface Group {
@@ -215,6 +219,13 @@ interface State {
   // bootstrapped into a workspace that already runs a Claude session, cleared
   // once SessionChoiceDialog launches `claude`. Transient.
   sessionChoice: SessionChoice | null;
+  // Cross-workspace agents view: takes over the main content area when open.
+  // Transient — opening it is always a deliberate action, no need to persist.
+  agentsViewOpen: boolean;
+  // First message to send into a new Claude tab once its TUI is ready (state
+  // first transitions to 'blocked' or 'working' with no pending message).
+  // Keyed by tab id; consumed once on send.
+  pendingFirstMessages: Record<string, string>;
 }
 
 export interface SessionChoice {
@@ -273,6 +284,12 @@ interface Actions {
   consumeClaudeBootstrap(tabId: string): boolean;
   setTabClaudeSession(tabId: string, sessionId: string): void;
   setSessionChoice(v: SessionChoice | null): void;
+  openAgentsView(): void;
+  closeAgentsView(): void;
+  toggleAgentsView(): void;
+  setAgentLabel(tabId: string, label: string): void;
+  setPendingFirstMessage(tabId: string, message: string): void;
+  consumePendingFirstMessage(tabId: string): string | null;
   addPin(pin: Omit<Pin, 'id'>): void;
   removePin(id: string): void;
   updatePin(id: string, patch: Partial<Omit<Pin, 'id'>>): void;
@@ -332,6 +349,8 @@ export const useStore = create<State & Actions>()(
       pins: DEFAULT_PINS,
       pendingPinDraft: null,
       sessionChoice: null,
+      agentsViewOpen: false,
+      pendingFirstMessages: {},
 
       newGroup(name, cwd = '~') {
         const id = uid();
@@ -537,6 +556,7 @@ export const useStore = create<State & Actions>()(
           const { [id]: _reply, ...agentReplies } = s.agentReplies;
           const { [id]: _prompt, ...agentPrompts } = s.agentPrompts;
           const { [id]: _boot, ...claudeBootstrapTabs } = s.claudeBootstrapTabs;
+          const { [id]: _pfm, ...pendingFirstMessages } = s.pendingFirstMessages;
           return {
             tabs: remaining,
             tabOrderByGroup: newOrder,
@@ -547,6 +567,7 @@ export const useStore = create<State & Actions>()(
             agentReplies,
             agentPrompts,
             claudeBootstrapTabs,
+            pendingFirstMessages,
           };
         });
       },
@@ -708,6 +729,34 @@ export const useStore = create<State & Actions>()(
       },
       setSessionChoice(v) {
         set({ sessionChoice: v });
+      },
+      openAgentsView() {
+        set({ agentsViewOpen: true });
+      },
+      closeAgentsView() {
+        set({ agentsViewOpen: false });
+      },
+      toggleAgentsView() {
+        set((s) => ({ agentsViewOpen: !s.agentsViewOpen }));
+      },
+      setAgentLabel(tabId, label) {
+        set((s) => ({
+          tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, agentLabel: label } : t)),
+        }));
+      },
+      setPendingFirstMessage(tabId, message) {
+        set((s) => ({
+          pendingFirstMessages: { ...s.pendingFirstMessages, [tabId]: message },
+        }));
+      },
+      consumePendingFirstMessage(tabId) {
+        const msg = get().pendingFirstMessages[tabId];
+        if (msg === undefined) return null;
+        set((s) => {
+          const { [tabId]: _drop, ...rest } = s.pendingFirstMessages;
+          return { pendingFirstMessages: rest };
+        });
+        return msg;
       },
       addPin(pin) {
         set((s) => ({ pins: [...s.pins, { ...pin, id: uid() }] }));

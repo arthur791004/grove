@@ -1,6 +1,7 @@
 import { Box, Flex, Text } from '@chakra-ui/react';
-import { Menu, SlidersHorizontal } from 'lucide-react';
+import { Bot, Menu, SlidersHorizontal } from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';
+import { useStore } from './store';
 
 // The mobile web build runs in a plain browser tab — there is no Electron
 // window chrome, so it gets a real in-app header instead of the desktop's
@@ -81,6 +82,11 @@ export function MobileHeader({
   onToggleSettings: () => void;
   isElectron: boolean;
 }) {
+  const agentsViewOpen = useStore((s) => s.agentsViewOpen);
+  const toggleAgentsView = useStore((s) => s.toggleAgentsView);
+  const blockedCount = useStore(
+    (s) => Object.values(s.agentStates).filter((x) => x === 'blocked').length,
+  );
   return (
     <Flex
       h={`${MOBILE_HEADER_HEIGHT}px`}
@@ -105,6 +111,36 @@ export function MobileHeader({
           {workspaceName}
         </Text>
       </Flex>
+      <Box position="relative" display="inline-flex">
+        <HeaderButton
+          label="Agents"
+          active={agentsViewOpen}
+          onClick={toggleAgentsView}
+        >
+          <Bot size={20} strokeWidth={1.8} />
+        </HeaderButton>
+        {blockedCount > 0 && (
+          <Box
+            position="absolute"
+            top="4px"
+            right="4px"
+            minW="14px"
+            h="14px"
+            px="1"
+            borderRadius="999px"
+            bg="#f85149"
+            color="#fff"
+            fontSize="9px"
+            fontWeight={700}
+            display="flex"
+            alignItems="center"
+            justifyContent="center"
+            style={{ pointerEvents: 'none', boxShadow: '0 0 0 1.5px #0d1117' }}
+          >
+            {blockedCount}
+          </Box>
+        )}
+      </Box>
       {panels.map((p) => (
         <HeaderButton
           key={p.id}
