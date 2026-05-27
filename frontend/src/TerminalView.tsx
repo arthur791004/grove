@@ -101,16 +101,14 @@ let blockCounter = 0;
 // Matches when one of these appears as a command token (start of string, or
 // after a pipe/semicolon/&&/&), so `git log | less` or `cd x && vim` work.
 //
-// Edge case: this is a heuristic, not real termios watching. We miss TUIs
-// invoked via aliases/wrapper scripts whose names aren't in this list AND
-// that don't emit alt-screen (?1049h) or cursor-hide (?25l). Warp solves
-// this by watching PTY termios for ICANON/ECHO flips — node-pty doesn't
-// expose termios, so the proper fix would be either an `ffi-napi` binding
-// (`tcgetattr` via libc) or backend polling of the shell's foreground
-// child process (pgrep + ps). Both are deferred; revisit if a real TUI
-// trips through unnoticed.
+// This is a fast-path heuristic. The authoritative signal comes from the
+// backend's `tty-mode` event, which polls the pty's termios via the
+// `grove-termios` native addon — when a TUI flips ICANON + ISIG both off,
+// we know a raw-reading program is in the foreground. The regex stays as a
+// 0-latency cover so the xterm overlay mounts on block-start instead of
+// 100ms later when the first termios sample lands.
 const INTERACTIVE_CMD_RE =
-  /(?:^|[|;&]\s*)(?:sudo\s+|env\s+\w+=\S+\s+)*(ssh|mosh|telnet|tmux|screen|nano|vim?|nvim|emacs|less|more|man|top|htop|btop|nload|iftop|python\d*|ipython|node|deno|bun|psql|mysql|mongosh?|redis-cli|sqlite3|gh|gum|claude|fzf|lazygit|tig|k9s)\b/;
+  /(?:^|[|;&]\s*)(?:sudo\s+|env\s+\w+=\S+\s+)*(ssh|mosh|telnet|tmux|screen|nano|vim?|nvim|emacs|less|more|man|top|htop|btop|nload|iftop|python\d*|ipython|node|deno|bun|psql|mysql|mongosh?|redis-cli|sqlite3|gh|gum|claude|fzf|lazygit|tig|k9s|fly|flyctl)\b/;
 function isInteractiveCmd(cmd: string): boolean {
   return INTERACTIVE_CMD_RE.test(cmd.trim());
 }
@@ -355,6 +353,11 @@ export function TerminalView({ tabId, active }: Props) {
   const [altScreen, setAltScreen] = useState(false);
   const [cursorHide, setCursorHide] = useState(false);
   const [forcedRaw, setForcedRaw] = useState(false);
+  // Mirrors backend's termios poll: true when the foreground program has
+  // turned the pty into raw mode (ICANON + ISIG both off). Cleared at
+  // block-end like the other raw flags so a TUI that exits without emitting
+  // ?1049l / ?25h doesn't leave the overlay stuck.
+  const [ttyRaw, setTtyRaw] = useState(false);
   // Pre-mounts the xterm overlay during subscribe replay when the backend
   // tells us the session is currently in raw mode (long-running TUI like
   // claude). Cleared on `replay-end` once the live raw stream has taken
@@ -370,8 +373,8 @@ export function TerminalView({ tabId, active }: Props) {
   // Surfaced when git refuses a branch switch because another worktree owns
   // the branch. Dismissed by the user or auto-cleared on the next block start.
   const [forkLockHint, setForkLockHint] = useState<{ branch: string } | null>(null);
-  const rawMode = altScreen || cursorHide || forcedRaw || replayRaw;
-  const rawKind: RawKind = altScreen || forcedRaw ? 'alt' : 'cursor';
+  const rawMode = altScreen || cursorHide || forcedRaw || ttyRaw || replayRaw;
+  const rawKind: RawKind = altScreen || forcedRaw || ttyRaw ? 'alt' : 'cursor';
   const rawModeRef = useRef(false);
   // True while the backend is streaming captured raw history on reattach.
   // During this window xterm fields any terminal queries the remote sent
@@ -698,9 +701,24 @@ export function TerminalView({ tabId, active }: Props) {
             setForcedRaw(false);
             setAltScreen(false);
             setCursorHide(false);
+            setTtyRaw(false);
             altCarryRef.current = '';
             rawModeRef.current = false;
             useStore.getState().setRunningCmd(tabId, null);
+          } else if (msg.type === 'tty-mode') {
+            // Backend's termios poll says the foreground program has flipped
+            // the pty into raw mode (or back out). Only act on the entry
+            // edge inside a running block: block-end will tidy the exit.
+            const nextRaw = !!msg.raw;
+            if (nextRaw && currentBlockRef.current !== null) {
+              if (!rawModeRef.current) {
+                xtermRef.current?.reset();
+                xtermRef.current?.write('\x1b[2J\x1b[H');
+              }
+              rawModeRef.current = true;
+              xtermRef.current?.scrollToBottom();
+            }
+            setTtyRaw(nextRaw && currentBlockRef.current !== null);
           } else if (msg.type === 'agent-state') {
             const prev = useStore.getState().agentStates[tabId];
             const next: AgentState | null = msg.state ?? null;

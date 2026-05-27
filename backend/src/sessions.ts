@@ -1,9 +1,24 @@
 import * as pty from 'node-pty';
 import os from 'node:os';
+import { createRequire } from 'node:module';
 import { ensureShellInitDir } from './shellInit.js';
 import { findRepoRoot, safeRun, shortPath } from './gitUtil.js';
 import { loadBlocks, saveBlocks, deleteBlocks, BlockRecord } from './blockStore.js';
 import { getPr } from './prLookup.js';
+
+// Native termios reader — lets us watch the pty's line-discipline flags and
+// detect TUIs automatically instead of relying on a hardcoded command list.
+// If the native addon failed to build the getTermios export returns null and
+// the rest of the system falls back to the frontend's regex heuristic.
+const requireCjs = createRequire(import.meta.url);
+let getTermios: (fd: number) => { icanon: boolean; echo: boolean; isig: boolean } | null = () =>
+  null;
+try {
+  const mod = requireCjs('../native/grove-termios');
+  if (typeof mod.getTermios === 'function') getTermios = mod.getTermios;
+} catch (err) {
+  console.warn('[sessions] grove-termios not loadable:', (err as Error).message);
+}
 
 type WSLike = { send(data: string): void; close(): void };
 
@@ -24,6 +39,12 @@ interface Session {
   // alone on reattach.
   altScreen: boolean;
   cursorHide: boolean;
+  // Termios-derived raw-mode flag. True when a foreground TUI has turned off
+  // both ICANON (line buffering) and ISIG (Ctrl-C → SIGINT) — the combo zsh's
+  // line editor never sets, so it cleanly distinguishes "shell at prompt"
+  // from "vim / claude / etc. running".
+  ttyRaw: boolean;
+  ttyRawTimer: NodeJS.Timeout | null;
   parseBuffer: string;
   parsedOutputBuffer: string;
   blocks: BlockRecord[];
@@ -658,6 +679,8 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
     rawBuffer: '',
     altScreen: false,
     cursorHide: false,
+    ttyRaw: false,
+    ttyRawTimer: null,
     parseBuffer: '',
     parsedOutputBuffer: '',
     blocks: loadBlocks(tabId),
@@ -681,6 +704,7 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
   });
 
   term.onExit(() => {
+    stopTtyRawPoll(session);
     for (const sub of session.subscribers) {
       try {
         sub.close();
@@ -690,7 +714,41 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
   });
 
   sessions.set(tabId, session);
+  startTtyRawPoll(session);
   return session;
+}
+
+// Poll termios on the pty master ~10×/sec. When a TUI flips the line into
+// raw mode (ICANON off + ISIG off) the new state is broadcast to subscribers
+// so the frontend can mount the xterm overlay without waiting for the
+// command name to match a hardcoded regex.
+const TTY_POLL_MS = 100;
+function startTtyRawPoll(session: Session): void {
+  const fdHolder = session.pty as unknown as { _fd?: number };
+  const fd = fdHolder._fd;
+  if (typeof fd !== 'number') return;
+  // First sample synchronously so reattach sees the right state immediately.
+  session.ttyRaw = sampleTtyRaw(fd);
+  session.ttyRawTimer = setInterval(() => {
+    const next = sampleTtyRaw(fd);
+    if (next === session.ttyRaw) return;
+    session.ttyRaw = next;
+    broadcast(session, { type: 'tty-mode', raw: next });
+  }, TTY_POLL_MS);
+  session.ttyRawTimer.unref();
+}
+
+function sampleTtyRaw(fd: number): boolean {
+  const t = getTermios(fd);
+  if (!t) return false;
+  return !t.icanon && !t.isig;
+}
+
+function stopTtyRawPoll(session: Session): void {
+  if (session.ttyRawTimer) {
+    clearInterval(session.ttyRawTimer);
+    session.ttyRawTimer = null;
+  }
 }
 
 // Window before we escalate from SIGHUP → SIGKILL. The shell normally dies
@@ -708,6 +766,7 @@ export function destroySession(tabId: string): void {
   // Remove from the map first so the onExit handler we wired in
   // getOrCreateSession can't race with us and try to clean up twice.
   sessions.delete(tabId);
+  stopTtyRawPoll(s);
   for (const sub of s.subscribers) {
     try {
       sub.close();
@@ -777,6 +836,7 @@ export function subscribe(tabId: string, ws: WSLike, cwd?: string): () => void {
       send(ws, { type: 'block-end', exit: b.exit, durationMs: b.durationMs ?? 0 });
   }
   if (s.rawBuffer) send(ws, { type: 'raw', data: s.rawBuffer });
+  send(ws, { type: 'tty-mode', raw: s.ttyRaw });
   send(ws, { type: 'replay-end' });
   // Send the current ctx (if any) so the new subscriber's chips populate
   // immediately instead of waiting for the next OSC 7 / env / block-end tick.

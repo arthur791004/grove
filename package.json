@@ -25,7 +25,7 @@
     "daemon:status": "node backend/dist/daemon.js status",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,css,html}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,css,html}\"",
-    "postinstall": "node scripts/patch-node-pty.mjs && chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true"
+    "postinstall": "node scripts/patch-node-pty.mjs && (chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true) && node scripts/build-grove-termios.mjs"
   },
   "devDependencies": {
     "electron-builder": "^26.8.1",
