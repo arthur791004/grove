@@ -26,7 +26,7 @@ import { ReconnectBanner } from './ReconnectBanner';
 import { SessionChoiceDialog } from './SessionChoiceDialog';
 import { sendSessionInput } from './api';
 import { useShortcuts } from './useShortcuts';
-import { useStore, type Group, type NewTabMode } from './store';
+import { useStore, type Group, type NewTabMode, type TabPosition } from './store';
 import { shortPath } from './paths';
 import './extensions/builtins';
 import { usePanels } from './extensions/registry';
@@ -904,6 +904,8 @@ function AppearanceSection() {
 function TabsSection() {
   const newTabMode = useStore((s) => s.newTabMode);
   const setNewTabMode = useStore((s) => s.setNewTabMode);
+  const tabPosition = useStore((s) => s.tabPosition);
+  const setTabPosition = useStore((s) => s.setTabPosition);
   return (
     <Grid templateColumns="100px 1fr" gap="3" alignItems="center">
       <Text fontSize="12px" color="#7d8590">
@@ -928,6 +930,30 @@ function TabsSection() {
         <Text fontSize="11px" color="#7d8590" mt="1.5">
           Claude mode auto-runs <code>claude</code> in new tabs. Requires Claude Code installed
           and authenticated.
+        </Text>
+      </Box>
+      <Text fontSize="12px" color="#7d8590">
+        Tab position
+      </Text>
+      <Box>
+        <SegmentGroup.Root
+          size="xs"
+          value={tabPosition}
+          onValueChange={(e) => {
+            if (e.value) setTabPosition(e.value as TabPosition);
+          }}
+        >
+          <SegmentGroup.Indicator />
+          <SegmentGroup.Items
+            items={[
+              { value: 'sidebar', label: 'Sidebar' },
+              { value: 'top', label: 'Top' },
+            ]}
+          />
+        </SegmentGroup.Root>
+        <Text fontSize="11px" color="#7d8590" mt="1.5">
+          Sidebar: tabs listed under each workspace (today's layout). Top: tabs render as a
+          strip above each pane, browser-style.
         </Text>
       </Box>
     </Grid>

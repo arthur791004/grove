@@ -28,6 +28,10 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useStore, type Tab, type Group } from './store';
+import { GroupPanels } from './SidebarPanels';
+import { getAllPanes } from './layout/treeOps';
+import type { PaneKind } from './layout/types';
+const SIDEBAR_PANEL_KINDS = new Set<PaneKind>(['diff', 'files', 'browser']);
 import { COLOR_HEX, COLOR_ORDER } from './colors';
 import { useTabContext, subscribeAllTabContexts } from './useTabContext';
 import { API_BASE, sendSessionInput } from './api';
@@ -442,6 +446,16 @@ function GroupSection({ group }: { group: Group }) {
     () => order.map((id) => tabs.find((t) => t.id === id)).filter((t): t is Tab => !!t),
     [order, tabs],
   );
+  // Surface panel panes (diff/files/browser) under the workspace in sidebar
+  // mode only — in top mode they live in per-leaf TabBars instead, so listing
+  // them here would duplicate.
+  const tabPosition = useStore((s) => s.tabPosition);
+  const showPanelsInSidebar = tabPosition === 'sidebar';
+  const groupTree = useStore((s) => s.layoutTreeByGroup[group.id]);
+  const hasPanels =
+    showPanelsInSidebar &&
+    !!groupTree &&
+    getAllPanes(groupTree).some((p) => SIDEBAR_PANEL_KINDS.has(p.kind));
 
   // Other items still shift to make space via `transform`. The dragged item
   // itself becomes invisible at source (DragOverlay renders the clean preview).
@@ -626,18 +640,21 @@ function GroupSection({ group }: { group: Group }) {
         </HStack>
       </Flex>
 
-      {groupTabs.length > 0 && (
+      {(groupTabs.length > 0 || hasPanels) && (
         <CollapsePanel open={!group.collapsed}>
-          <SortableContext
-            items={groupTabs.map((t) => `tab:${t.id}`)}
-            strategy={verticalListSortingStrategy}
-          >
-            <Flex direction="column" gap="1" pt="1">
-              {groupTabs.map((t) => (
-                <TabCard key={t.id} tab={t} workspaceBranch={workspaceBranch} />
-              ))}
-            </Flex>
-          </SortableContext>
+          {groupTabs.length > 0 && (
+            <SortableContext
+              items={groupTabs.map((t) => `tab:${t.id}`)}
+              strategy={verticalListSortingStrategy}
+            >
+              <Flex direction="column" gap="1" pt="1">
+                {groupTabs.map((t) => (
+                  <TabCard key={t.id} tab={t} workspaceBranch={workspaceBranch} />
+                ))}
+              </Flex>
+            </SortableContext>
+          )}
+          {showPanelsInSidebar && <GroupPanels groupId={group.id} />}
         </CollapsePanel>
       )}
       {isFork && groupTabs.length === 0 && !group.collapsed && (

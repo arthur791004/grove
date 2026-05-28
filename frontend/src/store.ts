@@ -88,6 +88,7 @@ export type TabColor = 'default' | 'red' | 'green' | 'yellow' | 'blue' | 'magent
 export type AgentState = 'working' | 'blocked';
 
 export type NewTabMode = 'shell' | 'claude';
+export type TabPosition = 'sidebar' | 'top';
 
 export type PinType = 'shell' | 'claude';
 export type PinScope = 'global' | 'workspace';
@@ -220,6 +221,10 @@ interface State {
   monoFontFamily: string;
   monoFontSize: number;
   newTabMode: NewTabMode;
+  // Where tab strips render: 'sidebar' = today's per-workspace list under the
+  // sidebar's workspace label (including diff/files/browser panes); 'top' =
+  // browser-style TabBar above each leaf, sidebar shows workspaces only.
+  tabPosition: TabPosition;
   // Tabs awaiting the `claude` bootstrap on next replay-end. Not persisted —
   // a queued bootstrap is meaningless once the tab's pty is recreated fresh.
   claudeBootstrapTabs: Record<string, true>;
@@ -302,6 +307,7 @@ interface Actions {
   setMonoFontFamily(v: string): void;
   setMonoFontSize(n: number): void;
   setNewTabMode(v: NewTabMode): void;
+  setTabPosition(v: TabPosition): void;
   consumeClaudeBootstrap(tabId: string): boolean;
   setTabClaudeSession(tabId: string, sessionId: string): void;
   setSessionChoice(v: SessionChoice | null): void;
@@ -312,6 +318,7 @@ interface Actions {
   // user-dragged divider persists across renders.
   resizeLayoutSplit(groupId: string, splitId: string, sizes: number[]): void;
   splitLeafInTree(groupId: string, leafId: string, dir: 'h' | 'v', pane: Pane, after: boolean): void;
+  addPaneToLeafInTree(groupId: string, leafId: string, pane: Pane): void;
   removePaneFromTree(groupId: string, paneId: string): void;
   setActivePaneInTree(groupId: string, paneId: string): void;
   setAgentLabel(tabId: string, label: string): void;
@@ -419,6 +426,7 @@ export const useStore = create<State & Actions>()(
       monoFontFamily: '',
       monoFontSize: 13,
       newTabMode: 'shell',
+      tabPosition: 'sidebar',
       claudeBootstrapTabs: {},
       pins: DEFAULT_PINS,
       pendingPinDraft: null,
@@ -839,6 +847,9 @@ export const useStore = create<State & Actions>()(
       setNewTabMode(v) {
         set({ newTabMode: v });
       },
+      setTabPosition(v) {
+        set({ tabPosition: v });
+      },
       consumeClaudeBootstrap(tabId) {
         if (!get().claudeBootstrapTabs[tabId]) return false;
         set((s) => {
@@ -879,6 +890,14 @@ export const useStore = create<State & Actions>()(
           if (!tree) return s;
           const newLeaf = makeLeaf([pane]);
           const next = splitLeafOp(tree, leafId, dir, newLeaf, after);
+          return { layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: next } };
+        });
+      },
+      addPaneToLeafInTree(groupId, leafId, pane) {
+        set((s) => {
+          const tree = s.layoutTreeByGroup[groupId];
+          if (!tree) return s;
+          const next = addPaneToLeaf(tree, leafId, pane);
           return { layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: next } };
         });
       },
@@ -1049,6 +1068,7 @@ export const useStore = create<State & Actions>()(
         monoFontFamily: s.monoFontFamily,
         monoFontSize: s.monoFontSize,
         newTabMode: s.newTabMode,
+        tabPosition: s.tabPosition,
         pins: s.pins,
         layoutTreeByGroup: s.layoutTreeByGroup,
       }),

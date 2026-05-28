@@ -11,8 +11,10 @@ import { Box, Flex } from '@chakra-ui/react';
 import { Group, Panel, Separator, type Layout } from 'react-resizable-panels';
 import { Workspace } from '../Workspace';
 import { SquareLoader } from '../SquareLoader';
+import { useStore } from '../store';
 import { usePanels } from '../extensions/registry';
 import { PaneOverlay } from './PaneOverlay';
+import { LeafTabBar } from './LeafTabBar';
 import type { LayoutNode, LeafNode, Pane } from './types';
 import { isLeaf } from './types';
 
@@ -135,13 +137,21 @@ function Leaf({
   forcedFullscreen: boolean;
   panelWidth: number;
 }) {
+  const tabPosition = useStore((s) => s.tabPosition);
   const active = leaf.panes.find((p) => p.id === leaf.activePaneId) ?? leaf.panes[0];
   if (!active) return null;
+  // In top mode every leaf gets a browser-style TabBar above its content; the
+  // PaneOverlay close/split affordance is suppressed because the TabBar
+  // already exposes both via per-tab X and the leaf's split menu.
+  const showTabBar = tabPosition === 'top';
   return (
-    <Box w="100%" h="100%" position="relative" bg="#0d1117">
-      <PaneContent pane={active} forcedFullscreen={forcedFullscreen} panelWidth={panelWidth} />
-      <PaneOverlay leaf={leaf} groupId={groupId} />
-    </Box>
+    <Flex direction="column" w="100%" h="100%" bg="#0d1117">
+      {showTabBar && <LeafTabBar leaf={leaf} groupId={groupId} />}
+      <Box flex="1" minH="0" position="relative">
+        <PaneContent pane={active} forcedFullscreen={forcedFullscreen} panelWidth={panelWidth} />
+        {!showTabBar && <PaneOverlay leaf={leaf} groupId={groupId} />}
+      </Box>
+    </Flex>
   );
 }
 
