@@ -1,6 +1,21 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { API_BASE } from './api';
+import type { LayoutNode, Pane, PaneKind } from './layout/types';
+import {
+  addPaneToLeaf,
+  findLeaf,
+  findLeafContaining,
+  getAllLeaves,
+  getAllPanes,
+  hasPaneOfKind,
+  makeLeaf,
+  removePane,
+  setActivePane,
+  splitLeaf as splitLeafOp,
+  splitRight,
+  updateSplitSizes,
+} from './layout/treeOps';
 
 // Persist the workspace/tab state. The Electron app reads/writes
 // ~/Library/Application Support/Grove/grove-state.json via IPC. The web build
@@ -222,6 +237,12 @@ interface State {
   // Cross-workspace agents view: takes over the main content area when open.
   // Transient — opening it is always a deliberate action, no need to persist.
   agentsViewOpen: boolean;
+  // Per-workspace pane tree. One LayoutNode per group; mutated alongside the
+  // legacy tabs[] / activePanelId fields. LayoutHost reads from here so the
+  // user can drag dividers, split panels off, and (slice 5) drag tabs
+  // between leaves. The legacy fields stay in sync for unmigrated consumers
+  // (Sidebar, AgentsView, useTabContext, …).
+  layoutTreeByGroup: Record<string, LayoutNode>;
   // First message to send into a new Claude tab once its TUI is ready (state
   // first transitions to 'blocked' or 'working' with no pending message).
   // Keyed by tab id; consumed once on send.
@@ -287,6 +308,12 @@ interface Actions {
   openAgentsView(): void;
   closeAgentsView(): void;
   toggleAgentsView(): void;
+  // Layout-tree mutations (slice 4+). Resize is wired in slice 3 so the
+  // user-dragged divider persists across renders.
+  resizeLayoutSplit(groupId: string, splitId: string, sizes: number[]): void;
+  splitLeafInTree(groupId: string, leafId: string, dir: 'h' | 'v', pane: Pane, after: boolean): void;
+  removePaneFromTree(groupId: string, paneId: string): void;
+  setActivePaneInTree(groupId: string, paneId: string): void;
   setAgentLabel(tabId: string, label: string): void;
   setPendingFirstMessage(tabId: string, message: string): void;
   consumePendingFirstMessage(tabId: string): string | null;
@@ -310,6 +337,53 @@ function agentPromptsEqual(a: AgentPrompt | undefined, b: AgentPrompt | undefine
     if (a.choices[i].send !== b.choices[i].send) return false;
   }
   return true;
+}
+
+// Pick the workspace the active tab belongs to, or the first one if no
+// active tab — panels open in that workspace's tree.
+function activeGroupId(s: Pick<State, 'tabs' | 'activeTabId' | 'groupOrder'>): string | null {
+  const tab = s.activeTabId ? s.tabs.find((t) => t.id === s.activeTabId) : null;
+  return tab?.groupId ?? s.groupOrder[0] ?? null;
+}
+
+function panelTitle(id: string): string {
+  if (id === 'diff') return 'Diff';
+  if (id === 'files') return 'Files';
+  if (id === 'browser') return 'Browser';
+  return id;
+}
+
+function withPanelOpen(
+  s: State,
+  panelId: string,
+): Pick<State, 'activePanelId' | 'layoutTreeByGroup'> {
+  const gid = activeGroupId(s);
+  if (!gid) return { activePanelId: panelId, layoutTreeByGroup: s.layoutTreeByGroup };
+  const tree = s.layoutTreeByGroup[gid] ?? makeLeaf([]);
+  if (getAllPanes(tree).some((p) => p.id === panelId)) {
+    return { activePanelId: panelId, layoutTreeByGroup: s.layoutTreeByGroup };
+  }
+  const panelLeaf = makeLeaf([
+    { id: panelId, kind: panelId as PaneKind, title: panelTitle(panelId) },
+  ]);
+  const nextTree = splitRight(tree, panelLeaf);
+  return {
+    activePanelId: panelId,
+    layoutTreeByGroup: { ...s.layoutTreeByGroup, [gid]: nextTree },
+  };
+}
+
+function withPanelClosed(s: State): Pick<State, 'activePanelId' | 'layoutTreeByGroup'> {
+  const gid = activeGroupId(s);
+  if (!gid || !s.activePanelId)
+    return { activePanelId: null, layoutTreeByGroup: s.layoutTreeByGroup };
+  const tree = s.layoutTreeByGroup[gid];
+  if (!tree) return { activePanelId: null, layoutTreeByGroup: s.layoutTreeByGroup };
+  const next = removePane(tree, s.activePanelId);
+  return {
+    activePanelId: null,
+    layoutTreeByGroup: { ...s.layoutTreeByGroup, [gid]: next ?? makeLeaf([]) },
+  };
 }
 
 export function defaultGroupName(cwd: string): string {
@@ -351,6 +425,7 @@ export const useStore = create<State & Actions>()(
       sessionChoice: null,
       agentsViewOpen: false,
       pendingFirstMessages: {},
+      layoutTreeByGroup: { default: makeLeaf([]) },
 
       newGroup(name, cwd = '~') {
         const id = uid();
@@ -360,6 +435,7 @@ export const useStore = create<State & Actions>()(
           groups: [...s.groups, { id, name: resolvedName, cwd, collapsed: false }],
           groupOrder: [...s.groupOrder, id],
           tabOrderByGroup: { ...s.tabOrderByGroup, [id]: [] },
+          layoutTreeByGroup: { ...s.layoutTreeByGroup, [id]: makeLeaf([]) },
         }));
         get().newTab(id);
         return id;
@@ -404,10 +480,13 @@ export const useStore = create<State & Actions>()(
           }
           const tabOrderByGroup = { ...s.tabOrderByGroup };
           delete tabOrderByGroup[id];
+          const layoutTreeByGroup = { ...s.layoutTreeByGroup };
+          delete layoutTreeByGroup[id];
           return {
             groups: s.groups.filter((g) => g.id !== id),
             groupOrder: s.groupOrder.filter((gid) => gid !== id),
             tabOrderByGroup,
+            layoutTreeByGroup,
             tabs,
             activeTabId,
             runningCmds,
@@ -461,6 +540,7 @@ export const useStore = create<State & Actions>()(
               ],
               groupOrder: order,
               tabOrderByGroup: { ...s.tabOrderByGroup, [newId]: [] },
+              layoutTreeByGroup: { ...s.layoutTreeByGroup, [newId]: makeLeaf([]) },
             };
           });
           return { id: newId };
@@ -520,12 +600,34 @@ export const useStore = create<State & Actions>()(
           kind: mode === 'claude' ? 'claude' : 'shell',
         };
         set((st) => {
+          const pane: Pane = {
+            id,
+            kind: (tab.kind ?? 'shell') as PaneKind,
+            title: tab.title,
+          };
+          const tree = st.layoutTreeByGroup[gid] ?? makeLeaf([]);
+          // Workspace leaf = the first leaf without panel panes; if none
+          // exists yet (group started empty), create one.
+          const workspaceLeaf =
+            getAllLeaves(tree).find((l) =>
+              l.panes.every((p) => p.kind === 'shell' || p.kind === 'claude'),
+            ) ?? null;
+          let nextTree = tree;
+          if (workspaceLeaf) {
+            nextTree = addPaneToLeaf(tree, workspaceLeaf.id, pane) as LayoutNode;
+          } else {
+            // No workspace leaf — make one and split it to the left of any
+            // existing panels.
+            const fresh = makeLeaf([pane]);
+            nextTree = splitLeafOp(tree, getAllLeaves(tree)[0]!.id, 'h', fresh, false);
+          }
           const next: Partial<State> = {
             tabs: [...st.tabs, tab],
             tabOrderByGroup: {
               ...st.tabOrderByGroup,
               [gid]: [...(st.tabOrderByGroup[gid] ?? []), id],
             },
+            layoutTreeByGroup: { ...st.layoutTreeByGroup, [gid]: nextTree },
             activeTabId: id,
           };
           if (mode === 'claude') {
@@ -557,9 +659,16 @@ export const useStore = create<State & Actions>()(
           const { [id]: _prompt, ...agentPrompts } = s.agentPrompts;
           const { [id]: _boot, ...claudeBootstrapTabs } = s.claudeBootstrapTabs;
           const { [id]: _pfm, ...pendingFirstMessages } = s.pendingFirstMessages;
+          const tree = s.layoutTreeByGroup[tab.groupId];
+          const nextTree = tree ? removePane(tree, id) : null;
+          const layoutTreeByGroup = { ...s.layoutTreeByGroup };
+          // A group always keeps at least one leaf — even if empty — so
+          // newTab can target it.
+          layoutTreeByGroup[tab.groupId] = nextTree ?? makeLeaf([]);
           return {
             tabs: remaining,
             tabOrderByGroup: newOrder,
+            layoutTreeByGroup,
             activeTabId: nextActive,
             runningCmds,
             unreadTabs,
@@ -586,9 +695,22 @@ export const useStore = create<State & Actions>()(
 
       setActiveTab(id) {
         set((s) => {
-          if (!id || !s.unreadTabs[id]) return { activeTabId: id };
+          let layoutTreeByGroup = s.layoutTreeByGroup;
+          if (id) {
+            const tab = s.tabs.find((t) => t.id === id);
+            if (tab) {
+              const tree = s.layoutTreeByGroup[tab.groupId];
+              if (tree) {
+                const next = setActivePane(tree, id);
+                if (next !== tree) {
+                  layoutTreeByGroup = { ...s.layoutTreeByGroup, [tab.groupId]: next };
+                }
+              }
+            }
+          }
+          if (!id || !s.unreadTabs[id]) return { activeTabId: id, layoutTreeByGroup };
           const { [id]: _, ...rest } = s.unreadTabs;
-          return { activeTabId: id, unreadTabs: rest };
+          return { activeTabId: id, unreadTabs: rest, layoutTreeByGroup };
         });
       },
 
@@ -632,17 +754,20 @@ export const useStore = create<State & Actions>()(
         set((s) => ({ sidebarOpen: !s.sidebarOpen }));
       },
 
-      // Right-side panels (Files, Diff, Browser, future extension panels) are
-      // mutually exclusive — only one occupies the slot at a time so the
-      // workspace never competes with more than one sibling pane.
+      // Panels (Files, Diff, Browser, …) live as panes in the active group's
+      // layout tree. Slice 3 keeps `activePanelId` as a top-level field for
+      // backward compat with consumers that haven't migrated; opening a panel
+      // also adds a panel leaf to the right of the active group's tree, and
+      // closing one removes that pane. Multiple panels per group are not
+      // surfaced in the UI yet but the tree already supports them.
       openPanel(id) {
-        set({ activePanelId: id });
+        set((s) => withPanelOpen(s, id));
       },
       closePanel() {
-        set({ activePanelId: null });
+        set((s) => withPanelClosed(s));
       },
       togglePanel(id) {
-        set((s) => ({ activePanelId: s.activePanelId === id ? null : id }));
+        set((s) => (s.activePanelId === id ? withPanelClosed(s) : withPanelOpen(s, id)));
       },
       togglePanelFullscreen(id) {
         set((s) => ({
@@ -692,10 +817,10 @@ export const useStore = create<State & Actions>()(
       openFileInBrowser(path, kind = 'file') {
         // Switch to Files panel and stamp a request the FileBrowserPanel
         // will consume on its next render.
-        set({
-          activePanelId: 'files',
+        set((s) => ({
+          ...withPanelOpen(s, 'files'),
           fileBrowserRequest: { path, kind, nonce: Date.now() },
-        });
+        }));
       },
       consumeFileBrowserRequest() {
         set({ fileBrowserRequest: null });
@@ -738,6 +863,43 @@ export const useStore = create<State & Actions>()(
       },
       toggleAgentsView() {
         set((s) => ({ agentsViewOpen: !s.agentsViewOpen }));
+      },
+      resizeLayoutSplit(groupId, splitId, sizes) {
+        set((s) => {
+          const tree = s.layoutTreeByGroup[groupId];
+          if (!tree) return s;
+          const next = updateSplitSizes(tree, splitId, sizes);
+          if (next === tree) return s;
+          return { layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: next } };
+        });
+      },
+      splitLeafInTree(groupId, leafId, dir, pane, after) {
+        set((s) => {
+          const tree = s.layoutTreeByGroup[groupId];
+          if (!tree) return s;
+          const newLeaf = makeLeaf([pane]);
+          const next = splitLeafOp(tree, leafId, dir, newLeaf, after);
+          return { layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: next } };
+        });
+      },
+      removePaneFromTree(groupId, paneId) {
+        set((s) => {
+          const tree = s.layoutTreeByGroup[groupId];
+          if (!tree) return s;
+          const next = removePane(tree, paneId);
+          return {
+            layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: next ?? makeLeaf([]) },
+          };
+        });
+      },
+      setActivePaneInTree(groupId, paneId) {
+        set((s) => {
+          const tree = s.layoutTreeByGroup[groupId];
+          if (!tree) return s;
+          const next = setActivePane(tree, paneId);
+          if (next === tree) return s;
+          return { layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: next } };
+        });
       },
       setAgentLabel(tabId, label) {
         set((s) => ({
@@ -888,32 +1050,76 @@ export const useStore = create<State & Actions>()(
         monoFontSize: s.monoFontSize,
         newTabMode: s.newTabMode,
         pins: s.pins,
+        layoutTreeByGroup: s.layoutTreeByGroup,
       }),
-      version: 1,
+      version: 2,
       // Lift any prior per-panel boolean into the new activePanelId /
       // panelFullscreen shape so users coming from older builds don't see
       // a closed panel where they last left one open.
-      migrate: (persistedState: unknown, _from: number) => {
+      migrate: (persistedState: unknown, from: number) => {
         const s = (persistedState ?? {}) as Record<string, unknown>;
-        if (s.activePanelId === undefined) {
-          if (s.diffPanelOpen) s.activePanelId = 'diff';
-          else if (s.fileBrowserOpen) s.activePanelId = 'files';
-          else if (s.browserPanelOpen) s.activePanelId = 'browser';
-          else s.activePanelId = null;
+        if (from < 1) {
+          if (s.activePanelId === undefined) {
+            if (s.diffPanelOpen) s.activePanelId = 'diff';
+            else if (s.fileBrowserOpen) s.activePanelId = 'files';
+            else if (s.browserPanelOpen) s.activePanelId = 'browser';
+            else s.activePanelId = null;
+          }
+          if (s.panelFullscreen === undefined) {
+            s.panelFullscreen = {
+              diff: !!s.diffPanelFullscreen,
+              files: !!s.fileBrowserFullscreen,
+              browser: !!s.browserPanelFullscreen,
+            };
+          }
+          delete s.diffPanelOpen;
+          delete s.fileBrowserOpen;
+          delete s.browserPanelOpen;
+          delete s.diffPanelFullscreen;
+          delete s.fileBrowserFullscreen;
+          delete s.browserPanelFullscreen;
         }
-        if (s.panelFullscreen === undefined) {
-          s.panelFullscreen = {
-            diff: !!s.diffPanelFullscreen,
-            files: !!s.fileBrowserFullscreen,
-            browser: !!s.browserPanelFullscreen,
-          };
+        if (from < 2) {
+          // Build a layoutTreeByGroup from the existing flat tabs[] +
+          // tabOrderByGroup + activePanelId. Each group becomes a single
+          // workspace leaf; the active group's tree is split-right with a
+          // panel leaf if a panel was open at the time.
+          const tabs = (s.tabs as Tab[]) ?? [];
+          const order = (s.tabOrderByGroup as Record<string, string[]>) ?? {};
+          const groups = (s.groups as Group[]) ?? [];
+          const activeTabId = (s.activeTabId as string | null) ?? null;
+          const activePanelId = (s.activePanelId as string | null) ?? null;
+          const trees: Record<string, LayoutNode> = {};
+          for (const g of groups) {
+            const ids = order[g.id] ?? tabs.filter((t) => t.groupId === g.id).map((t) => t.id);
+            const panes: Pane[] = ids
+              .map((tid) => tabs.find((t) => t.id === tid))
+              .filter((t): t is Tab => !!t)
+              .map((t) => ({
+                id: t.id,
+                kind: (t.kind ?? 'shell') as PaneKind,
+                title: t.title,
+              }));
+            const active =
+              activeTabId && panes.some((p) => p.id === activeTabId) ? activeTabId : null;
+            trees[g.id] = makeLeaf(panes, active);
+          }
+          if (activePanelId) {
+            const activeTab = tabs.find((t) => t.id === activeTabId);
+            const gid = activeTab?.groupId ?? groups[0]?.id;
+            if (gid && trees[gid]) {
+              const panelLeaf = makeLeaf([
+                {
+                  id: activePanelId,
+                  kind: activePanelId as PaneKind,
+                  title: panelTitle(activePanelId),
+                },
+              ]);
+              trees[gid] = splitRight(trees[gid], panelLeaf);
+            }
+          }
+          s.layoutTreeByGroup = trees;
         }
-        delete s.diffPanelOpen;
-        delete s.fileBrowserOpen;
-        delete s.browserPanelOpen;
-        delete s.diffPanelFullscreen;
-        delete s.fileBrowserFullscreen;
-        delete s.browserPanelFullscreen;
         return s;
       },
     },

@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Box,
   CloseButton,
@@ -19,9 +19,8 @@ import { useIsMobile } from './useViewport';
 import { MobileHeader } from './MobileHeader';
 import { IS_ELECTRON } from './env';
 import { Sidebar } from './Sidebar';
-import { SquareLoader } from './SquareLoader';
-import { Workspace } from './Workspace';
 import { AgentsView } from './AgentsView';
+import { LayoutHost } from './layout/LayoutHost';
 import { CommandPalette } from './CommandPalette';
 import { ReconnectBanner } from './ReconnectBanner';
 import { SessionChoiceDialog } from './SessionChoiceDialog';
@@ -257,62 +256,21 @@ export function App() {
             </Box>
           </Box>
         )}
-        <Box flex="1" position="relative" minW="0">
-          {/* The workspace stays full-width when the diff panel is fullscreen so
-              the terminal never re-layouts on max/min. Only opening/closing the
-              right-side panel resizes it. */}
-          <Box
-            position="absolute"
-            inset="0"
-            pr={!isMobile && panelOpen && !forcedFullscreen ? `${activePanelBaseW}px` : '0px'}
-            // `isolation: isolate` keeps the TerminalView's raw-mode xterm
-            // overlay (zIndex 5) and other inner z-indexed nodes contained in
-            // their own stacking context. Without it, those positive z-indices
-            // leak into the parent context and paint over the right-panel
-            // sibling whenever the panel goes fullscreen.
-            style={{
-              isolation: 'isolate',
-              transition: 'padding-right 240ms cubic-bezier(0.22, 0.61, 0.36, 1)',
-            }}
-          >
-            {/* Keep Workspace mounted even when the Agents View is showing,
-                so existing TerminalViews stay alive and new agent tabs can
-                bootstrap (spawn claude, fire agentStates) in the background
-                while the user is on the Agents View. */}
-            <Box
-              w="100%"
-              h="100%"
-              display={agentsViewOpen ? 'none' : 'block'}
-            >
-              <Workspace />
-            </Box>
-            {agentsViewOpen && <AgentsView />}
+        <Box flex="1" position="relative" minW="0" style={{ isolation: 'isolate' }}>
+          {/* Keep the layout host mounted even when the Agents View is
+              showing, so existing TerminalViews stay alive and new agent
+              tabs can bootstrap (spawn claude, fire agentStates) in the
+              background while the user is on the Agents View. */}
+          <Box w="100%" h="100%" display={agentsViewOpen ? 'none' : 'block'}>
+            <LayoutContent
+              isMobile={isMobile}
+              effectiveFullscreen={effectiveFullscreen}
+              panelPercent={Math.round((activePanelBaseW / Math.max(1, contentW)) * 100)}
+              panelWidth={effectiveFullscreen ? contentW : activePanelBaseW}
+              forcedFullscreen={isMobile || forcedFullscreen}
+            />
           </Box>
-          <Box
-            position="absolute"
-            top="0"
-            right="0"
-            bottom="0"
-            w={panelOpen ? (effectiveFullscreen ? '100%' : `${activePanelBaseW}px`) : '0px'}
-            borderLeft={panelOpen ? '1px solid #21262d' : '1px solid transparent'}
-            bg="#0d1117"
-            overflow="hidden"
-            style={{
-              transition: 'width 240ms cubic-bezier(0.22, 0.61, 0.36, 1), border-color 240ms ease',
-              willChange: 'width',
-            }}
-          >
-            <Box w="100%" h="100%">
-              <Suspense fallback={<PanelLoading />}>
-                {activePanel && (
-                  <activePanel.component
-                    forcedFullscreen={isMobile || forcedFullscreen}
-                    panelWidth={effectiveFullscreen ? contentW : activePanelBaseW}
-                  />
-                )}
-              </Suspense>
-            </Box>
-          </Box>
+          {agentsViewOpen && <AgentsView />}
         </Box>
       </Flex>
       {/* Workspace drawer — Chakra Drawer handles the slide animation,
@@ -351,19 +309,68 @@ export function App() {
   );
 }
 
-function PanelLoading() {
+function LayoutContent({
+  isMobile,
+  effectiveFullscreen,
+  panelWidth,
+  forcedFullscreen,
+}: {
+  isMobile: boolean;
+  effectiveFullscreen: boolean;
+  panelPercent: number;
+  panelWidth: number;
+  forcedFullscreen: boolean;
+}) {
+  // The active group's tree owns the layout — switching workspaces (sidebar)
+  // swaps which tree is displayed.
+  const activeGroupId = useStore((s) => {
+    const tab = s.tabs.find((t) => t.id === s.activeTabId);
+    return tab?.groupId ?? s.groupOrder[0] ?? null;
+  });
+  const tree = useStore((s) => (activeGroupId ? s.layoutTreeByGroup[activeGroupId] : null));
+  const resizeLayoutSplit = useStore((s) => s.resizeLayoutSplit);
+  const activePanelId = useStore((s) => s.activePanelId);
+
+  if (!tree || (tree.type === 'leaf' && tree.panes.length === 0)) {
+    return (
+      <Flex h="100%" w="100%" align="center" justify="center" bg="#010409">
+        <Text color="#7d8590" fontSize="sm">
+          No tabs. Press ⌘T to create one.
+        </Text>
+      </Flex>
+    );
+  }
+
+  // When the user has fullscreened the panel, swap the tree for a single-leaf
+  // tree containing only the panel pane so the workspace doesn't render.
+  let renderedTree = tree;
+  if (effectiveFullscreen && activePanelId) {
+    const onlyPanel = collectPanelLeaf(tree, activePanelId);
+    if (onlyPanel) renderedTree = onlyPanel;
+  }
+
   return (
-    <Flex
-      h="100%"
-      w="100%"
-      align="center"
-      justify="center"
-      bg="#010409"
-      borderLeft="1px solid #21262d"
-    >
-      <SquareLoader />
-    </Flex>
+    <LayoutHost
+      tree={renderedTree}
+      groupId={activeGroupId ?? ''}
+      forcedFullscreen={isMobile || forcedFullscreen}
+      panelWidth={panelWidth}
+      onSplitResize={(splitId, sizes) => {
+        if (activeGroupId) resizeLayoutSplit(activeGroupId, splitId, sizes);
+      }}
+    />
   );
+}
+
+// Find the leaf in `tree` that contains `paneId` and return it standalone —
+// used to render a panel-only view when fullscreen is on.
+function collectPanelLeaf(tree: import('./layout/types').LayoutNode, paneId: string) {
+  const all = (function walk(
+    n: import('./layout/types').LayoutNode,
+  ): import('./layout/types').LeafNode[] {
+    return n.type === 'leaf' ? [n] : n.children.flatMap(walk);
+  })(tree);
+  return all.find((l) => l.panes.some((p) => p.id === paneId)) ?? null;
 }
 
 const TITLEBAR_ICON_COLOR = '#c9d1d9';
