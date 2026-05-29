@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Flex, Text, Textarea } from '@chakra-ui/react';
-import { ArrowRight, Bot, Plus, X } from 'lucide-react';
+import { ArrowRight, Bot, Plus, Sparkles, X } from 'lucide-react';
 import { sendSessionInput } from './api';
 import { useStore, type AgentState, type Tab } from './store';
 import { useIsMobile } from './useViewport';
@@ -151,7 +151,7 @@ export function AgentsView() {
             />
             <Box
               display="grid"
-              gridTemplateColumns="repeat(auto-fit, minmax(380px, 1fr))"
+              gridTemplateColumns="repeat(auto-fit, minmax(280px, 360px))"
               gap="3"
               mt="2"
             >
@@ -269,6 +269,10 @@ function WorkspaceHeader({
   );
 }
 
+// Compact Claude-pane preview card: a header strip with label + status,
+// a dark terminal-styled output region showing the last few lines of the
+// agent's reply, and a rounded composer along the bottom (matches the
+// mobile prompt textarea on the actual Claude tab).
 function AgentCard({ row }: { row: AgentRow }) {
   const { tab, label, status, reply } = row;
   const colors = STATUS_COLOR[status];
@@ -276,10 +280,8 @@ function AgentCard({ row }: { row: AgentRow }) {
   const closeAgentsView = useStore((s) => s.closeAgentsView);
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const outputRef = useRef<HTMLDivElement | null>(null);
 
-  // Reset the composer whenever the agent's status flips — sending a reply
-  // takes the card from blocked → working, and the leftover text would
-  // otherwise sit in the input as if it hadn't been sent.
   const lastStatus = useRef(status);
   useEffect(() => {
     if (lastStatus.current !== status) {
@@ -288,14 +290,31 @@ function AgentCard({ row }: { row: AgentRow }) {
     }
   }, [status]);
 
+  // Auto-scroll the output to the bottom as new replies stream in so the
+  // most recent line is always visible, mirroring how a real terminal tab
+  // feels.
+  useEffect(() => {
+    const el = outputRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [reply]);
+
   const navigate = () => {
     setActiveTab(tab.id);
     closeAgentsView();
   };
 
+  const setPendingFirstMessage = useStore((s) => s.setPendingFirstMessage);
   const send = () => {
     const v = input.trim();
     if (!v) return;
+    if (tab.kind === 'claude' && (status === 'idle' || status === 'done')) {
+      // No live claude pty to write to — queue the message so it lands as
+      // soon as the user opens the tab and claude boots/replays.
+      setPendingFirstMessage(tab.id, v);
+      setInput('');
+      navigate();
+      return;
+    }
     void sendSessionInput(tab.id, v + '\r');
     setInput('');
   };
@@ -307,10 +326,17 @@ function AgentCard({ row }: { row: AgentRow }) {
     }
   };
 
-  const canCompose = status === 'working' || status === 'blocked' || status === 'shell';
-  const snippet =
-    reply?.trim() ||
-    (status === 'shell' ? '' : status === 'idle' ? 'No output yet.' : '');
+  // Allow follow-ups on done/idle Claude tabs too — typing here queues the
+  // message via the same pendingFirstMessages path NewAgentCard uses, so a
+  // finished agent can be re-prompted without first jumping to the tab.
+  const canCompose = tab.kind === 'claude' || status === 'shell';
+  // Keep only the last few lines of output — anything older is one tap away
+  // on the actual tab and would just push the composer off the card.
+  const lastLines = (reply?.trim() ?? '')
+    .split('\n')
+    .filter((l) => l.length > 0)
+    .slice(-6)
+    .join('\n');
 
   return (
     <Box
@@ -318,28 +344,42 @@ function AgentCard({ row }: { row: AgentRow }) {
       border="1px solid #21262d"
       borderLeftWidth={status === 'blocked' ? '2px' : '1px'}
       borderLeftColor={status === 'blocked' ? '#f85149' : '#21262d'}
-      borderRadius="6px"
+      borderRadius="10px"
       overflow="hidden"
       display="flex"
       flexDirection="column"
-      minH="160px"
+      h="240px"
     >
-      <Flex align="center" justify="space-between" px="3" py="2" borderBottom="1px solid #161b22">
-        <Text
-          fontSize="13px"
-          color="#f0f6fc"
-          fontWeight={600}
-          truncate
-          flex="1"
-          mr="2"
-          title={label}
-        >
-          {label}
-        </Text>
+      {/* Header strip — workspace label + status pill. Tap navigates to the
+          real tab; keeps the gesture consistent with sidebar TabCards. */}
+      <Flex
+        align="center"
+        justify="space-between"
+        px="3"
+        h="32px"
+        flexShrink={0}
+        cursor="pointer"
+        onClick={navigate}
+        _hover={{ bg: '#161b22' }}
+      >
+        <Flex align="center" gap="1.5" flex="1" minW="0" mr="2">
+          <Box color="#79c0ff" flexShrink={0} display="inline-flex">
+            <Sparkles size={12} strokeWidth={1.8} />
+          </Box>
+          <Text
+            fontSize="12px"
+            color="#f0f6fc"
+            fontWeight={600}
+            truncate
+            title={label}
+          >
+            {label}
+          </Text>
+        </Flex>
         <Flex
           align="center"
           gap="1.5"
-          px="2"
+          px="1.5"
           py="0.5"
           borderRadius="999px"
           bg={colors.bg}
@@ -362,31 +402,45 @@ function AgentCard({ row }: { row: AgentRow }) {
         </Flex>
       </Flex>
 
+      {/* Output area — same card background, monospace, bottom-aligned so
+          newest content sits closest to the composer. */}
       <Box
+        ref={outputRef}
         flex="1"
         px="3"
         py="2"
+        overflow="hidden"
         fontFamily="var(--grove-mono)"
         fontSize="11px"
+        lineHeight="1.45"
         color="#c9d1d9"
         style={{
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
-          display: '-webkit-box',
-          WebkitLineClamp: 4,
-          WebkitBoxOrient: 'vertical',
-          overflow: 'hidden',
-          minHeight: '4.5em',
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'flex-end',
         }}
       >
-        {snippet || (
-          <Text as="span" color="#484f58" fontStyle="italic">
-            (no recent output)
-          </Text>
+        {lastLines ? (
+          <Box>{lastLines}</Box>
+        ) : (
+          <Box color="#484f58" fontStyle="italic" fontSize="11px">
+            {status === 'idle'
+              ? 'Send a message below to start this agent.'
+              : status === 'done'
+                ? 'Session finished — send a follow-up to continue.'
+                : status === 'working'
+                  ? 'Working…'
+                  : ''}
+          </Box>
         )}
       </Box>
 
-      <Flex align="flex-end" gap="2" px="3" py="3">
+      {/* Composer — single rounded textarea; Enter sends, Shift+Enter for a
+          newline. No send button: keeping the surface clean and matching the
+          centered-omnibox style used elsewhere. */}
+      <Box px="2" py="2" flexShrink={0}>
         <Textarea
           ref={inputRef}
           value={input}
@@ -394,49 +448,30 @@ function AgentCard({ row }: { row: AgentRow }) {
           onKeyDown={onKeyDown}
           placeholder={
             status === 'blocked'
-              ? 'reply…'
+              ? 'reply… (Enter to send)'
               : status === 'working'
-                ? 'message…'
+                ? 'message… (Enter to send)'
                 : status === 'shell'
-                  ? 'run command…'
+                  ? 'run command… (Enter to send)'
                   : 'open tab to type'
           }
           disabled={!canCompose}
           rows={1}
           resize="none"
-          minH="36px"
-          maxH="120px"
-          borderRadius="10px"
+          minH="32px"
+          maxH="96px"
+          borderRadius="999px"
           px="3"
-          py="2"
+          py="1.5"
           fontSize="12px"
           fontFamily="var(--grove-mono)"
-          bg="#0d1117"
+          bg="#010409"
           borderColor="#21262d"
           color="#c9d1d9"
           _placeholder={{ color: '#484f58' }}
           _focus={{ borderColor: '#1f6feb', boxShadow: '0 0 0 1px #1f6feb' }}
         />
-        {!canCompose && (
-          <Box
-            as="button"
-            aria-label="Open this tab"
-            onClick={navigate}
-            display="inline-flex"
-            alignItems="center"
-            justifyContent="center"
-            w="32px"
-            h="32px"
-            borderRadius="6px"
-            bg="#21262d"
-            color="#c9d1d9"
-            _hover={{ bg: '#30363d' }}
-            style={{ border: 'none', cursor: 'pointer', padding: 0, flexShrink: 0 }}
-          >
-            <ArrowRight size={14} strokeWidth={2} />
-          </Box>
-        )}
-      </Flex>
+      </Box>
     </Box>
   );
 }
