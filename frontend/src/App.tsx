@@ -944,6 +944,104 @@ function TabsSection() {
   );
 }
 
+// In-app cheatsheet for every keyboard shortcut Grove registers in
+// useShortcuts. Keep this list in sync with the bindings there — there's no
+// runtime introspection; the source of truth is still the handler.
+const SHORTCUT_GROUPS: Array<{ title: string; rows: Array<{ keys: string[]; label: string }> }> = [
+  {
+    title: 'Tabs & panes',
+    rows: [
+      { keys: ['⌘', 'T'], label: 'New tab in the focused pane' },
+      { keys: ['⌘', 'W'], label: 'Close focused pane' },
+      { keys: ['⌘', 'D'], label: 'Split right with another pane of the same kind' },
+      { keys: ['⌘', '⇧', 'D'], label: 'Split down with another pane of the same kind' },
+    ],
+  },
+  {
+    title: 'Navigation',
+    rows: [
+      { keys: ['⌘', '1'], label: '… ⌘9 — jump to top-level tab N in this workspace' },
+      { keys: ['⌘', '⇧', '['], label: 'Previous top-level tab' },
+      { keys: ['⌘', '⇧', ']'], label: 'Next top-level tab' },
+      { keys: ['⌘', '⌥', '←'], label: 'Focus pane to the left within a split' },
+      { keys: ['⌘', '⌥', '→'], label: 'Focus pane to the right within a split' },
+      { keys: ['⌘', '⌥', '↑'], label: 'Focus pane above within a split' },
+      { keys: ['⌘', '⌥', '↓'], label: 'Focus pane below within a split' },
+    ],
+  },
+  {
+    title: 'App',
+    rows: [
+      { keys: ['⌘', 'P'], label: 'Open command palette / fuzzy tab search' },
+      { keys: ['⌘', 'K'], label: 'Open command palette (alias)' },
+      { keys: ['⌘', '\\'], label: 'Toggle sidebar' },
+      { keys: ['⌘', '⇧', '1'], label: '… ⌘⇧9 — fire pin N from the pin bar' },
+    ],
+  },
+];
+
+function ShortcutsSection() {
+  return (
+    <Flex direction="column" gap="4">
+      <Text fontSize="11px" color="#7d8590">
+        On macOS use ⌘; on Windows / Linux use Ctrl. Shortcuts target the focused pane and the
+        active workspace.
+      </Text>
+      {SHORTCUT_GROUPS.map((group) => (
+        <Box key={group.title}>
+          <Text
+            fontSize="11px"
+            color="#7d8590"
+            textTransform="uppercase"
+            letterSpacing="0.06em"
+            mb="2"
+          >
+            {group.title}
+          </Text>
+          <Box>
+            {group.rows.map((row, idx) => (
+              <Flex
+                key={idx}
+                align="center"
+                justify="space-between"
+                py="1.5"
+                borderBottom={idx < group.rows.length - 1 ? '1px solid #21262d' : 'none'}
+                gap="3"
+              >
+                <Text fontSize="12px" color="#c9d1d9" flex="1">
+                  {row.label}
+                </Text>
+                <Flex gap="1" flexShrink={0}>
+                  {row.keys.map((k, i) => (
+                    <Box
+                      key={i}
+                      px="1.5"
+                      py="0.5"
+                      minW="22px"
+                      h="22px"
+                      borderRadius="4px"
+                      bg="#161b22"
+                      border="1px solid #30363d"
+                      color="#c9d1d9"
+                      fontSize="11px"
+                      fontFamily="var(--grove-mono)"
+                      display="inline-flex"
+                      alignItems="center"
+                      justifyContent="center"
+                    >
+                      {k}
+                    </Box>
+                  ))}
+                </Flex>
+              </Flex>
+            ))}
+          </Box>
+        </Box>
+      ))}
+    </Flex>
+  );
+}
+
 function MaintenanceSection() {
   const [cleanup, setCleanup] = useState<CleanupState>({ status: 'idle' });
 
@@ -1111,6 +1209,7 @@ function MaintenanceSection() {
 const SETTINGS_SECTIONS = [
   { id: 'appearance', label: 'Appearance' },
   { id: 'tabs', label: 'Tabs' },
+  { id: 'shortcuts', label: 'Shortcuts' },
   { id: 'remote', label: 'Remote access' },
   { id: 'maintenance', label: 'Maintenance' },
 ] as const;
@@ -1208,6 +1307,7 @@ function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }
                 </Text>
                 {section === 'appearance' && <AppearanceSection />}
                 {section === 'tabs' && <TabsSection />}
+                {section === 'shortcuts' && <ShortcutsSection />}
                 {section === 'remote' && <RemoteAccessSection />}
                 {section === 'maintenance' && <MaintenanceSection />}
               </Box>
