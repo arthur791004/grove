@@ -871,6 +871,23 @@ export function TerminalView({ tabId, active }: Props) {
     const ro = new ResizeObserver(doFitAndResize);
     ro.observe(xtermHostRef.current);
 
+    // Wheel-near-bottom magnet: when the user scrolls downward inside the
+    // xterm viewport and is already within ~3 rows of the buffer's bottom,
+    // snap to the actual bottom row. xterm's viewport can otherwise sit on
+    // a "phantom" empty row after a resize/redraw, leaving the prompt out
+    // of view and forcing the user to press ↓ to bring it back.
+    const onWheelMagnet = (ev: WheelEvent) => {
+      if (!rawModeRef.current) return;
+      if (ev.deltaY <= 0) return;
+      const term = xtermRef.current;
+      if (!term) return;
+      const buf = term.buffer.active;
+      const viewportRow = buf.viewportY;
+      const lastRow = buf.length - term.rows;
+      if (lastRow - viewportRow <= 3) term.scrollToBottom();
+    };
+    xtermHostRef.current.addEventListener('wheel', onWheelMagnet, { passive: true });
+
     // Re-measure after fonts load (xterm caches cell width on open).
     const fontsReady = (document as Document & { fonts?: { ready: Promise<void> } }).fonts?.ready;
     if (fontsReady)
@@ -884,10 +901,12 @@ export function TerminalView({ tabId, active }: Props) {
     const t1 = setTimeout(doFitAndResize, 100);
     const t2 = setTimeout(doFitAndResize, 500);
 
+    const host = xtermHostRef.current;
     return () => {
       clearTimeout(t1);
       clearTimeout(t2);
       ro.disconnect();
+      host?.removeEventListener('wheel', onWheelMagnet);
       term.dispose();
       xtermRef.current = null;
       serializeRef.current = null;
@@ -1381,8 +1400,13 @@ export function TerminalView({ tabId, active }: Props) {
           // iOS only summons the soft keyboard from a real user gesture, not a
           // programmatic .focus(). Routing the tap through onClick → term.focus()
           // makes that gesture explicit: any tap on the overlay re-summons the
-          // keyboard if it had collapsed (e.g. after switching tabs).
-          onClick={() => xtermRef.current?.focus()}
+          // keyboard if it had collapsed (e.g. after switching tabs). We also
+          // re-pin to the bottom so a click recovers the prompt cursor when
+          // xterm's viewport is stuck above the last row.
+          onClick={() => {
+            xtermRef.current?.focus();
+            if (rawModeRef.current) xtermRef.current?.scrollToBottom();
+          }}
         />
       </Box>
 
