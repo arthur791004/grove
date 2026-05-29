@@ -2159,17 +2159,42 @@ function ChipStrip({ ctx, tabId }: { ctx: ReturnType<typeof useTabContext>; tabI
   // catches up. groupCwd is the workspace folder, the right pre-ready value.
   const cwd = (ctx?.cwdReady && ctx.shortCwd) || (groupCwd ? shortPath(groupCwd) : '');
   const cwdLoading = !cwd;
-  // On phone-width viewports each chip collapses to its icon — the value moves
-  // into a tooltip. Without this the long path / branch wrap inside the fixed
-  // 22px box and spill past the rounded border.
-  const compact = useIsMobile();
+  // Collapse chips to icon-only when the strip's own width is too narrow to
+  // show labels — driven by the strip's measured rect, not the window
+  // viewport, so a narrow pane in a split (or a workspace with a wide
+  // sidebar) collapses correctly even on a wide display.
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  const [compact, setCompact] = useState(() =>
+    typeof window !== 'undefined' && window.innerWidth < 520,
+  );
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const COMPACT_THRESHOLD = 420;
+    const update = (w: number) => setCompact(w < COMPACT_THRESHOLD);
+    update(el.getBoundingClientRect().width);
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) update(entry.contentRect.width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const branch = ctx?.branch
     ? isFork && ctx.branch.startsWith('grove/')
       ? ctx.branch.slice('grove/'.length)
       : ctx.branch
     : '';
   return (
-    <HStack px="4" pt="3" pb="0" gap="2" bg="transparent" flexWrap="wrap">
+    <HStack
+      ref={stripRef}
+      px="4"
+      pt="3"
+      pb="0"
+      gap="2"
+      bg="transparent"
+      flexWrap="wrap"
+    >
       <Chip
         icon={<FolderIcon size={12} />}
         compact={compact}
