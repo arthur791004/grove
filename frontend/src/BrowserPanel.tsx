@@ -217,16 +217,12 @@ export function BrowserPanel({
         align="center"
         gap="1.5"
         px="2"
-        h="36px"
-        borderBottom="1px solid #21262d"
+        h={url ? '36px' : '0px'}
+        borderBottom={url ? '1px solid #21262d' : 'none'}
         bg="#0d1117"
         flexShrink={0}
+        overflow="hidden"
       >
-        {!url && (
-          <Text fontSize="12px" color="#c9d1d9" ml="1">
-            Workspace services
-          </Text>
-        )}
         {url ? (
           <>
             <HeaderIconButton title="Workspace services" onClick={() => setUrl(null)}>
@@ -414,7 +410,24 @@ export function BrowserPanel({
   );
 }
 
-function ServicesList({
+function ServicesList(props: {
+  services: ServiceEntry[] | null;
+  history: Array<{ url: string; visitedAt: number }>;
+  onPick: (s: ServiceEntry) => void;
+  onPickHistory: (url: string) => void;
+  onRemoveHistory: (url: string) => void;
+  onCustom: (e: React.FormEvent) => void;
+  addr: string;
+  setAddr: (v: string) => void;
+}) {
+  return <EmptyBrowserState {...props} />;
+}
+
+// Chrome-like empty state: centered omnibox at the top of the panel,
+// suggestion dropdown directly below combining recent URLs and live
+// workspace services. The input auto-focuses on mount and supports
+// arrow-key navigation through the suggestions.
+function EmptyBrowserState({
   services,
   history,
   onPick,
@@ -433,157 +446,260 @@ function ServicesList({
   addr: string;
   setAddr: (v: string) => void;
 }) {
-  // Hide recents that match a live service to avoid duplicates.
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [highlight, setHighlight] = useState(0);
+  const [isFocused, setIsFocused] = useState(false);
+  // Autofocus the omnibox on mount so the user can just start typing.
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  // Build the suggestion list: live services first, then recents that aren't
+  // already represented by a live service. Filter by current address text
+  // (substring against either url or service command/host) so the dropdown
+  // narrows like Chrome's omnibox.
   const liveUrls = new Set((services ?? []).map((s) => s.url));
   const recents = history.filter((h) => !liveUrls.has(h.url));
+  const query = addr.trim().toLowerCase();
+  const matches = (text: string) => !query || text.toLowerCase().includes(query);
+  const filteredServices = (services ?? []).filter(
+    (s) => matches(s.url) || matches(s.cmd) || matches(`${displayHost(s.host)}:${s.port}`),
+  );
+  const filteredRecents = recents.filter((h) => matches(h.url));
+
+  type Row =
+    | { kind: 'service'; service: ServiceEntry }
+    | { kind: 'recent'; entry: { url: string; visitedAt: number } };
+  const rows: Row[] = [
+    ...filteredServices.map((s): Row => ({ kind: 'service', service: s })),
+    ...filteredRecents.map((e): Row => ({ kind: 'recent', entry: e })),
+  ];
+  const total = rows.length;
+
+  // Re-clamp highlight whenever the row count changes (filter narrowed).
+  useEffect(() => {
+    if (highlight >= total && total > 0) setHighlight(total - 1);
+    if (total === 0) setHighlight(0);
+  }, [total, highlight]);
+
+  const choose = (idx: number) => {
+    const row = rows[idx];
+    if (!row) return;
+    if (row.kind === 'service') onPick(row.service);
+    else onPickHistory(row.entry.url);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown' && total > 0) {
+      e.preventDefault();
+      setHighlight((h) => (h + 1) % total);
+    } else if (e.key === 'ArrowUp' && total > 0) {
+      e.preventDefault();
+      setHighlight((h) => (h - 1 + total) % total);
+    } else if (e.key === 'Enter' && total > 0 && highlight >= 0 && highlight < total) {
+      // Highlighted suggestion wins over free text — same as Chrome.
+      e.preventDefault();
+      choose(highlight);
+    }
+  };
+
   return (
-    <Flex direction="column" h="100%" overflow="hidden">
-      <Box flex="1" overflowY="auto">
-        {services === null ? (
-          <Flex h="100%" align="center" justify="center">
-            <SquareLoader />
-          </Flex>
-        ) : services.length === 0 && recents.length === 0 ? (
-          <Flex
-            h="100%"
-            direction="column"
-            align="center"
-            justify="center"
-            gap="2"
-            color="#7d8590"
-            fontSize="12px"
-            px="6"
-            textAlign="center"
+    <Box position="relative" h="100%" w="100%" overflow="hidden">
+      {/* Wrapper anchored so the input's vertical midline sits at panel
+          center (top = 50% - half input height). The dropdown grows downward
+          below the input without moving it. */}
+      <Box
+        position="absolute"
+        left="50%"
+        top="calc(50% - 20px)"
+        transform="translateX(-50%)"
+        w="100%"
+        maxW="640px"
+        px="6"
+      >
+        <Box
+          as="form"
+          onSubmit={(e: React.FormEvent) => onCustom(e)}
+          bg="#161b22"
+          border="1px solid"
+          borderColor={isFocused ? '#1f6feb' : '#30363d'}
+          borderRadius="20px"
+          boxShadow={
+            isFocused
+              ? '0 0 0 2px rgba(31,111,235,0.35), 0 12px 32px rgba(0,0,0,0.45)'
+              : '0 0 0 0 rgba(31,111,235,0), 0 0 0 rgba(0,0,0,0)'
+          }
+          overflow="hidden"
+          style={{
+            transition:
+              'border-color 180ms ease, box-shadow 180ms ease',
+          }}
+        >
+          <Input
+            ref={inputRef}
+            value={addr}
+            onChange={(e) => setAddr(e.target.value)}
+            onKeyDown={onKeyDown}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
+            placeholder="Search workspace services or enter a URL"
+            fontSize="14px"
+            bg="transparent"
+            color="#f0f6fc"
+            border="none"
+            borderRadius="0"
+            px="5"
+            h="40px"
+            spellCheck={false}
+            autoComplete="off"
+            _focus={{ boxShadow: 'none', outline: 'none' }}
+          />
+
+          {/* Suggestion area — kept mounted so we can smoothly animate its
+              open/close. `grid-template-rows: 0fr/1fr` is the standard
+              auto-height transition; opacity rides alongside for a nice
+              fade. Mousedown preventDefault on the children keeps the input
+              from blurring before a click registers. */}
+          <Box
+            display="grid"
+            style={{
+              gridTemplateRows: isFocused ? '1fr' : '0fr',
+              opacity: isFocused ? 1 : 0,
+              transition: 'grid-template-rows 180ms ease, opacity 180ms ease',
+            }}
+            onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
           >
-            <Text>No listening services in this workspace.</Text>
-            <Text fontSize="11px">Start a dev server, then click Refresh.</Text>
-          </Flex>
-        ) : (
-          <>
-            {services.map((s) => (
-              <Box
-                key={`${s.pid}:${s.port}`}
-                as="button"
-                w="100%"
-                textAlign="left"
-                px="3"
-                py="2"
-                bg="transparent"
-                borderBottom="1px solid #161b22"
-                cursor="pointer"
-                _hover={{ bg: '#0d1117' }}
-                onClick={() => onPick(s)}
-              >
-                <HStack gap="2" align="baseline">
-                  <Text fontFamily="var(--grove-mono)" fontSize="13px" color="#79c0ff">
-                    {displayHost(s.host)}:{s.port}
-                  </Text>
-                  <Text fontSize="12px" color="#c9d1d9">
-                    {s.cmd}
-                  </Text>
-                  <Text fontSize="11px" color="#7d8590">
-                    pid {s.pid}
-                  </Text>
-                </HStack>
-                {s.cwd && (
-                  <Text fontSize="11px" color="#7d8590" fontFamily="var(--grove-mono)" mt="0.5">
-                    {s.cwd}
-                  </Text>
-                )}
-              </Box>
-            ))}
-            {recents.length > 0 && (
-              <>
-                <Box
-                  px="3"
-                  py="1.5"
-                  bg="#0d1117"
-                  borderTop="1px solid #161b22"
-                  borderBottom="1px solid #161b22"
-                >
-                  <Text
-                    fontSize="10px"
-                    color="#7d8590"
-                    textTransform="uppercase"
-                    letterSpacing="0.06em"
-                  >
-                    Recent
-                  </Text>
-                </Box>
-                {recents.map((h) => (
-                  <Flex
-                    key={h.url}
-                    align="center"
+            <Box
+              maxH="320px"
+              overflowY={isFocused ? 'auto' : 'hidden'}
+              borderTop={isFocused && (total > 0 || query) ? '1px solid #21262d' : 'none'}
+              style={{ minHeight: 0 }}
+            >
+              {services === null ? (
+                <Flex h="80px" align="center" justify="center">
+                  <SquareLoader />
+                </Flex>
+              ) : total === 0 ? (
+                query ? (
+                  <Box px="5" py="3">
+                    <Text fontSize="12px" color="#7d8590">
+                      No matches for "{addr}". Press Enter to load this URL.
+                    </Text>
+                  </Box>
+                ) : null
+              ) : (
+                <Box bg="transparent">
+            {rows.map((row, idx) => {
+              const isActive = idx === highlight;
+              if (row.kind === 'service') {
+                const s = row.service;
+                return (
+                  <Box
+                    key={`s:${s.pid}:${s.port}`}
+                    as="button"
+                    w="100%"
+                    textAlign="left"
                     px="3"
                     py="2"
-                    gap="2"
-                    borderBottom="1px solid #161b22"
-                    _hover={{ bg: '#0d1117', '& .grove-recent-x': { opacity: 1 } }}
+                    bg={isActive ? '#1f2937' : 'transparent'}
+                    border="none"
+                    cursor="pointer"
+                    _hover={{ bg: isActive ? '#1f2937' : '#161b22' }}
+                    onMouseEnter={() => setHighlight(idx)}
+                    onClick={() => choose(idx)}
+                    borderBottom={idx < rows.length - 1 ? '1px solid #161b22' : undefined}
                   >
-                    <Box
-                      as="button"
-                      flex="1"
-                      textAlign="left"
-                      bg="transparent"
-                      cursor="pointer"
-                      onClick={() => onPickHistory(h.url)}
-                    >
-                      <Text fontFamily="var(--grove-mono)" fontSize="13px" color="#c9d1d9">
-                        {h.url}
+                    <HStack gap="2" align="baseline">
+                      <Text fontFamily="var(--grove-mono)" fontSize="13px" color="#79c0ff">
+                        {displayHost(s.host)}:{s.port}
                       </Text>
-                    </Box>
-                    <Box
-                      as="button"
-                      className="grove-recent-x"
-                      onClick={(e: React.MouseEvent) => {
-                        e.stopPropagation();
-                        onRemoveHistory(h.url);
-                      }}
-                      opacity="0"
-                      transition="opacity 0.12s"
-                      cursor="pointer"
-                      bg="transparent"
-                      border="none"
-                      color="#7d8590"
-                      _hover={{ color: '#c9d1d9' }}
-                      title="Remove"
-                    >
-                      <svg
-                        width="12"
-                        height="12"
-                        viewBox="0 0 12 12"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.4"
-                        strokeLinecap="round"
+                      <Text fontSize="12px" color="#c9d1d9">
+                        {s.cmd}
+                      </Text>
+                      <Text fontSize="11px" color="#7d8590">
+                        pid {s.pid}
+                      </Text>
+                    </HStack>
+                    {s.cwd && (
+                      <Text
+                        fontSize="11px"
+                        color="#7d8590"
+                        fontFamily="var(--grove-mono)"
+                        mt="0.5"
                       >
-                        <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" />
-                      </svg>
-                    </Box>
-                  </Flex>
-                ))}
-              </>
-            )}
-          </>
-        )}
+                        {s.cwd}
+                      </Text>
+                    )}
+                  </Box>
+                );
+              }
+              const h = row.entry;
+              return (
+                <Flex
+                  key={`r:${h.url}`}
+                  align="center"
+                  px="3"
+                  py="2"
+                  gap="2"
+                  bg={isActive ? '#1f2937' : 'transparent'}
+                  borderBottom={idx < rows.length - 1 ? '1px solid #161b22' : undefined}
+                  onMouseEnter={() => setHighlight(idx)}
+                  _hover={{
+                    bg: isActive ? '#1f2937' : '#161b22',
+                    '& .grove-recent-x': { opacity: 1 },
+                  }}
+                >
+                  <Box
+                    as="button"
+                    flex="1"
+                    textAlign="left"
+                    bg="transparent"
+                    border="none"
+                    cursor="pointer"
+                    onClick={() => choose(idx)}
+                  >
+                    <Text fontFamily="var(--grove-mono)" fontSize="13px" color="#c9d1d9">
+                      {h.url}
+                    </Text>
+                  </Box>
+                  <Box
+                    as="button"
+                    className="grove-recent-x"
+                    onClick={(e: React.MouseEvent) => {
+                      e.stopPropagation();
+                      onRemoveHistory(h.url);
+                    }}
+                    opacity="0"
+                    transition="opacity 0.12s"
+                    cursor="pointer"
+                    bg="transparent"
+                    border="none"
+                    color="#7d8590"
+                    _hover={{ color: '#c9d1d9' }}
+                    title="Remove"
+                  >
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 12 12"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.4"
+                      strokeLinecap="round"
+                    >
+                      <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" />
+                    </svg>
+                  </Box>
+                </Flex>
+              );
+            })}
+                </Box>
+              )}
+            </Box>
+          </Box>
+        </Box>
       </Box>
-      <Box as="form" onSubmit={onCustom} px="3" py="2" borderTop="1px solid #21262d" flexShrink={0}>
-        <Input
-          size="xs"
-          value={addr}
-          onChange={(e) => setAddr(e.target.value)}
-          placeholder="Or enter a URL: 127.0.0.1:5173"
-          fontSize="12px"
-          bg="#161b22"
-          borderColor="#30363d"
-          color="#c9d1d9"
-          borderRadius="full"
-          px="3"
-          h="26px"
-          _focus={{ borderColor: '#1f6feb', boxShadow: '0 0 0 1px #1f6feb' }}
-        />
-      </Box>
-    </Flex>
+    </Box>
   );
 }
 
