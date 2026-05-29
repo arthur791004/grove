@@ -21,6 +21,7 @@ import { IS_ELECTRON } from './env';
 import { Sidebar } from './Sidebar';
 import { AgentsView } from './AgentsView';
 import { LayoutHost } from './layout/LayoutHost';
+import { useHideBrowserOverlay } from './useHideBrowserOverlay';
 import { CommandPalette } from './CommandPalette';
 import { ReconnectBanner } from './ReconnectBanner';
 import { SessionChoiceDialog } from './SessionChoiceDialog';
@@ -36,13 +37,6 @@ import { usePanels } from './extensions/registry';
 const EMPTY_GROUPS: Group[] = [];
 
 const SIDEBAR_WIDTH = 220;
-// Default right-side panel takes 40% of the content area, with a minimum
-// width so it stays usable on small windows.
-const PANEL_RATIO = 0.4;
-const PANEL_MIN = 360;
-// When the workspace would have less than this many pixels next to the diff
-// panel, force the panel into fullscreen instead of splitting the space.
-const MIN_WORKSPACE_WIDTH = 480;
 
 export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -79,25 +73,14 @@ export function App() {
   const panels = usePanels();
   const activePanelId = useStore((s) => s.activePanelId);
   const togglePanel = useStore((s) => s.togglePanel);
-  const activeUserFullscreen = useStore((s) =>
-    activePanelId ? !!s.panelFullscreen[activePanelId] : false,
-  );
-  const registryPanel = activePanelId
-    ? (panels.find((p) => p.id === activePanelId) ?? null)
-    : null;
   // The embedded browser panel is Electron-only (WebContentsView) — in any
-  // browser build it's neither offered in the titlebar nor rendered if a
-  // desktop session left it active.
-  const titlebarPanels = IS_ELECTRON ? panels : panels.filter((p) => p.id !== 'browser');
-  const activePanel =
-    !IS_ELECTRON && registryPanel?.id === 'browser' ? null : registryPanel;
+  // browser build it's neither rendered nor offered. Titlebar panel toggles
+  // were removed in both modes: opening Diff/Files/Browser now goes through
+  // the workspace right-click "New tab" menu (sidebar) or the TabBar's `+`
+  // and right-click (top), keeping the titlebar uniform.
+  const titlebarPanels: typeof panels = [];
 
   const contentW = windowWidth - (!isMobile && sidebarOpen ? SIDEBAR_WIDTH : 0);
-  const panelOpen = !!activePanel;
-  const activePanelBaseW = panelOpen ? Math.max(PANEL_MIN, Math.round(contentW * PANEL_RATIO)) : 0;
-  const forcedFullscreen = panelOpen && contentW - activePanelBaseW < MIN_WORKSPACE_WIDTH;
-  // On mobile an open panel always takes the whole workspace area.
-  const effectiveFullscreen = isMobile || activeUserFullscreen || forcedFullscreen;
   useShortcuts(() => setPaletteOpen(true));
 
   useEffect(() => {
@@ -262,13 +245,7 @@ export function App() {
               tabs can bootstrap (spawn claude, fire agentStates) in the
               background while the user is on the Agents View. */}
           <Box w="100%" h="100%" display={agentsViewOpen ? 'none' : 'block'}>
-            <LayoutContent
-              isMobile={isMobile}
-              effectiveFullscreen={effectiveFullscreen}
-              panelPercent={Math.round((activePanelBaseW / Math.max(1, contentW)) * 100)}
-              panelWidth={effectiveFullscreen ? contentW : activePanelBaseW}
-              forcedFullscreen={isMobile || forcedFullscreen}
-            />
+            <LayoutContent contentW={contentW} />
           </Box>
           {agentsViewOpen && <AgentsView />}
         </Box>
@@ -309,28 +286,37 @@ export function App() {
   );
 }
 
-function LayoutContent({
-  isMobile,
-  effectiveFullscreen,
-  panelWidth,
-  forcedFullscreen,
-}: {
-  isMobile: boolean;
-  effectiveFullscreen: boolean;
-  panelPercent: number;
-  panelWidth: number;
-  forcedFullscreen: boolean;
-}) {
-  // The active group's tree owns the layout — switching workspaces (sidebar)
-  // swaps which tree is displayed.
+function LayoutContent({ contentW }: { contentW: number }) {
+  // The active group's tree owns the layout. Resolution order:
+  //   1. If a panel is currently focused (`activePanelId` set), find whose
+  //      tree contains it — that workspace becomes active. Lets the user
+  //      click Diff/Files/Browser in a *different* workspace's sidebar and
+  //      jump to that workspace without a separate switch click.
+  //   2. Otherwise use the active tab's group.
+  //   3. Fall back to the first workspace.
   const activeGroupId = useStore((s) => {
+    if (s.activePanelId) {
+      for (const [gid, tree] of Object.entries(s.layoutTreeByGroup)) {
+        const found = (function walk(n: import('./layout/types').LayoutNode): boolean {
+          return n.type === 'leaf'
+            ? n.panes.some((p) => p.id === s.activePanelId)
+            : n.children.some(walk);
+        })(tree);
+        if (found) return gid;
+      }
+    }
     const tab = s.tabs.find((t) => t.id === s.activeTabId);
     return tab?.groupId ?? s.groupOrder[0] ?? null;
   });
   const tree = useStore((s) => (activeGroupId ? s.layoutTreeByGroup[activeGroupId] : null));
   const resizeLayoutSplit = useStore((s) => s.resizeLayoutSplit);
-  const activePanelId = useStore((s) => s.activePanelId);
 
+  // The user-visible "tabs" are the top-level entries under root. Main
+  // screen only renders the ACTIVE entry — never multiple top-level entries
+  // side-by-side. Splits are sub-trees within an entry and *do* render
+  // side-by-side, because the user explicitly asked to see those panes
+  // simultaneously.
+  const focusedId = useStore((s) => s.activePanelId ?? s.activeTabId);
   if (!tree || (tree.type === 'leaf' && tree.panes.length === 0)) {
     return (
       <Flex h="100%" w="100%" align="center" justify="center" bg="#010409">
@@ -340,21 +326,23 @@ function LayoutContent({
       </Flex>
     );
   }
-
-  // When the user has fullscreened the panel, swap the tree for a single-leaf
-  // tree containing only the panel pane so the workspace doesn't render.
+  // Find the top-level entry that owns the focused pane; fall back to the
+  // first entry if nothing matches.
   let renderedTree = tree;
-  if (effectiveFullscreen && activePanelId) {
-    const onlyPanel = collectPanelLeaf(tree, activePanelId);
-    if (onlyPanel) renderedTree = onlyPanel;
+  if (tree.type === 'split' && focusedId) {
+    const containing = tree.children.find((c) => nodeContains(c, focusedId));
+    if (containing) renderedTree = containing;
+    else renderedTree = tree.children[0];
+  } else if (tree.type === 'split') {
+    renderedTree = tree.children[0];
   }
 
   return (
     <LayoutHost
       tree={renderedTree}
       groupId={activeGroupId ?? ''}
-      forcedFullscreen={isMobile || forcedFullscreen}
-      panelWidth={panelWidth}
+      forcedFullscreen={false}
+      panelWidth={contentW}
       onSplitResize={(splitId, sizes) => {
         if (activeGroupId) resizeLayoutSplit(activeGroupId, splitId, sizes);
       }}
@@ -362,15 +350,10 @@ function LayoutContent({
   );
 }
 
-// Find the leaf in `tree` that contains `paneId` and return it standalone —
-// used to render a panel-only view when fullscreen is on.
-function collectPanelLeaf(tree: import('./layout/types').LayoutNode, paneId: string) {
-  const all = (function walk(
-    n: import('./layout/types').LayoutNode,
-  ): import('./layout/types').LeafNode[] {
-    return n.type === 'leaf' ? [n] : n.children.flatMap(walk);
-  })(tree);
-  return all.find((l) => l.panes.some((p) => p.id === paneId)) ?? null;
+function nodeContains(node: import('./layout/types').LayoutNode, paneId: string): boolean {
+  return node.type === 'leaf'
+    ? node.panes.some((p) => p.id === paneId)
+    : node.children.some((c) => nodeContains(c, paneId));
 }
 
 const TITLEBAR_ICON_COLOR = '#c9d1d9';
@@ -464,6 +447,7 @@ function AddWorkspaceSplitButton() {
   const setAutoEditCwdGroupId = useStore((s) => s.setAutoEditCwdGroupId);
   const forkGroup = useStore((s) => s.forkGroup);
   const [open, setOpen] = useState(false);
+  useHideBrowserOverlay(open);
   const [showForkPicker, setShowForkPicker] = useState(false);
   // groupId → is its cwd a git repo. Populated on demand when the fork
   // picker opens (or when the user clicks "Fork workspace…" with one group).
@@ -1135,6 +1119,7 @@ type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
 
 function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [section, setSection] = useState<SettingsSectionId>('appearance');
+  useHideBrowserOverlay(open);
 
   // Always land on the first category when the dialog is reopened.
   useEffect(() => {

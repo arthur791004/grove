@@ -59,13 +59,19 @@ export function mapLeaves(
     .map((c) => mapLeaves(c, transform))
     .filter((c): c is LayoutNode => c !== null);
   if (mapped.length === 0) return null;
-  if (mapped.length === 1) return mapped[0];
+  // Single-child splits normally collapse into their child, but a workspace
+  // root's tabs container (`role: 'tabs'`) is intentionally a split with
+  // potentially one child. Collapsing it would demote a sub-split into root
+  // and turn the user's split layout into multiple top-level tabs.
+  if (mapped.length === 1 && node.role !== 'tabs') return mapped[0];
   // Recompute sizes when count changes (evenly distribute the lost child's
   // share). When count is unchanged, keep the parent's sizes.
   const sizes =
     mapped.length === node.children.length
       ? node.sizes
-      : Array(mapped.length).fill(100 / mapped.length);
+      : mapped.length === 1
+        ? [100]
+        : Array(mapped.length).fill(100 / mapped.length);
   const next: SplitNode = { ...node, children: mapped, sizes };
   return next;
 }
@@ -135,9 +141,13 @@ export function splitRight(
       sizes: normalize(sizes, newCount),
     };
   }
+  // Brand the new root as a tabs container so a later close that reduces it
+  // to one child doesn't collapse it (which would demote a sub-split below
+  // back into root and silently break a split layout).
   return {
     type: 'split',
-    id: `split-${uid()}`,
+    id: `tabs-${uid()}`,
+    role: 'tabs',
     dir: 'h',
     sizes: [100 - rightPercent, rightPercent],
     children: [tree, rightLeaf],
@@ -171,6 +181,32 @@ export function splitLeaf(
   return {
     ...tree,
     children: tree.children.map((c) => splitLeaf(c, leafId, dir, newLeaf, rightOrBelow)),
+  };
+}
+
+// Reorder a leaf's panes. Used by the TabBar's dnd-kit sortable to commit
+// the new ordering once the drop event fires.
+export function reorderLeafPanes(
+  tree: LayoutNode,
+  leafId: string,
+  paneIds: string[],
+): LayoutNode {
+  if (isLeaf(tree)) {
+    if (tree.id !== leafId) return tree;
+    const byId = new Map(tree.panes.map((p) => [p.id, p] as const));
+    const next: Pane[] = [];
+    for (const id of paneIds) {
+      const p = byId.get(id);
+      if (p) next.push(p);
+    }
+    // Append any panes the caller forgot to mention (shouldn't happen, but
+    // safer than silently dropping them).
+    for (const p of tree.panes) if (!paneIds.includes(p.id)) next.push(p);
+    return { ...tree, panes: next };
+  }
+  return {
+    ...tree,
+    children: tree.children.map((c) => reorderLeafPanes(c, leafId, paneIds)),
   };
 }
 

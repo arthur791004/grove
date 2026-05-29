@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { API_BASE } from './api';
-import type { LayoutNode, Pane, PaneKind } from './layout/types';
+import type { LayoutNode, LeafNode, Pane, PaneKind, SplitNode } from './layout/types';
 import {
   addPaneToLeaf,
   findLeaf,
@@ -10,7 +10,9 @@ import {
   getAllPanes,
   hasPaneOfKind,
   makeLeaf,
+  mapLeaves,
   removePane,
+  reorderLeafPanes,
   setActivePane,
   splitLeaf as splitLeafOp,
   splitRight,
@@ -248,11 +250,39 @@ interface State {
   // between leaves. The legacy fields stay in sync for unmigrated consumers
   // (Sidebar, AgentsView, useTabContext, …).
   layoutTreeByGroup: Record<string, LayoutNode>;
+  // Per-pane state for the panel kinds. Lets a workspace hold multiple Diff
+  // / Files / Browser panes that each remember their own selection, search,
+  // URL, etc. Keyed by pane.id (now a uid for newly-added panel panes;
+  // historical 'diff'/'files'/'browser' ids still work as keys for trees
+  // persisted before this change — see v3 migration).
+  paneState: Record<string, PaneState>;
   // First message to send into a new Claude tab once its TUI is ready (state
   // first transitions to 'blocked' or 'working' with no pending message).
   // Keyed by tab id; consumed once on send.
   pendingFirstMessages: Record<string, string>;
 }
+
+// Per-pane state for panel kinds. Each instance of a Diff / Files / Browser
+// pane gets its own slice — opening a second Diff in the same workspace
+// keeps independent selection and search state.
+export interface DiffPaneState {
+  fileListOpen?: boolean;
+  selectedFile?: string | null;
+}
+export interface FilesPaneState {
+  listOpen?: boolean;
+  searchOpen?: boolean;
+  searchQuery?: string;
+  currentPath?: string | null;
+}
+export interface BrowserPaneState {
+  listOpen?: boolean;
+  url?: string | null;
+}
+export type PaneState =
+  | ({ kind: 'diff' } & DiffPaneState)
+  | ({ kind: 'files' } & FilesPaneState)
+  | ({ kind: 'browser' } & BrowserPaneState);
 
 export interface SessionChoice {
   tabId: string;
@@ -274,7 +304,17 @@ interface Actions {
   ): Promise<{ ok: true } | { needsConfirm: true; status: WorktreeStatus } | { error: string }>;
   _dropGroup(id: string): void;
   markForkContextConsumed(groupId: string): void;
-  newTab(groupId?: string, title?: string, opts?: { mode?: NewTabMode }): string;
+  newTab(
+    groupId?: string,
+    title?: string,
+    opts?: {
+      mode?: NewTabMode;
+      // When set, append the new pane as a tab inside this existing leaf
+      // rather than creating a new sibling top-level entry. The top-mode
+      // TabBar `+` uses this so the gesture matches "new tab in this leaf".
+      inLeafId?: string;
+    },
+  ): string;
   closeTab(id: string): void;
   renameTab(id: string, title: string): void;
   setTabColor(id: string, color: TabColor): void;
@@ -317,8 +357,47 @@ interface Actions {
   // Layout-tree mutations (slice 4+). Resize is wired in slice 3 so the
   // user-dragged divider persists across renders.
   resizeLayoutSplit(groupId: string, splitId: string, sizes: number[]): void;
+  // Swap two direct siblings in their containing split. Used by the leaf
+  // drag handle in PaneOverlay so the user can reorder visible sub-panes.
+  swapSiblingsInTree(groupId: string, nodeIdA: string, nodeIdB: string): void;
+  // Move a direct child of root from one index to another. Used by sidebar
+  // dnd to reorder top-level "tabs" (whether they're single leaves or
+  // sub-split groups).
+  moveTopLevelInTree(groupId: string, fromNodeId: string, toNodeId: string): void;
+  // Shallow-merge per-pane state. Initializes the slice on first write if
+  // it doesn't exist yet — caller supplies `kind` once on the first write
+  // (omitted on subsequent writes, copied from existing slice).
+  setPaneState(paneId: string, patch: Partial<PaneState> & { kind?: PaneState['kind'] }): void;
   splitLeafInTree(groupId: string, leafId: string, dir: 'h' | 'v', pane: Pane, after: boolean): void;
   addPaneToLeafInTree(groupId: string, leafId: string, pane: Pane): void;
+  // Create a new terminal-backed tab AND place it as its own leaf splitting
+  // off `leafId`. Wraps the tab-creation half of `newTab` so the new pane
+  // lands in a sibling leaf instead of the workspace leaf.
+  splitLeafWithNewTab(
+    groupId: string,
+    leafId: string,
+    dir: 'h' | 'v',
+    mode: NewTabMode,
+  ): string;
+  reorderLeafPanesInTree(groupId: string, leafId: string, paneIds: string[]): void;
+  // Move a pane from whatever leaf it currently lives in to `destLeafId` at
+  // `destIndex`. No-op if source leaf is the destination — within-leaf
+  // reorder uses reorderLeafPanesInTree.
+  movePaneAcrossLeaves(
+    groupId: string,
+    paneId: string,
+    destLeafId: string,
+    destIndex: number,
+  ): void;
+  // Pop an existing pane out of its current leaf and into a fresh sibling
+  // leaf. No-op if the pane is already alone in its leaf (nothing would
+  // change). Used by the sidebar's "Open in split" affordance.
+  splitOffPaneInTree(
+    groupId: string,
+    paneId: string,
+    dir: 'h' | 'v',
+    after: boolean,
+  ): void;
   removePaneFromTree(groupId: string, paneId: string): void;
   setActivePaneInTree(groupId: string, paneId: string): void;
   setAgentLabel(tabId: string, label: string): void;
@@ -353,30 +432,162 @@ function activeGroupId(s: Pick<State, 'tabs' | 'activeTabId' | 'groupOrder'>): s
   return tab?.groupId ?? s.groupOrder[0] ?? null;
 }
 
-function panelTitle(id: string): string {
-  if (id === 'diff') return 'Diff';
-  if (id === 'files') return 'Files';
-  if (id === 'browser') return 'Browser';
-  return id;
+function leafExistsInTree(tree: LayoutNode, leafId: string): boolean {
+  if (tree.type === 'leaf') return tree.id === leafId;
+  return tree.children.some((c) => leafExistsInTree(c, leafId));
+}
+
+// Find the top-level entry (direct child of root, or root itself if it's
+// a leaf) that contains the given pane. Used by close handlers to keep
+// focus inside the same "tab" when one of its sub-panes is removed.
+function topLevelContaining(tree: LayoutNode, paneId: string): LayoutNode | null {
+  if (tree.type === 'leaf') {
+    return tree.panes.some((p) => p.id === paneId) ? tree : null;
+  }
+  for (const child of tree.children) {
+    const found = (function walk(n: LayoutNode): boolean {
+      if (n.type === 'leaf') return n.panes.some((p) => p.id === paneId);
+      return n.children.some(walk);
+    })(child);
+    if (found) return child;
+  }
+  return null;
+}
+
+// Pick the pane that should receive focus after `paneId` is closed.
+//
+// Walks the tree in three priority bands so the focus shift always lands as
+// close as possible to where the user was working:
+//   1. **Same leaf** — if the closing pane has a tab sibling in its own
+//      leaf, focus that (prefers the pane after, falls back to the one
+//      before).
+//   2. **Adjacent leaf within the same top-level tab** — when the leaf
+//      collapses entirely, focus the nearest sibling leaf in the same
+//      sub-split (i.e., still in the user's current "tab" on the main
+//      screen).
+//   3. **Previous tab** — if the whole top-level tab collapses, focus the
+//      previous top-level entry; if the closed entry was first, fall back
+//      to the next one.
+function focusAfterClose(tree: LayoutNode, paneId: string): string | null {
+  // 1) Same-leaf sibling.
+  const leaf = (function findLeaf(node: LayoutNode): LeafNode | null {
+    if (node.type === 'leaf') return node.panes.some((p) => p.id === paneId) ? node : null;
+    for (const c of node.children) {
+      const r = findLeaf(c);
+      if (r) return r;
+    }
+    return null;
+  })(tree);
+  if (leaf) {
+    const idx = leaf.panes.findIndex((p) => p.id === paneId);
+    if (idx >= 0 && leaf.panes.length > 1) {
+      return leaf.panes[idx + 1]?.id ?? leaf.panes[idx - 1]?.id ?? null;
+    }
+  }
+  // 2) Adjacent leaf inside the same top-level tab.
+  const top = topLevelContaining(tree, paneId);
+  if (top && leaf) {
+    const nearbyInTop = nearestSiblingLeafFocus(top, leaf.id);
+    if (nearbyInTop) return nearbyInTop;
+  }
+  // 3) Adjacent top-level tab — focus its previously-active pane, not its
+  // first pane, so the user lands on what was visible there before.
+  const children: LayoutNode[] = tree.type === 'split' ? tree.children : [tree];
+  const idx = top ? children.indexOf(top) : -1;
+  if (idx < 0) return null;
+  const fallback = children[idx - 1] ?? children[idx + 1];
+  if (!fallback) return null;
+  return activePaneIdIn(fallback);
+}
+
+// Resolve the "currently active" pane id within a sub-tree by walking leaves
+// and respecting each leaf's `activePaneId`. Picks the first leaf encountered
+// in tree order — good enough for the focus-restore fallback.
+function activePaneIdIn(node: LayoutNode): string | null {
+  if (node.type === 'leaf') {
+    return node.activePaneId ?? node.panes[0]?.id ?? null;
+  }
+  for (const c of node.children) {
+    const r = activePaneIdIn(c);
+    if (r) return r;
+  }
+  return null;
+}
+
+// Within a top-level entry, find the active pane of the leaf nearest to the
+// soon-to-be-removed leaf. Walks the sub-tree to locate siblings of `leafId`
+// at the closest split level.
+function nearestSiblingLeafFocus(top: LayoutNode, leafId: string): string | null {
+  if (top.type === 'leaf') return null;
+  for (const child of top.children) {
+    const found = (function walk(n: LayoutNode): boolean {
+      if (n.type === 'leaf') return n.id === leafId;
+      return n.children.some(walk);
+    })(child);
+    if (found) {
+      const idx = top.children.indexOf(child);
+      const sibling = top.children[idx + 1] ?? top.children[idx - 1];
+      if (sibling) return activePaneIdIn(sibling);
+      const deeper = nearestSiblingLeafFocus(child, leafId);
+      if (deeper) return deeper;
+      return null;
+    }
+  }
+  return null;
+}
+
+function panelTitle(kind: string): string {
+  if (kind === 'diff') return 'Diff';
+  if (kind === 'files') return 'Files';
+  if (kind === 'browser') return 'Browser';
+  return kind;
+}
+
+// Mint a fresh panel pane plus its initial state slice. Each instance gets a
+// new uid so the same workspace can hold multiple Diff / Files / Browser
+// panes that don't share state. Returns the seed state the caller should
+// merge into store.paneState along with creating the pane.
+export function makePanelPane(kind: 'diff' | 'files' | 'browser'): {
+  pane: Pane;
+  state: PaneState;
+} {
+  const id = uid();
+  const pane: Pane = { id, kind, title: panelTitle(kind) };
+  let state: PaneState;
+  if (kind === 'diff') state = { kind, fileListOpen: true, selectedFile: null };
+  else if (kind === 'files')
+    state = {
+      kind,
+      listOpen: true,
+      searchOpen: false,
+      searchQuery: '',
+      currentPath: null,
+    };
+  else state = { kind, listOpen: true, url: null };
+  return { pane, state };
 }
 
 function withPanelOpen(
   s: State,
-  panelId: string,
-): Pick<State, 'activePanelId' | 'layoutTreeByGroup'> {
+  panelKind: 'diff' | 'files' | 'browser',
+): Pick<State, 'activePanelId' | 'layoutTreeByGroup' | 'paneState'> {
   const gid = activeGroupId(s);
-  if (!gid) return { activePanelId: panelId, layoutTreeByGroup: s.layoutTreeByGroup };
+  if (!gid)
+    return {
+      activePanelId: s.activePanelId,
+      layoutTreeByGroup: s.layoutTreeByGroup,
+      paneState: s.paneState,
+    };
   const tree = s.layoutTreeByGroup[gid] ?? makeLeaf([]);
-  if (getAllPanes(tree).some((p) => p.id === panelId)) {
-    return { activePanelId: panelId, layoutTreeByGroup: s.layoutTreeByGroup };
-  }
-  const panelLeaf = makeLeaf([
-    { id: panelId, kind: panelId as PaneKind, title: panelTitle(panelId) },
-  ]);
+  // Each call mints a fresh instance — no more "already open → focus"; the
+  // user can have multiple of any kind.
+  const { pane, state } = makePanelPane(panelKind);
+  const panelLeaf = makeLeaf([pane]);
   const nextTree = splitRight(tree, panelLeaf);
   return {
-    activePanelId: panelId,
+    activePanelId: pane.id,
     layoutTreeByGroup: { ...s.layoutTreeByGroup, [gid]: nextTree },
+    paneState: { ...s.paneState, [pane.id]: state },
   };
 }
 
@@ -390,6 +601,30 @@ function withPanelClosed(s: State): Pick<State, 'activePanelId' | 'layoutTreeByG
   return {
     activePanelId: null,
     layoutTreeByGroup: { ...s.layoutTreeByGroup, [gid]: next ?? makeLeaf([]) },
+  };
+}
+
+// Focus the most-recently-added pane of this kind in the active workspace's
+// tree; create one only if there isn't any. Used by callers that mean
+// "show me a Files panel" rather than "spawn another Files panel" — e.g.,
+// openFileInBrowser routing a file from a terminal block to the panel.
+function withPanelFocusOrOpen(
+  s: State,
+  panelKind: 'diff' | 'files' | 'browser',
+): Pick<State, 'activePanelId' | 'layoutTreeByGroup' | 'paneState'> {
+  const gid = activeGroupId(s);
+  if (!gid) return { activePanelId: s.activePanelId, layoutTreeByGroup: s.layoutTreeByGroup, paneState: s.paneState };
+  const tree = s.layoutTreeByGroup[gid];
+  if (!tree) return withPanelOpen(s, panelKind);
+  const panes = getAllPanes(tree);
+  const existing = [...panes].reverse().find((p) => p.kind === panelKind);
+  if (!existing) return withPanelOpen(s, panelKind);
+  const nextTree = setActivePane(tree, existing.id);
+  return {
+    activePanelId: existing.id,
+    layoutTreeByGroup:
+      nextTree === tree ? s.layoutTreeByGroup : { ...s.layoutTreeByGroup, [gid]: nextTree },
+    paneState: s.paneState,
   };
 }
 
@@ -434,6 +669,7 @@ export const useStore = create<State & Actions>()(
       agentsViewOpen: false,
       pendingFirstMessages: {},
       layoutTreeByGroup: { default: makeLeaf([]) },
+      paneState: {},
 
       newGroup(name, cwd = '~') {
         const id = uid();
@@ -614,20 +850,20 @@ export const useStore = create<State & Actions>()(
             title: tab.title,
           };
           const tree = st.layoutTreeByGroup[gid] ?? makeLeaf([]);
-          // Workspace leaf = the first leaf without panel panes; if none
-          // exists yet (group started empty), create one.
-          const workspaceLeaf =
-            getAllLeaves(tree).find((l) =>
-              l.panes.every((p) => p.kind === 'shell' || p.kind === 'claude'),
-            ) ?? null;
-          let nextTree = tree;
-          if (workspaceLeaf) {
-            nextTree = addPaneToLeaf(tree, workspaceLeaf.id, pane) as LayoutNode;
+          let nextTree: LayoutNode;
+          if (opts?.inLeafId && leafExistsInTree(tree, opts.inLeafId)) {
+            // Append to the given leaf as a new tab. Used by the top-mode
+            // TabBar `+` so the new tab lands inside the same leaf, not as
+            // a new top-level sibling.
+            nextTree = addPaneToLeaf(tree, opts.inLeafId, pane) as LayoutNode;
+          } else if (tree.type === 'leaf' && tree.panes.length === 0) {
+            // Bootstrap from an empty tree.
+            nextTree = makeLeaf([pane]);
           } else {
-            // No workspace leaf — make one and split it to the left of any
-            // existing panels.
-            const fresh = makeLeaf([pane]);
-            nextTree = splitLeafOp(tree, getAllLeaves(tree)[0]!.id, 'h', fresh, false);
+            // Default (also: caller passed a stale inLeafId): new top-level
+            // tab as a sibling leaf at root, so the tab is always visible
+            // somewhere instead of becoming an orphan in `tabs[]`.
+            nextTree = splitRight(tree, makeLeaf([pane]), 50);
           }
           const next: Partial<State> = {
             tabs: [...st.tabs, tab],
@@ -655,9 +891,13 @@ export const useStore = create<State & Actions>()(
           const orderForGroup = (s.tabOrderByGroup[tab.groupId] ?? []).filter((t) => t !== id);
           const newOrder = { ...s.tabOrderByGroup, [tab.groupId]: orderForGroup };
           const remaining = s.tabs.filter((t) => t.id !== id);
+          // Focus picking: prefer a sibling in the same top-level tab; if
+          // the whole tab is collapsing, jump to the previous tab instead.
           let nextActive = s.activeTabId;
           if (s.activeTabId === id) {
-            nextActive = orderForGroup[0] ?? remaining[0]?.id ?? null;
+            const treeBefore = s.layoutTreeByGroup[tab.groupId];
+            const next = treeBefore ? focusAfterClose(treeBefore, id) : null;
+            nextActive = next ?? orderForGroup[0] ?? remaining[0]?.id ?? null;
           }
           const runningCmds = { ...s.runningCmds };
           delete runningCmds[id];
@@ -668,7 +908,12 @@ export const useStore = create<State & Actions>()(
           const { [id]: _boot, ...claudeBootstrapTabs } = s.claudeBootstrapTabs;
           const { [id]: _pfm, ...pendingFirstMessages } = s.pendingFirstMessages;
           const tree = s.layoutTreeByGroup[tab.groupId];
-          const nextTree = tree ? removePane(tree, id) : null;
+          let nextTree = tree ? removePane(tree, id) : null;
+          // Update the sibling leaf's activePaneId so it renders the
+          // surviving pane (rather than the stale closed one).
+          if (nextTree && nextActive) {
+            nextTree = setActivePane(nextTree, nextActive);
+          }
           const layoutTreeByGroup = { ...s.layoutTreeByGroup };
           // A group always keeps at least one leaf — even if empty — so
           // newTab can target it.
@@ -716,9 +961,17 @@ export const useStore = create<State & Actions>()(
               }
             }
           }
-          if (!id || !s.unreadTabs[id]) return { activeTabId: id, layoutTreeByGroup };
+          // Tabs only ever represent shell/claude panes — focusing one means
+          // no panel is the current focus. Drop the legacy global flag so
+          // sidebar panel rows don't keep highlighting the last-opened panel.
+          const base = {
+            activeTabId: id,
+            layoutTreeByGroup,
+            activePanelId: id ? null : s.activePanelId,
+          };
+          if (!id || !s.unreadTabs[id]) return base;
           const { [id]: _, ...rest } = s.unreadTabs;
-          return { activeTabId: id, unreadTabs: rest, layoutTreeByGroup };
+          return { ...base, unreadTabs: rest };
         });
       },
 
@@ -768,14 +1021,17 @@ export const useStore = create<State & Actions>()(
       // also adds a panel leaf to the right of the active group's tree, and
       // closing one removes that pane. Multiple panels per group are not
       // surfaced in the UI yet but the tree already supports them.
-      openPanel(id) {
-        set((s) => withPanelOpen(s, id));
+      openPanel(kind) {
+        set((s) => withPanelOpen(s, kind as 'diff' | 'files' | 'browser'));
       },
       closePanel() {
         set((s) => withPanelClosed(s));
       },
-      togglePanel(id) {
-        set((s) => (s.activePanelId === id ? withPanelClosed(s) : withPanelOpen(s, id)));
+      togglePanel(kind) {
+        // With multiple instances per kind allowed, "toggle" loses precision —
+        // we focus an existing pane of the kind if any, otherwise spawn a new
+        // one. (Closing happens via the per-pane X.)
+        set((s) => withPanelFocusOrOpen(s, kind as 'diff' | 'files' | 'browser'));
       },
       togglePanelFullscreen(id) {
         set((s) => ({
@@ -823,10 +1079,11 @@ export const useStore = create<State & Actions>()(
       },
 
       openFileInBrowser(path, kind = 'file') {
-        // Switch to Files panel and stamp a request the FileBrowserPanel
-        // will consume on its next render.
+        // Route through focus-or-open: reuse the workspace's existing Files
+        // pane if one exists rather than spawning a fresh pane every time a
+        // terminal block routes a file here.
         set((s) => ({
-          ...withPanelOpen(s, 'files'),
+          ...withPanelFocusOrOpen(s, 'files'),
           fileBrowserRequest: { path, kind, nonce: Date.now() },
         }));
       },
@@ -875,6 +1132,73 @@ export const useStore = create<State & Actions>()(
       toggleAgentsView() {
         set((s) => ({ agentsViewOpen: !s.agentsViewOpen }));
       },
+      setPaneState(paneId, patch) {
+        set((s) => {
+          const prev = s.paneState[paneId];
+          const kind = patch.kind ?? prev?.kind;
+          if (!kind) return s;
+          const next = { ...(prev ?? {}), ...patch, kind } as PaneState;
+          return { paneState: { ...s.paneState, [paneId]: next } };
+        });
+      },
+      moveTopLevelInTree(groupId, fromNodeId, toNodeId) {
+        if (fromNodeId === toNodeId) return;
+        set((s) => {
+          const tree = s.layoutTreeByGroup[groupId];
+          if (!tree || tree.type !== 'split') return s;
+          const fromIdx = tree.children.findIndex((c) => c.id === fromNodeId);
+          const toIdx = tree.children.findIndex((c) => c.id === toNodeId);
+          if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return s;
+          const next = [...tree.children];
+          const [moved] = next.splice(fromIdx, 1);
+          next.splice(toIdx, 0, moved);
+          return {
+            layoutTreeByGroup: {
+              ...s.layoutTreeByGroup,
+              [groupId]: { ...tree, children: next },
+            },
+          };
+        });
+      },
+      swapSiblingsInTree(groupId, nodeIdA, nodeIdB) {
+        // Swap two nodes regardless of where they sit in the tree. Each
+        // node takes the other's exact slot — parent splits keep their
+        // shape, no collapse, no reflow other than what the swap implies.
+        if (nodeIdA === nodeIdB) return;
+        set((s) => {
+          const tree = s.layoutTreeByGroup[groupId];
+          if (!tree) return s;
+          // Locate both nodes (anywhere in the tree) and grab their values.
+          let nodeA: LayoutNode | null = null;
+          let nodeB: LayoutNode | null = null;
+          (function find(n: LayoutNode) {
+            if (n.id === nodeIdA) nodeA = n;
+            if (n.id === nodeIdB) nodeB = n;
+            if (n.type === 'split') n.children.forEach(find);
+          })(tree);
+          if (!nodeA || !nodeB) return s;
+          // Refuse to swap when one is an ancestor of the other — would put
+          // the ancestor inside itself and corrupt the tree.
+          const isAncestor = (ancestor: LayoutNode, descendantId: string): boolean => {
+            if (ancestor.type === 'leaf') return false;
+            return ancestor.children.some(
+              (c) => c.id === descendantId || isAncestor(c, descendantId),
+            );
+          };
+          if (isAncestor(nodeA, nodeIdB) || isAncestor(nodeB, nodeIdA)) return s;
+          // Rewrite the tree, replacing each by the other.
+          function swap(n: LayoutNode): LayoutNode {
+            if (n.id === nodeIdA) return nodeB!;
+            if (n.id === nodeIdB) return nodeA!;
+            if (n.type === 'leaf') return n;
+            return { ...n, children: n.children.map(swap) };
+          }
+          const nextTree = swap(tree);
+          return {
+            layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: nextTree },
+          };
+        });
+      },
       resizeLayoutSplit(groupId, splitId, sizes) {
         set((s) => {
           const tree = s.layoutTreeByGroup[groupId];
@@ -886,8 +1210,22 @@ export const useStore = create<State & Actions>()(
       },
       splitLeafInTree(groupId, leafId, dir, pane, after) {
         set((s) => {
-          const tree = s.layoutTreeByGroup[groupId];
+          let tree = s.layoutTreeByGroup[groupId];
           if (!tree) return s;
+          // If the entire root is the leaf being split, wrap it in a single-
+          // child "tabs" split first. Otherwise splitting a root-leaf gives
+          // a split with two top-level children, which the layout treats as
+          // two separate tabs instead of side-by-side panes inside one tab.
+          if (tree.type === 'leaf' && tree.id === leafId) {
+            tree = {
+              type: 'split',
+              id: `tabs-${uid()}`,
+              role: 'tabs',
+              dir: 'h',
+              sizes: [100],
+              children: [tree],
+            };
+          }
           const newLeaf = makeLeaf([pane]);
           const next = splitLeafOp(tree, leafId, dir, newLeaf, after);
           return { layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: next } };
@@ -901,14 +1239,147 @@ export const useStore = create<State & Actions>()(
           return { layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: next } };
         });
       },
+      splitLeafWithNewTab(groupId, leafId, dir, mode) {
+        const id = uid();
+        const tab: Tab = {
+          id,
+          title: mode,
+          color: pickRandomColor(),
+          groupId,
+          kind: mode === 'claude' ? 'claude' : 'shell',
+        };
+        const pane: Pane = { id, kind: tab.kind as PaneKind, title: tab.title };
+        set((s) => {
+          let tree = s.layoutTreeByGroup[groupId] ?? makeLeaf([]);
+          if (tree.type === 'leaf' && tree.id === leafId) {
+            tree = {
+              type: 'split',
+              id: `tabs-${uid()}`,
+              role: 'tabs',
+              dir: 'h',
+              sizes: [100],
+              children: [tree],
+            };
+          }
+          const nextTree = splitLeafOp(tree, leafId, dir, makeLeaf([pane]), true);
+          const next: Partial<State> = {
+            tabs: [...s.tabs, tab],
+            tabOrderByGroup: {
+              ...s.tabOrderByGroup,
+              [groupId]: [...(s.tabOrderByGroup[groupId] ?? []), id],
+            },
+            layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: nextTree },
+            activeTabId: id,
+          };
+          if (mode === 'claude') {
+            next.claudeBootstrapTabs = { ...s.claudeBootstrapTabs, [id]: true };
+          }
+          return next;
+        });
+        return id;
+      },
+      reorderLeafPanesInTree(groupId, leafId, paneIds) {
+        set((s) => {
+          const tree = s.layoutTreeByGroup[groupId];
+          if (!tree) return s;
+          const next = reorderLeafPanes(tree, leafId, paneIds);
+          if (next === tree) return s;
+          return { layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: next } };
+        });
+      },
+      splitOffPaneInTree(groupId, paneId, dir, after) {
+        set((s) => {
+          const tree = s.layoutTreeByGroup[groupId];
+          if (!tree) return s;
+          const sourceLeaf = findLeafContaining(tree, paneId);
+          if (!sourceLeaf || sourceLeaf.panes.length <= 1) return s;
+          const pane = sourceLeaf.panes.find((p) => p.id === paneId);
+          if (!pane) return s;
+          // Remove the pane first so the source leaf has the right shape
+          // when we re-find it for the split target.
+          const trimmed = mapLeaves(tree, (leaf) => {
+            if (leaf.id !== sourceLeaf.id) return leaf;
+            const remaining = leaf.panes.filter((p) => p.id !== paneId);
+            const stillActive =
+              leaf.activePaneId === paneId ? remaining[0]?.id ?? null : leaf.activePaneId;
+            return { ...leaf, panes: remaining, activePaneId: stillActive };
+          });
+          if (!trimmed) return s;
+          const newLeaf = makeLeaf([pane]);
+          const next = splitLeafOp(trimmed, sourceLeaf.id, dir, newLeaf, after);
+          return { layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: next } };
+        });
+      },
+      movePaneAcrossLeaves(groupId, paneId, destLeafId, destIndex) {
+        set((s) => {
+          const tree = s.layoutTreeByGroup[groupId];
+          if (!tree) return s;
+          const sourceLeaf = findLeafContaining(tree, paneId);
+          if (!sourceLeaf || sourceLeaf.id === destLeafId) return s;
+          const pane = sourceLeaf.panes.find((p) => p.id === paneId);
+          if (!pane) return s;
+          // Remove from source; if the source leaf empties, mapLeaves
+          // collapses the parent split.
+          const afterRemove = removePane(tree, paneId);
+          if (!afterRemove) {
+            // Source was the only leaf and it'd vanish — refuse the move
+            // so the workspace never ends up tree-less.
+            return s;
+          }
+          const inserted = mapLeaves(afterRemove, (leaf) => {
+            if (leaf.id !== destLeafId) return leaf;
+            const panes = [...leaf.panes];
+            const i = Math.max(0, Math.min(destIndex, panes.length));
+            panes.splice(i, 0, pane);
+            return { ...leaf, panes, activePaneId: paneId };
+          });
+          if (!inserted) return s;
+          return {
+            layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: inserted },
+          };
+        });
+      },
       removePaneFromTree(groupId, paneId) {
         set((s) => {
           const tree = s.layoutTreeByGroup[groupId];
           if (!tree) return s;
-          const next = removePane(tree, paneId);
-          return {
-            layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: next ?? makeLeaf([]) },
+          // Decide where focus should land before mutating the tree, so
+          // the helper can see the full context.
+          const fallback = focusAfterClose(tree, paneId);
+          let nextTree = removePane(tree, paneId) ?? makeLeaf([]);
+          if (fallback) {
+            nextTree = setActivePane(nextTree, fallback);
+          }
+          const update: Partial<State> = {
+            layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: nextTree },
           };
+          const fallbackPane = fallback
+            ? (function walk(n: LayoutNode): Pane | null {
+                if (n.type === 'leaf') return n.panes.find((p) => p.id === fallback) ?? null;
+                for (const c of n.children) {
+                  const r = walk(c);
+                  if (r) return r;
+                }
+                return null;
+              })(nextTree)
+            : null;
+          if (s.activePanelId === paneId) {
+            update.activePanelId = null;
+            if (fallbackPane) {
+              if (
+                fallbackPane.kind === 'diff' ||
+                fallbackPane.kind === 'files' ||
+                fallbackPane.kind === 'browser'
+              ) {
+                update.activePanelId = fallbackPane.id;
+              } else {
+                update.activeTabId = fallbackPane.id;
+              }
+            }
+          } else if (s.activeTabId === paneId && fallbackPane) {
+            update.activeTabId = fallbackPane.id;
+          }
+          return update;
         });
       },
       setActivePaneInTree(groupId, paneId) {
@@ -1071,8 +1542,9 @@ export const useStore = create<State & Actions>()(
         tabPosition: s.tabPosition,
         pins: s.pins,
         layoutTreeByGroup: s.layoutTreeByGroup,
+        paneState: s.paneState,
       }),
-      version: 2,
+      version: 4,
       // Lift any prior per-panel boolean into the new activePanelId /
       // panelFullscreen shape so users coming from older builds don't see
       // a closed panel where they last left one open.
@@ -1098,6 +1570,48 @@ export const useStore = create<State & Actions>()(
           delete s.diffPanelFullscreen;
           delete s.fileBrowserFullscreen;
           delete s.browserPanelFullscreen;
+        }
+        if (from < 3) {
+          // Seed per-pane state from the legacy global panel fields. Existing
+          // diff/files/browser panes were created with their `kind` as `id`,
+          // so we key paneState by the same id; new panes will use uids and
+          // initialize their own slice when added.
+          const trees = (s.layoutTreeByGroup as Record<string, unknown> | undefined) ?? {};
+          const paneState: Record<string, unknown> = {};
+          for (const tree of Object.values(trees)) {
+            const walk = (n: any): void => {
+              if (!n) return;
+              if (n.type === 'leaf') {
+                for (const p of n.panes ?? []) {
+                  if (p.kind === 'diff' && !paneState[p.id]) {
+                    paneState[p.id] = {
+                      kind: 'diff',
+                      fileListOpen: s.diffFileListOpen !== false,
+                      selectedFile: null,
+                    };
+                  } else if (p.kind === 'files' && !paneState[p.id]) {
+                    paneState[p.id] = {
+                      kind: 'files',
+                      listOpen: s.fileBrowserListOpen !== false,
+                      searchOpen: false,
+                      searchQuery: '',
+                      currentPath: null,
+                    };
+                  } else if (p.kind === 'browser' && !paneState[p.id]) {
+                    paneState[p.id] = {
+                      kind: 'browser',
+                      listOpen: s.browserPanelListOpen !== false,
+                      url: (s.browserPanelUrl as string | null | undefined) ?? null,
+                    };
+                  }
+                }
+              } else {
+                for (const child of n.children ?? []) walk(child);
+              }
+            };
+            walk(tree);
+          }
+          s.paneState = paneState;
         }
         if (from < 2) {
           // Build a layoutTreeByGroup from the existing flat tabs[] +
@@ -1139,6 +1653,26 @@ export const useStore = create<State & Actions>()(
             }
           }
           s.layoutTreeByGroup = trees;
+        }
+        if (from < 4) {
+          // Backfill the new SplitNode.role field on persisted trees by
+          // detecting the legacy `tabs-*` id prefix. Pre-v4 the convention
+          // was id-prefix-only; v4 promotes it to a typed field so id
+          // collisions can't accidentally affect collapse behavior.
+          const trees =
+            (s.layoutTreeByGroup as Record<string, LayoutNode> | undefined) ?? {};
+          const tagTabs = (node: LayoutNode): LayoutNode => {
+            if (node.type === 'leaf') return node;
+            const tagged: SplitNode = {
+              ...node,
+              role: node.id.startsWith('tabs-') ? 'tabs' : node.role,
+              children: node.children.map(tagTabs),
+            };
+            return tagged;
+          };
+          const upgraded: Record<string, LayoutNode> = {};
+          for (const [gid, t] of Object.entries(trees)) upgraded[gid] = tagTabs(t);
+          s.layoutTreeByGroup = upgraded;
         }
         return s;
       },

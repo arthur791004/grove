@@ -5,31 +5,36 @@ import { contextBridge, ipcRenderer } from 'electron';
 // fire `grove:browser-fail` before the renderer has attached its listener —
 // the message would be lost. We buffer the last failure and replay it to late
 // subscribers.
-type FailInfo = { url: string; code: number; message: string };
-type NavState = { canGoBack: boolean; canGoForward: boolean };
-let lastFail: FailInfo | null = null;
-let lastNavState: NavState = { canGoBack: false, canGoForward: false };
+// Each browser event now carries a paneId so the renderer can route it to
+// the right BrowserPanel instance. Buffer last-seen-per-pane state so a
+// late-mounting panel still sees its own current navigation status.
+type FailInfo = { paneId: string; url: string; code: number; message: string };
+type NavState = { paneId: string; canGoBack: boolean; canGoForward: boolean };
+type NavEvent = { paneId: string; url: string };
+type LoadingEvent = { paneId: string; loading: boolean };
+const lastFailByPane = new Map<string, FailInfo>();
+const lastNavStateByPane = new Map<string, NavState>();
 const failSubs = new Set<(info: FailInfo) => void>();
-const navSubs = new Set<(url: string) => void>();
+const navSubs = new Set<(ev: NavEvent) => void>();
 const navStateSubs = new Set<(state: NavState) => void>();
-const loadingSubs = new Set<(loading: boolean) => void>();
+const loadingSubs = new Set<(ev: LoadingEvent) => void>();
 
 ipcRenderer.on('grove:browser-fail', (_e, info: FailInfo) => {
-  lastFail = info;
+  lastFailByPane.set(info.paneId, info);
   for (const fn of failSubs) fn(info);
 });
-ipcRenderer.on('grove:browser-nav', (_e, url: string) => {
-  // A successful nav supersedes any pending error for that URL.
-  if (lastFail && lastFail.url === url) lastFail = null;
-  for (const fn of navSubs) fn(url);
+ipcRenderer.on('grove:browser-nav', (_e, ev: NavEvent) => {
+  const cached = lastFailByPane.get(ev.paneId);
+  if (cached && cached.url === ev.url) lastFailByPane.delete(ev.paneId);
+  for (const fn of navSubs) fn(ev);
 });
 ipcRenderer.on('grove:browser-navstate', (_e, state: NavState) => {
-  lastNavState = state;
+  lastNavStateByPane.set(state.paneId, state);
   for (const fn of navStateSubs) fn(state);
 });
-ipcRenderer.on('grove:browser-loading', (_e, loading: boolean) => {
-  if (loading) lastFail = null;
-  for (const fn of loadingSubs) fn(loading);
+ipcRenderer.on('grove:browser-loading', (_e, ev: LoadingEvent) => {
+  if (ev.loading) lastFailByPane.delete(ev.paneId);
+  for (const fn of loadingSubs) fn(ev);
 });
 
 // A click on a blocked-Claude notification: `send` set = an action button
@@ -88,15 +93,22 @@ contextBridge.exposeInMainWorld('grove', {
       ipcRenderer.invoke('workspace:delete-branches', req),
   },
   browser: {
-    open: (url: string): Promise<void> => ipcRenderer.invoke('grove:browser-open', url),
-    close: (): Promise<void> => ipcRenderer.invoke('grove:browser-close'),
-    setBounds: (bounds: Bounds | null): Promise<void> =>
-      ipcRenderer.invoke('grove:browser-set-bounds', bounds),
-    navigate: (url: string): Promise<void> => ipcRenderer.invoke('grove:browser-navigate', url),
-    reload: (): Promise<void> => ipcRenderer.invoke('grove:browser-reload'),
-    back: (): Promise<void> => ipcRenderer.invoke('grove:browser-back'),
-    forward: (): Promise<void> => ipcRenderer.invoke('grove:browser-forward'),
-    onNav: (cb: (url: string) => void): (() => void) => {
+    open: (paneId: string, url: string): Promise<void> =>
+      ipcRenderer.invoke('grove:browser-open', paneId, url),
+    close: (paneId: string): Promise<void> => ipcRenderer.invoke('grove:browser-close', paneId),
+    destroy: (paneId: string): Promise<void> =>
+      ipcRenderer.invoke('grove:browser-destroy', paneId),
+    setBounds: (paneId: string, bounds: Bounds | null): Promise<void> =>
+      ipcRenderer.invoke('grove:browser-set-bounds', paneId, bounds),
+    setOverlayHidden: (hidden: boolean): Promise<void> =>
+      ipcRenderer.invoke('grove:browser-set-overlay-hidden', hidden),
+    navigate: (paneId: string, url: string): Promise<void> =>
+      ipcRenderer.invoke('grove:browser-navigate', paneId, url),
+    reload: (paneId: string): Promise<void> => ipcRenderer.invoke('grove:browser-reload', paneId),
+    back: (paneId: string): Promise<void> => ipcRenderer.invoke('grove:browser-back', paneId),
+    forward: (paneId: string): Promise<void> =>
+      ipcRenderer.invoke('grove:browser-forward', paneId),
+    onNav: (cb: (ev: NavEvent) => void): (() => void) => {
       navSubs.add(cb);
       return () => {
         navSubs.delete(cb);
@@ -104,28 +116,28 @@ contextBridge.exposeInMainWorld('grove', {
     },
     onNavState: (cb: (state: NavState) => void): (() => void) => {
       navStateSubs.add(cb);
-      // Replay the latest state so late subscribers aren't stuck disabled.
-      cb(lastNavState);
+      // Replay any cached state for any pane so a late subscriber gets the
+      // current values immediately.
+      for (const s of lastNavStateByPane.values()) cb(s);
       return () => {
         navStateSubs.delete(cb);
       };
     },
     onFail: (cb: (info: FailInfo) => void): (() => void) => {
       failSubs.add(cb);
-      // Replay the most recent failure to late subscribers.
-      if (lastFail) cb(lastFail);
+      for (const info of lastFailByPane.values()) cb(info);
       return () => {
         failSubs.delete(cb);
       };
     },
-    onLoading: (cb: (loading: boolean) => void): (() => void) => {
+    onLoading: (cb: (ev: LoadingEvent) => void): (() => void) => {
       loadingSubs.add(cb);
       return () => {
         loadingSubs.delete(cb);
       };
     },
-    clearFail: (): void => {
-      lastFail = null;
+    clearFail: (paneId: string): void => {
+      lastFailByPane.delete(paneId);
     },
   },
   mcp: {

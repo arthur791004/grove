@@ -5,6 +5,11 @@ import type { ComponentType, ReactNode } from 'react';
 export interface PanelProps {
   forcedFullscreen: boolean;
   panelWidth: number;
+  // Unique id of the pane this component instance is rendering. Lets panels
+  // key per-pane state (selected file, search query, URL, …) by paneId so
+  // multiple Diff / Files / Browser panes in the same workspace don't share
+  // state.
+  paneId: string;
 }
 
 export interface PanelDefinition {

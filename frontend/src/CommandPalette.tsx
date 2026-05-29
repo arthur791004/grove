@@ -3,6 +3,7 @@ import { Box, Input, Text } from '@chakra-ui/react';
 import Fuse from 'fuse.js';
 import { useStore } from './store';
 import { COLOR_HEX } from './colors';
+import { useHideBrowserOverlay } from './useHideBrowserOverlay';
 
 interface Props {
   open: boolean;
@@ -10,6 +11,7 @@ interface Props {
 }
 
 export function CommandPalette({ open, onClose }: Props) {
+  useHideBrowserOverlay(open);
   const tabs = useStore((s) => s.tabs);
   const groups = useStore((s) => s.groups);
   const setActiveTab = useStore((s) => s.setActiveTab);

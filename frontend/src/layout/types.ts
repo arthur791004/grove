@@ -34,6 +34,12 @@ export interface SplitNode {
   // Sizes of children in percent; sum is 100. Length matches children.
   sizes: number[];
   children: LayoutNode[];
+  // 'tabs' marks the workspace's top-level container — its direct children
+  // are user-facing "tabs", only one rendered at a time on the main screen.
+  // Tree operations leave tabs containers alone even when they collapse to a
+  // single child, so a sub-split underneath doesn't get demoted to root.
+  // Sub-splits inside a tab have `role` omitted (or `'split'`).
+  role?: 'tabs';
 }
 
 export type LayoutNode = LeafNode | SplitNode;

@@ -28,9 +28,10 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useStore, type Tab, type Group } from './store';
-import { GroupPanels } from './SidebarPanels';
-import { getAllPanes } from './layout/treeOps';
-import type { PaneKind } from './layout/types';
+import { GroupPanels, PanelRow } from './SidebarPanels';
+import { NewPaneButton, ALL_PANE_KINDS, addPaneOfKind, PaneIcon } from './SidebarKindMenu';
+import { getAllLeaves, getAllPanes } from './layout/treeOps';
+import type { LayoutNode, LeafNode, Pane, PaneKind } from './layout/types';
 const SIDEBAR_PANEL_KINDS = new Set<PaneKind>(['diff', 'files', 'browser']);
 import { COLOR_HEX, COLOR_ORDER } from './colors';
 import { useTabContext, subscribeAllTabContexts } from './useTabContext';
@@ -159,20 +160,82 @@ export function Sidebar() {
       return;
     }
 
-    if (activeId.startsWith('tab:')) {
-      const tabId = activeId.slice(4);
-      if (overId.startsWith('tab:')) {
-        const overTabId = overId.slice(4);
-        const overTab = tabs.find((t) => t.id === overTabId);
-        if (!overTab) return;
-        const order = tabOrderByGroup[overTab.groupId] ?? [];
-        const idx = order.indexOf(overTabId);
-        moveTab(tabId, overTab.groupId, idx);
-      } else if (overId.startsWith('group:')) {
-        const gid = overId.slice(6);
-        moveTab(tabId, gid, (tabOrderByGroup[gid] ?? []).length);
-      }
+    // Workspace drag stays prefixed since groups are a different drop space.
+    if (activeId.startsWith('group:')) return;
+    // Cross-workspace tab drop on a workspace header — find the tab inside
+    // the dragged top-level leaf and call the legacy moveTab.
+    if (overId.startsWith('group:')) {
+      const gid = overId.slice(6);
+      const tabId = tabIdInsideTopLevelNode(activeId);
+      if (tabId) moveTab(tabId, gid, (tabOrderByGroup[gid] ?? []).length);
+      return;
     }
+    // Within-workspace reorder — both ids are direct children of the active
+    // workspace's tree root.
+    const fromGroup = groupIdForTreeNode(activeId);
+    if (!fromGroup) return;
+    useStore.getState().moveTopLevelInTree(fromGroup, activeId, overId);
+    // Keep the legacy tabOrderByGroup in sync so any consumer that hasn't
+    // moved to the tree (CommandPalette, etc.) sees the same ordering.
+    syncTabOrderFromTree(fromGroup);
+  }
+
+  // Helpers: every sidebar row's sortable id IS the top-level tree node id.
+  // These look the node up to resolve cross-row moves cleanly.
+  function groupIdForTreeNode(nodeId: string): string | null {
+    const state = useStore.getState();
+    for (const [gid, t] of Object.entries(state.layoutTreeByGroup)) {
+      if (t.type === 'leaf' && t.id === nodeId) return gid;
+      if (t.type === 'split' && t.children.some((c) => c.id === nodeId)) return gid;
+    }
+    return null;
+  }
+  function tabIdInsideTopLevelNode(nodeId: string): string | null {
+    const state = useStore.getState();
+    for (const t of Object.values(state.layoutTreeByGroup)) {
+      const child =
+        t.type === 'split'
+          ? t.children.find((c) => c.id === nodeId)
+          : t.id === nodeId
+            ? t
+            : null;
+      if (!child) continue;
+      const walk = (n: LayoutNode): string | null => {
+        if (n.type === 'leaf') {
+          const term = n.panes.find((p) => p.kind === 'shell' || p.kind === 'claude');
+          return term?.id ?? null;
+        }
+        for (const c of n.children) {
+          const r = walk(c);
+          if (r) return r;
+        }
+        return null;
+      };
+      return walk(child);
+    }
+    return null;
+  }
+  function syncTabOrderFromTree(groupId: string) {
+    const state = useStore.getState();
+    const t = state.layoutTreeByGroup[groupId];
+    if (!t) return;
+    const nodes = t.type === 'split' ? t.children : [t];
+    const ordered: string[] = [];
+    for (const n of nodes) {
+      const walk = (node: LayoutNode) => {
+        if (node.type === 'leaf') {
+          for (const p of node.panes) {
+            if (p.kind === 'shell' || p.kind === 'claude') ordered.push(p.id);
+          }
+        } else {
+          for (const c of node.children) walk(c);
+        }
+      };
+      walk(n);
+    }
+    useStore.setState((prev) => ({
+      tabOrderByGroup: { ...prev.tabOrderByGroup, [groupId]: ordered },
+    }));
   }
 
   // When dragging a workspace, ignore tab cards as drop targets so the active
@@ -446,14 +509,13 @@ function GroupSection({ group }: { group: Group }) {
     () => order.map((id) => tabs.find((t) => t.id === id)).filter((t): t is Tab => !!t),
     [order, tabs],
   );
-  // Surface panel panes (diff/files/browser) under the workspace in sidebar
-  // mode only — in top mode they live in per-leaf TabBars instead, so listing
-  // them here would duplicate.
+  // In top mode the sidebar shows workspaces only — tabs and panels live in
+  // per-leaf TabBars, so listing them here would just duplicate.
   const tabPosition = useStore((s) => s.tabPosition);
-  const showPanelsInSidebar = tabPosition === 'sidebar';
+  const showChildrenInSidebar = tabPosition === 'sidebar';
   const groupTree = useStore((s) => s.layoutTreeByGroup[group.id]);
   const hasPanels =
-    showPanelsInSidebar &&
+    showChildrenInSidebar &&
     !!groupTree &&
     getAllPanes(groupTree).some((p) => SIDEBAR_PANEL_KINDS.has(p.kind));
 
@@ -478,6 +540,14 @@ function GroupSection({ group }: { group: Group }) {
         _hover={{ bg: '#161b22', '& .group-actions': { opacity: 1 } }}
         onClick={() => {
           if (editingCwd || justDraggedRef.current || isDragging || isSorting) return;
+          if (!showChildrenInSidebar) {
+            // Top mode: no expandable child list, so clicking a workspace
+            // switches to it. Falls back gracefully when the workspace has
+            // no tabs yet.
+            const firstTab = (tabOrderByGroup[group.id] ?? [])[0];
+            if (firstTab) useStore.getState().setActiveTab(firstTab);
+            return;
+          }
           toggleGroup(group.id);
         }}
         onContextMenu={(e) => {
@@ -491,17 +561,19 @@ function GroupSection({ group }: { group: Group }) {
         {...attributes}
         {...listeners}
       >
-        <Box
-          color="#7d8590"
-          display="flex"
-          alignItems="center"
-          style={{
-            transform: group.collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
-            transition: 'transform 180ms cubic-bezier(0.22, 0.61, 0.36, 1)',
-          }}
-        >
-          <ChevronIcon />
-        </Box>
+        {showChildrenInSidebar && (
+          <Box
+            color="#7d8590"
+            display="flex"
+            alignItems="center"
+            style={{
+              transform: group.collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+              transition: 'transform 180ms cubic-bezier(0.22, 0.61, 0.36, 1)',
+            }}
+          >
+            <ChevronIcon />
+          </Box>
+        )}
         <Box
           color="#7d8590"
           display="flex"
@@ -589,30 +661,7 @@ function GroupSection({ group }: { group: Group }) {
           opacity="0"
           transition="opacity 0.12s"
         >
-          <button
-            title="New tab in group"
-            onPointerDown={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              newTab(group.id);
-            }}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: '#7d8590',
-              cursor: 'pointer',
-              width: 20,
-              height: 20,
-              borderRadius: 4,
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: 0,
-            }}
-          >
-            <PlusIcon />
-          </button>
+          <NewPaneButton groupId={group.id} />
           <button
             title={isFork ? 'Close workspace' : 'Delete workspace'}
             onPointerDown={(e) => e.stopPropagation()}
@@ -640,21 +689,14 @@ function GroupSection({ group }: { group: Group }) {
         </HStack>
       </Flex>
 
-      {(groupTabs.length > 0 || hasPanels) && (
+      {showChildrenInSidebar && (groupTabs.length > 0 || hasPanels) && (
         <CollapsePanel open={!group.collapsed}>
-          {groupTabs.length > 0 && (
-            <SortableContext
-              items={groupTabs.map((t) => `tab:${t.id}`)}
-              strategy={verticalListSortingStrategy}
-            >
-              <Flex direction="column" gap="1" pt="1">
-                {groupTabs.map((t) => (
-                  <TabCard key={t.id} tab={t} workspaceBranch={workspaceBranch} />
-                ))}
-              </Flex>
-            </SortableContext>
-          )}
-          {showPanelsInSidebar && <GroupPanels groupId={group.id} />}
+          <LeafGroupedList
+            groupTabs={groupTabs}
+            tree={groupTree ?? null}
+            groupId={group.id}
+            workspaceBranch={workspaceBranch}
+          />
         </CollapsePanel>
       )}
       {isFork && groupTabs.length === 0 && !group.collapsed && (
@@ -759,6 +801,28 @@ function GroupSection({ group }: { group: Group }) {
             boxShadow="0 10px 30px rgba(0,0,0,0.5)"
             onClick={(e) => e.stopPropagation()}
           >
+            <Box px="3" py="1">
+              <Text
+                fontSize="10px"
+                color="#7d8590"
+                textTransform="uppercase"
+                letterSpacing="0.06em"
+              >
+                New tab
+              </Text>
+            </Box>
+            {ALL_PANE_KINDS.map(({ kind, label }) => (
+              <TabMenuItem
+                key={kind}
+                onClick={() => {
+                  addPaneOfKind(group.id, kind);
+                  setMenuPos(null);
+                }}
+              >
+                {label}
+              </TabMenuItem>
+            ))}
+            <Box borderTop="1px solid #30363d" my="1" />
             <TabMenuItem
               onClick={isGit === false ? () => {} : handleFork}
               disabled={isGit === false}
@@ -803,6 +867,239 @@ function GroupSection({ group }: { group: Group }) {
   );
 }
 
+// Render the workspace's tree as one sidebar row per LEAF. A leaf with a
+// single pane renders the existing TabCard / PanelRow (unchanged UX). A
+// multi-pane leaf collapses into a single "merged" row whose title joins the
+// panes' names — clicking activates the leaf's active pane. The user can
+// still address individual panes via the per-leaf TabBar (top mode) or the
+// floating PaneOverlay.
+function LeafGroupedList({
+  groupTabs,
+  tree,
+  groupId,
+  workspaceBranch,
+}: {
+  groupTabs: Tab[];
+  tree: import('./layout/types').LayoutNode | null;
+  groupId: string;
+  workspaceBranch: string | null;
+}) {
+  const tabById = useMemo(() => new Map(groupTabs.map((t) => [t.id, t] as const)), [groupTabs]);
+  const leaves: LeafNode[] = tree ? getAllLeaves(tree) : [];
+
+  if (leaves.length === 0 || !tree) {
+    return (
+      <>
+        <SortableContext
+          items={groupTabs.map((t) => t.id)}
+          strategy={verticalListSortingStrategy}
+        >
+          <Flex direction="column" gap="1" pt="1">
+            {groupTabs.map((t) => (
+              <TabCard key={t.id} tab={t} workspaceBranch={workspaceBranch} />
+            ))}
+          </Flex>
+        </SortableContext>
+        <GroupPanels groupId={groupId} />
+      </>
+    );
+  }
+
+  // Walk root's top-level nodes. A leaf renders each of its panes as its
+  // own row (tabs in the same leaf are switchable, only one is visible at a
+  // time on the main screen — they look the same in the sidebar). A
+  // sub-split renders as a single merged "group" row, because its panes are
+  // visible simultaneously on the main screen and belong to one screen area.
+  const topLevelNodes: LayoutNode[] = tree.type === 'split' ? tree.children : [tree];
+  // Every sidebar row is sortable under its top-level tree node id — single
+  // tabs, panel rows, and split groups all share the same item type. The
+  // sidebar dnd handler resolves these ids back into tree-children moves.
+  const sortableItems = topLevelNodes.map((n) => n.id);
+
+  return (
+    <SortableContext items={sortableItems} strategy={verticalListSortingStrategy}>
+      <Flex direction="column" gap="1" pt="1">
+        {topLevelNodes.flatMap((node, idx) => {
+          if (node.type === 'leaf') {
+            return node.panes.map((p) => {
+              if (p.kind === 'shell' || p.kind === 'claude') {
+                const tab = tabById.get(p.id);
+                return tab ? (
+                  <TabCard
+                    key={p.id}
+                    tab={tab}
+                    workspaceBranch={workspaceBranch}
+                    sortId={node.id}
+                  />
+                ) : null;
+              }
+              return <PanelRow key={p.id} pane={p} groupId={groupId} sortId={node.id} />;
+            });
+          }
+          // Sub-split → one merged row covering every pane within.
+          const panes = collectPanes(node);
+          return [
+            <SplitGroupRow
+              key={node.id ?? `top-${idx}`}
+              panes={panes}
+              groupId={groupId}
+              nodeId={node.id}
+            />,
+          ];
+        })}
+      </Flex>
+    </SortableContext>
+  );
+}
+
+function collectPanes(node: LayoutNode): Pane[] {
+  if (node.type === 'leaf') return node.panes;
+  return node.children.flatMap(collectPanes);
+}
+
+// One row representing a "split group" — either a multi-pane leaf or a
+// nested sub-split. Aggregates the contained panes into a single sidebar
+// entry; clicking activates the focused pane.
+function SplitGroupRow({
+  panes,
+  groupId,
+  nodeId,
+}: {
+  panes: ReadonlyArray<Pane>;
+  groupId: string;
+  nodeId: string;
+}) {
+  // Sortable so the sidebar can reorder this split-group row alongside
+  // regular tab cards. Item id = the sub-split's tree node id (same id
+  // space TabCard / PanelRow use for their wrapping leaf, so the dnd handler
+  // doesn't need to distinguish row types).
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: nodeId,
+  });
+  const sortableStyle = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : 1,
+  };
+  const setActivePaneInTree = useStore((s) => s.setActivePaneInTree);
+  const setActiveTab = useStore((s) => s.setActiveTab);
+  const isActive = useStore((s) => {
+    if (s.activePanelId) return panes.some((p) => p.id === s.activePanelId);
+    return panes.some((p) => p.id === s.activeTabId);
+  });
+  // The "focused" pane within this group is whichever the store currently
+  // points at — fall back to the first one when nothing matches.
+  const focusedPane = useStore((s) => {
+    if (s.activePanelId) {
+      const p = panes.find((x) => x.id === s.activePanelId);
+      if (p) return p;
+    }
+    const t = panes.find((x) => x.id === s.activeTabId);
+    return t ?? panes[0] ?? null;
+  });
+  const extra = panes.length - 1;
+  const title = focusedPane
+    ? extra > 0
+      ? `${focusedPane.title}  +${extra}`
+      : focusedPane.title
+    : '';
+  const longTitle = panes.map((p) => p.title).join(' · ');
+  return (
+    <Flex
+      ref={setNodeRef}
+      style={sortableStyle}
+      align="center"
+      gap="1.5"
+      px="1.5"
+      h="32px"
+      borderRadius="6px"
+      cursor="pointer"
+      bg={isActive ? '#21262d' : 'transparent'}
+      _hover={{ bg: isActive ? '#21262d' : '#161b22' }}
+      {...attributes}
+      {...listeners}
+      onClick={() => {
+        if (!focusedPane) return;
+        setActivePaneInTree(groupId, focusedPane.id);
+        if (focusedPane.kind === 'shell' || focusedPane.kind === 'claude') {
+          setActiveTab(focusedPane.id);
+        } else {
+          useStore.setState({ activePanelId: focusedPane.id });
+        }
+      }}
+    >
+      <Box w="10px" h="20px" flexShrink={0} />
+      <PaneStackIcons panes={panes} />
+      <Text
+        fontSize="12px"
+        flex="1"
+        minW="0"
+        truncate
+        color={isActive ? '#f0f6fc' : '#c9d1d9'}
+        fontWeight={isActive ? 500 : 400}
+        title={longTitle}
+      >
+        {title}
+      </Text>
+      <Box
+        flexShrink={0}
+        mr="1"
+        h="16px"
+        minW="18px"
+        px="1"
+        borderRadius="3px"
+        bg="#30363d"
+        color="#7d8590"
+        fontSize="10px"
+        fontWeight={600}
+        display="flex"
+        alignItems="center"
+        justifyContent="center"
+      >
+        {panes.length}
+      </Box>
+    </Flex>
+  );
+}
+
+
+function PaneStackIcons({
+  panes,
+}: {
+  panes: ReadonlyArray<{ id: string; kind: PaneKind; title: string }>;
+}) {
+  // Up to three kind-specific glyphs, slightly overlapping. Picks one icon
+  // per distinct kind so a workspace with 5 shells doesn't render 3 identical
+  // terminal squares.
+  const kinds: PaneKind[] = [];
+  for (const p of panes) {
+    if (!kinds.includes(p.kind)) kinds.push(p.kind);
+    if (kinds.length >= 3) break;
+  }
+  return (
+    <Flex position="relative" w={`${(kinds.length - 1) * 8 + 16}px`} h="20px" align="center" flexShrink={0}>
+      {kinds.map((k, i) => (
+        <Box
+          key={k}
+          position="absolute"
+          left={`${i * 8}px`}
+          w="16px"
+          h="16px"
+          borderRadius="3px"
+          bg="#0d1117"
+          border="1px solid #30363d"
+          display="flex"
+          alignItems="center"
+          justifyContent="center"
+          color="#7d8590"
+        >
+          <PaneIcon kind={k} size={10} />
+        </Box>
+      ))}
+    </Flex>
+  );
+}
+
 function DragPreview({ id }: { id: string }) {
   const groups = useStore((s) => s.groups);
   const tabs = useStore((s) => s.tabs);
@@ -838,9 +1135,54 @@ function DragPreview({ id }: { id: string }) {
       </Flex>
     );
   }
-  if (id.startsWith('tab:')) {
-    const t = tabs.find((tt) => tt.id === id.slice(4));
-    if (!t) return null;
+  // Raw node ids — look up the matching top-level node in any workspace's
+  // tree. A leaf with a terminal pane renders the tab card preview; a leaf
+  // with a panel renders a minimal panel preview; a sub-split renders a
+  // merged group preview.
+  const state = useStore.getState();
+  let foundNode: import('./layout/types').LayoutNode | null = null;
+  for (const t of Object.values(state.layoutTreeByGroup)) {
+    if (t.id === id) {
+      foundNode = t;
+      break;
+    }
+    if (t.type === 'split') {
+      const child = t.children.find((c) => c.id === id);
+      if (child) {
+        foundNode = child;
+        break;
+      }
+    }
+  }
+  if (foundNode?.type === 'split') {
+    const allPanes = (function walk(n: import('./layout/types').LayoutNode): Pane[] {
+      return n.type === 'leaf' ? n.panes : n.children.flatMap(walk);
+    })(foundNode);
+    const titleText = allPanes.map((p) => p.title).join(' · ');
+    return (
+      <Flex
+        align="center"
+        gap="1.5"
+        px="1.5"
+        h="32px"
+        borderRadius="6px"
+        bg="#21262d"
+        border="1px solid #30363d"
+        boxShadow="0 8px 24px rgba(0,0,0,0.4)"
+        opacity={0.9}
+      >
+        <Box w="10px" />
+        <Text fontSize="12px" color="#c9d1d9" fontWeight={500} truncate>
+          {titleText}
+        </Text>
+      </Flex>
+    );
+  }
+  // Single-pane leaf — pull the wrapped tab/pane out for the preview.
+  const leafPaneId =
+    foundNode?.type === 'leaf' ? foundNode.panes[0]?.id : null;
+  const t = leafPaneId ? tabs.find((tt) => tt.id === leafPaneId) : null;
+  if (t) {
     const isDefault = t.color === 'default';
     return (
       <Flex
@@ -960,15 +1302,23 @@ export function TabCard({
   tab,
   workspaceBranch,
   compact,
+  sortId,
 }: {
   tab: Tab;
   workspaceBranch: string | null;
   compact?: boolean;
+  // Sortable id for this row. Defaults to the tab id so legacy callers that
+  // don't know the tree work; LeafGroupedList passes the wrapping leaf's
+  // id so sidebar reorders go through the unified tree-children move.
+  sortId?: string;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: `tab:${tab.id}`,
+    id: sortId ?? tab.id,
   });
-  const active = useStore((s) => s.activeTabId === tab.id);
+  // A tab counts as active only when no panel is currently focused — clicking
+  // a panel row sets `activePanelId` and we want the terminal tabs to dim so
+  // there's a single visible "focused" highlight in the sidebar.
+  const active = useStore((s) => s.activeTabId === tab.id && !s.activePanelId);
   const unread = useStore((s) => !!s.unreadTabs[tab.id]);
   const setActive = useStore((s) => s.setActiveTab);
   const closeTab = useStore((s) => s.closeTab);

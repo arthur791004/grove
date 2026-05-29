@@ -10,7 +10,31 @@ export function useShortcuts(openPalette: () => void) {
 
       if (e.key === 't' && !e.shiftKey) {
         e.preventDefault();
-        useStore.getState().newTab();
+        // Land the new tab inside whichever leaf currently has focus, so
+        // ⌘T behaves like a browser "new tab in this window" instead of
+        // creating a parallel top-level entry the user doesn't expect.
+        const s = useStore.getState();
+        const focusedPaneId = s.activePanelId ?? s.activeTabId;
+        let inLeafId: string | undefined;
+        if (focusedPaneId) {
+          const tab = s.tabs.find((t) => t.id === focusedPaneId);
+          const gid = tab?.groupId;
+          const tree = gid ? s.layoutTreeByGroup[gid] : null;
+          if (tree) {
+            inLeafId =
+              (function walk(n: import('./layout/types').LayoutNode): string | undefined {
+                if (n.type === 'leaf') {
+                  return n.panes.some((p) => p.id === focusedPaneId) ? n.id : undefined;
+                }
+                for (const c of n.children) {
+                  const r = walk(c);
+                  if (r) return r;
+                }
+                return undefined;
+              })(tree);
+          }
+        }
+        s.newTab(undefined, undefined, inLeafId ? { inLeafId } : undefined);
         return;
       }
       // ⌘W close active tab

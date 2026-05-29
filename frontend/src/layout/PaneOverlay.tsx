@@ -5,16 +5,25 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { Box, Flex, Text } from '@chakra-ui/react';
-import { X, Columns2, Rows2 } from 'lucide-react';
-import { useStore } from '../store';
-import { usePanels } from '../extensions/registry';
+import { useDraggable } from '@dnd-kit/core';
+import { CSS } from '@dnd-kit/utilities';
+import { X, Columns2, GripVertical, Rows2 } from 'lucide-react';
+import { useStore, makePanelPane } from '../store';
 import type { LeafNode, Pane, PaneKind } from './types';
+
+const SPLIT_KIND_LABELS: Array<{ kind: PaneKind; label: string }> = [
+  { kind: 'shell', label: 'Terminal' },
+  { kind: 'claude', label: 'Claude' },
+  { kind: 'diff', label: 'Diff' },
+  { kind: 'files', label: 'Files' },
+  { kind: 'browser', label: 'Browser' },
+];
 
 const PANEL_KINDS = new Set<PaneKind>(['diff', 'files', 'browser']);
 
 export function PaneOverlay({ leaf, groupId }: { leaf: LeafNode; groupId: string }) {
   const active = leaf.panes.find((p) => p.id === leaf.activePaneId) ?? leaf.panes[0];
-  if (!active || !PANEL_KINDS.has(active.kind)) return null;
+  if (!active) return null;
   return (
     <Box
       position="absolute"
@@ -29,6 +38,7 @@ export function PaneOverlay({ leaf, groupId }: { leaf: LeafNode; groupId: string
       py="2px"
       style={{ backdropFilter: 'blur(4px)' }}
     >
+      <PaneDragHandle leafId={leaf.id} />
       <SplitButton leaf={leaf} groupId={groupId} dir="h" />
       <SplitButton leaf={leaf} groupId={groupId} dir="v" />
       <CloseButton leaf={leaf} pane={active} groupId={groupId} />
@@ -36,21 +46,55 @@ export function PaneOverlay({ leaf, groupId }: { leaf: LeafNode; groupId: string
   );
 }
 
+// Drag this handle onto an adjacent sibling pane (in the same split) to
+// swap their positions. Source id is namespaced "swap:<leafId>" so the
+// global LayoutHost dnd handler routes it to the swap action instead of
+// the tab-reorder action.
+function PaneDragHandle({ leafId }: { leafId: string }) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: `swap:${leafId}`,
+  });
+  return (
+    <Flex
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Translate.toString(transform),
+        opacity: isDragging ? 0.5 : 1,
+        cursor: 'grab',
+      }}
+      {...attributes}
+      {...listeners}
+      align="center"
+      justify="center"
+      w="20px"
+      h="22px"
+      borderRadius="3px"
+      bg="transparent"
+      color="#7d8590"
+      _hover={{ bg: '#21262d', color: '#f0f6fc' }}
+      title="Drag to swap with another pane in this split"
+    >
+      <GripVertical size={13} strokeWidth={1.8} />
+    </Flex>
+  );
+}
+
 function CloseButton({ leaf, pane, groupId }: { leaf: LeafNode; pane: Pane; groupId: string }) {
   const removePaneFromTree = useStore((s) => s.removePaneFromTree);
+  const closeTab = useStore((s) => s.closeTab);
   const activePanelId = useStore((s) => s.activePanelId);
+  const isTerminal = pane.kind === 'shell' || pane.kind === 'claude';
   return (
     <OverlayIconButton
       title={`Close ${pane.title.toLowerCase()}`}
       onClick={() => {
-        removePaneFromTree(groupId, pane.id);
-        // Keep `activePanelId` in sync for legacy consumers (titlebar
-        // highlight, panel-internal fullscreen reads).
-        if (activePanelId === pane.id) {
-          useStore.setState({ activePanelId: null });
+        if (isTerminal) {
+          closeTab(pane.id);
+        } else {
+          // removePaneFromTree handles the focus shift to a sibling pane
+          // within the same top-level tab — don't override here.
+          removePaneFromTree(groupId, pane.id);
         }
-        // Silence unused `leaf` lint while keeping the API symmetrical with
-        // SplitButton (which needs the leaf id).
         void leaf;
       }}
     >
@@ -70,8 +114,8 @@ function SplitButton({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const panels = usePanels();
   const splitLeafInTree = useStore((s) => s.splitLeafInTree);
+  const splitLeafWithNewTab = useStore((s) => s.splitLeafWithNewTab);
 
   useEffect(() => {
     if (!open) return;
@@ -82,15 +126,8 @@ function SplitButton({
     return () => document.removeEventListener('mousedown', onDoc);
   }, [open]);
 
-  // Only offer panels that aren't already open in the tree — keeps the menu
-  // honest about what a click will actually do.
-  const tree = useStore((s) => s.layoutTreeByGroup[groupId]);
-  const existingPaneIds = new Set(
-    tree ? (function walk(n: LeafNode | import('./types').SplitNode): string[] {
-      return n.type === 'leaf' ? n.panes.map((p) => p.id) : n.children.flatMap(walk);
-    })(tree as LeafNode) : [],
-  );
-  const choices = panels.filter((p) => PANEL_KINDS.has(p.id as PaneKind) && !existingPaneIds.has(p.id));
+  // All five pane kinds are splittable now — Terminal/Claude create a fresh
+  // tab in the new leaf, panels mint a new instance with its own state.
 
   return (
     <Box ref={ref} position="relative">
@@ -119,42 +156,37 @@ function SplitButton({
           minW="160px"
           zIndex={100}
         >
-          {choices.length === 0 ? (
-            <Box px="3" py="1.5">
-              <Text fontSize="11px" color="#7d8590">
-                All panels are open.
-              </Text>
+          {SPLIT_KIND_LABELS.map(({ kind, label }) => (
+            <Box
+              as="button"
+              key={kind}
+              w="100%"
+              textAlign="left"
+              px="3"
+              py="1.5"
+              cursor="pointer"
+              bg="transparent"
+              border="none"
+              color="#f0f6fc"
+              fontSize="12px"
+              _hover={{ bg: '#1f6feb' }}
+              onClick={() => {
+                setOpen(false);
+                if (kind === 'shell' || kind === 'claude') {
+                  splitLeafWithNewTab(groupId, leaf.id, dir, kind);
+                  return;
+                }
+                const { pane, state } = makePanelPane(kind);
+                splitLeafInTree(groupId, leaf.id, dir, pane, true);
+                useStore.setState((prev) => ({
+                  activePanelId: pane.id,
+                  paneState: { ...prev.paneState, [pane.id]: state },
+                }));
+              }}
+            >
+              {label}
             </Box>
-          ) : (
-            choices.map((p) => (
-              <Box
-                as="button"
-                key={p.id}
-                w="100%"
-                textAlign="left"
-                px="3"
-                py="1.5"
-                cursor="pointer"
-                bg="transparent"
-                border="none"
-                color="#f0f6fc"
-                fontSize="12px"
-                _hover={{ bg: '#1f6feb' }}
-                onClick={() => {
-                  setOpen(false);
-                  splitLeafInTree(
-                    groupId,
-                    leaf.id,
-                    dir,
-                    { id: p.id, kind: p.id as PaneKind, title: p.title },
-                    true,
-                  );
-                }}
-              >
-                {p.title}
-              </Box>
-            ))
-          )}
+          ))}
         </Box>
       )}
     </Box>

@@ -1,5 +1,5 @@
 import { Box, Flex, HStack, Text } from '@chakra-ui/react';
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from './store';
 import { API_BASE } from './api';
 import { SquareLoader } from './SquareLoader';
@@ -115,15 +115,30 @@ function sliceHunkBody(hunk: ParsedHunk, from: number, to: number): NumberedLine
   return result;
 }
 
-export function DiffPanel({ forcedFullscreen = false }: { forcedFullscreen?: boolean }) {
+export function DiffPanel({
+  forcedFullscreen = false,
+  paneId,
+}: {
+  forcedFullscreen?: boolean;
+  paneId?: string;
+}) {
   const activeTabId = useStore((s) => s.activeTabId);
-  const closePanel = useStore((s) => s.closePanel);
-  const togglePanelFullscreen = useStore((s) => s.togglePanelFullscreen);
-  const toggleFileList = useStore((s) => s.toggleDiffFileList);
-  const fullscreen = useStore((s) => !!s.panelFullscreen.diff);
-  const fileListOpen = useStore((s) => s.diffFileListOpen);
-  const togglePanel = closePanel;
-  const toggleFullscreen = () => togglePanelFullscreen('diff');
+  const setPaneState = useStore((s) => s.setPaneState);
+  // Per-pane file-list-open. Falls back to the legacy global so panes that
+  // pre-date the v3 migration (no pane-scoped state yet) still respect the
+  // user's existing toggle.
+  const fileListOpen = useStore((s) => {
+    if (paneId) {
+      const ps = s.paneState[paneId];
+      if (ps && ps.kind === 'diff' && typeof ps.fileListOpen === 'boolean') return ps.fileListOpen;
+    }
+    return s.diffFileListOpen;
+  });
+  const toggleFileList = () => {
+    if (paneId) setPaneState(paneId, { kind: 'diff', fileListOpen: !fileListOpen });
+    else useStore.getState().toggleDiffFileList();
+  };
+  void forcedFullscreen;
   const [data, setData] = useState<DiffResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -159,31 +174,40 @@ export function DiffPanel({ forcedFullscreen = false }: { forcedFullscreen?: boo
     });
   }, [data]);
 
-  async function ensureFullPatch(path: string, signature: string): Promise<string | null> {
-    const hit = fullPatches[path];
-    if (hit && hit.signature === signature) return hit.patch;
-    const inFlight = inFlightFullPatch.current.get(path);
-    if (inFlight) return inFlight;
-    if (!activeTabId) return null;
-    const promise = (async () => {
-      try {
-        const res = await fetch(
-          `${API_BASE}/diff/file?tabId=${encodeURIComponent(activeTabId)}&path=${encodeURIComponent(path)}`,
-        );
-        const json = await res.json();
-        const patch: string | undefined = json?.file?.patch;
-        if (patch) setFullPatches((prev) => ({ ...prev, [path]: { signature, patch } }));
-        return patch ?? null;
-      } catch (err) {
-        console.error('[grove] failed to fetch full diff', path, err);
-        return null;
-      } finally {
-        inFlightFullPatch.current.delete(path);
-      }
-    })();
-    inFlightFullPatch.current.set(path, promise);
-    return promise;
-  }
+  // Latest values referenced from stable callbacks. Keeps the toggle / gap
+  // callbacks identity-stable so memo'd children don't re-render on every
+  // parent change.
+  const latest = useRef({ fullPatches, activeTabId });
+  latest.current = { fullPatches, activeTabId };
+  const ensureFullPatch = useCallback(
+    async (path: string, signature: string): Promise<string | null> => {
+      const { fullPatches: cur, activeTabId: tabId } = latest.current;
+      const hit = cur[path];
+      if (hit && hit.signature === signature) return hit.patch;
+      const inFlight = inFlightFullPatch.current.get(path);
+      if (inFlight) return inFlight;
+      if (!tabId) return null;
+      const promise = (async () => {
+        try {
+          const res = await fetch(
+            `${API_BASE}/diff/file?tabId=${encodeURIComponent(tabId)}&path=${encodeURIComponent(path)}`,
+          );
+          const json = await res.json();
+          const patch: string | undefined = json?.file?.patch;
+          if (patch) setFullPatches((prev) => ({ ...prev, [path]: { signature, patch } }));
+          return patch ?? null;
+        } catch (err) {
+          console.error('[grove] failed to fetch full diff', path, err);
+          return null;
+        } finally {
+          inFlightFullPatch.current.delete(path);
+        }
+      })();
+      inFlightFullPatch.current.set(path, promise);
+      return promise;
+    },
+    [],
+  );
 
   async function toggleAllGapsForFile(path: string, signature: string, hunkCount: number) {
     const keys: string[] = [];
@@ -212,16 +236,20 @@ export function DiffPanel({ forcedFullscreen = false }: { forcedFullscreen?: boo
     }
   }
 
-  async function toggleGap(path: string, gapIndex: number, signature: string) {
+  // Stable handler so FileDiffView (memo'd below) doesn't see a new function
+  // identity on every parent render — re-rendering the diff hunks on a
+  // fileListOpen toggle would otherwise take >1s on big diffs.
+  const toggleGap = useCallback(async (path: string, gapIndex: number, signature: string) => {
     const key = `${path}:${gapIndex}`;
-    if (expandedGaps.has(key)) {
-      setExpandedGaps((prev) => {
-        const next = new Set(prev);
-        next.delete(key);
-        return next;
-      });
-      return;
-    }
+    let didDelete = false;
+    setExpandedGaps((prev) => {
+      if (!prev.has(key)) return prev;
+      didDelete = true;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+    if (didDelete) return;
     setLoadingGap(key);
     try {
       const full = await ensureFullPatch(path, signature);
@@ -230,7 +258,7 @@ export function DiffPanel({ forcedFullscreen = false }: { forcedFullscreen?: boo
     } finally {
       setLoadingGap((cur) => (cur === key ? null : cur));
     }
-  }
+  }, []);
 
   function toggleCollapsed(path: string) {
     setCollapsed((prev) => {
@@ -303,19 +331,6 @@ export function DiffPanel({ forcedFullscreen = false }: { forcedFullscreen?: boo
           </HStack>
         )}
         <Box flex="1" minW="0" />
-        <Flex gap="1" flexShrink={0} align="center">
-          {!forcedFullscreen && (
-            <HeaderIconButton
-              title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-              onClick={toggleFullscreen}
-            >
-              {fullscreen ? <ContractIcon /> : <ExpandIcon />}
-            </HeaderIconButton>
-          )}
-          <HeaderIconButton title="Close" onClick={togglePanel}>
-            <CloseIcon />
-          </HeaderIconButton>
-        </Flex>
       </HeaderRow>
 
       <Flex flex="1" minH="0" minW="0" position="relative" overflow="hidden">
@@ -432,7 +447,7 @@ export function DiffPanel({ forcedFullscreen = false }: { forcedFullscreen?: boo
                     fullPatch={fullPatches[f.path]?.patch ?? null}
                     expandedGaps={expandedGaps}
                     loadingGap={loadingGap}
-                    onToggleGap={(gapIndex) => toggleGap(f.path, gapIndex, f.patch)}
+                    toggleGap={toggleGap}
                   />
                 )}
               </Box>
@@ -733,19 +748,25 @@ interface Gap {
   to: number | null;
 }
 
-function FileDiffView({
+const FileDiffView = memo(_FileDiffView);
+
+function _FileDiffView({
   file,
   fullPatch,
   expandedGaps,
   loadingGap,
-  onToggleGap,
+  toggleGap,
 }: {
   file: DiffFile;
   fullPatch: string | null;
   expandedGaps: Set<string>;
   loadingGap: string | null;
-  onToggleGap: (gapIndex: number) => void;
+  toggleGap: (path: string, gapIndex: number, signature: string) => void;
 }) {
+  const onToggleGap = useCallback(
+    (gapIndex: number) => toggleGap(file.path, gapIndex, file.patch),
+    [toggleGap, file.path, file.patch],
+  );
   const hunks = useMemo(() => parseHunks(file.patch), [file.patch]);
   const language = useMemo(() => detectLanguage(file.path), [file.path]);
   const fullHunk = useMemo(() => (fullPatch ? parseHunks(fullPatch)[0] : null), [fullPatch]);

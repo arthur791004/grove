@@ -52,12 +52,17 @@ const windowStateKeeper = require('electron-window-state');
 let mainWindow: BrowserWindow | null = null;
 let attentionPending = false;
 
-// Embedded browser surface for the BrowserPanel. A WebContentsView is a real
-// top-level browsing context (no X-Frame-Options/CSP embedding limits) layered
-// above the renderer's DOM. Kept alive across panel open/close so page state
-// survives toggling; destroyed only when the window closes.
-let browserView: WebContentsView | null = null;
-let browserViewUrl: string | null = null;
+// Embedded browser surfaces for BrowserPanel instances. One WebContentsView
+// per pane id so a workspace can hold multiple Browser panes at distinct
+// URLs (each one keeps its own page state, history, scroll position). Views
+// stay alive for the window's lifetime; closing a pane just removes it from
+// contentView without destroying the WebContents — that lets toggling
+// visibility / re-opening preserve the page.
+interface BrowserViewEntry {
+  view: WebContentsView;
+  url: string | null;
+}
+const browserViews = new Map<string, BrowserViewEntry>();
 
 // Lazy-started filtering proxy in front of the raw CDP port. See cdpProxy.ts.
 // The proxy itself binds on a fresh ephemeral port each launch; nothing
@@ -179,11 +184,14 @@ function createWindow() {
     app.dock?.setBadge('');
   });
   win.on('closed', () => {
-    if (browserView) {
-      browserView.webContents.close();
-      browserView = null;
-      browserViewUrl = null;
+    for (const entry of browserViews.values()) {
+      try {
+        entry.view.webContents.close();
+      } catch {
+        /* view may already be torn down */
+      }
     }
+    browserViews.clear();
     if (mainWindow === win) mainWindow = null;
   });
 
@@ -263,22 +271,24 @@ ipcMain.handle('grove:remote-set', async (_e, enabled: unknown) => {
 });
 
 // --- Embedded browser (BrowserPanel) ---------------------------------------
-// The view is created lazily on first open and reused for the window's
-// lifetime so page state survives panel toggling.
-function ensureBrowserView(): WebContentsView {
-  if (browserView) return browserView;
+// One WebContentsView per pane id. Views are created lazily on first open
+// and reused for the window's lifetime so page state survives panel
+// toggling.
+function ensureBrowserView(paneId: string): BrowserViewEntry {
+  const existing = browserViews.get(paneId);
+  if (existing) return existing;
   const view = new WebContentsView({
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
   const wc = view.webContents;
-  attachWebContentsLogging(wc, 'browser-view');
-  // Push the current address + history availability so the panel's URL bar
-  // and back/forward buttons stay in sync with the real navigation state.
+  attachWebContentsLogging(wc, `browser-view:${paneId}`);
   const sendNav = (url: string) => {
     if (!/^https?:/i.test(url)) return;
-    browserViewUrl = url;
-    mainWindow?.webContents.send('grove:browser-nav', url);
+    const entry = browserViews.get(paneId);
+    if (entry) entry.url = url;
+    mainWindow?.webContents.send('grove:browser-nav', { paneId, url });
     mainWindow?.webContents.send('grove:browser-navstate', {
+      paneId,
       canGoBack: wc.navigationHistory.canGoBack(),
       canGoForward: wc.navigationHistory.canGoForward(),
     });
@@ -287,97 +297,138 @@ function ensureBrowserView(): WebContentsView {
   wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
     if (isMainFrame) sendNav(url);
   });
-  wc.on('did-start-loading', () => mainWindow?.webContents.send('grove:browser-loading', true));
-  wc.on('did-stop-loading', () => mainWindow?.webContents.send('grove:browser-loading', false));
-  // errorCode -3 is ERR_ABORTED — fires on intentional navigation away, not a
-  // real failure, so ignore it to avoid flashing an error page on every click.
+  wc.on('did-start-loading', () =>
+    mainWindow?.webContents.send('grove:browser-loading', { paneId, loading: true }),
+  );
+  wc.on('did-stop-loading', () =>
+    mainWindow?.webContents.send('grove:browser-loading', { paneId, loading: false }),
+  );
   wc.on('did-fail-load', (_e, errorCode, errorDescription, validatedUrl, isMainFrame) => {
     if (!isMainFrame || errorCode === -3) return;
     mainWindow?.webContents.send('grove:browser-fail', {
+      paneId,
       url: validatedUrl,
       code: errorCode,
       message: errorDescription,
     });
   });
-  // Links that try to open a new window navigate the embedded view instead.
   wc.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) {
-      browserViewUrl = url;
+      const entry = browserViews.get(paneId);
+      if (entry) entry.url = url;
       wc.loadURL(url);
     }
     return { action: 'deny' };
   });
-  browserView = view;
-  return view;
+  const entry: BrowserViewEntry = { view, url: null };
+  browserViews.set(paneId, entry);
+  return entry;
 }
 
-ipcMain.handle('grove:browser-open', (_e, url: string) => {
-  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return;
-  const view = ensureBrowserView();
-  if (mainWindow && !mainWindow.contentView.children.includes(view)) {
-    mainWindow.contentView.addChildView(view);
+ipcMain.handle('grove:browser-open', (_e, paneId: string, url: string) => {
+  if (typeof paneId !== 'string' || typeof url !== 'string' || !/^https?:\/\//i.test(url)) return;
+  const entry = ensureBrowserView(paneId);
+  if (mainWindow && !mainWindow.contentView.children.includes(entry.view)) {
+    mainWindow.contentView.addChildView(entry.view);
   }
-  if (browserViewUrl !== url) {
-    browserViewUrl = url;
-    view.webContents.loadURL(url);
+  if (entry.url !== url) {
+    entry.url = url;
+    entry.view.webContents.loadURL(url);
   }
 });
 
-ipcMain.handle('grove:browser-close', () => {
-  if (browserView && mainWindow?.contentView.children.includes(browserView)) {
-    mainWindow.contentView.removeChildView(browserView);
+ipcMain.handle('grove:browser-close', (_e, paneId: string) => {
+  const entry = browserViews.get(paneId);
+  if (entry && mainWindow?.contentView.children.includes(entry.view)) {
+    mainWindow.contentView.removeChildView(entry.view);
   }
 });
+
+// Fully destroy a browser pane's view. Called when the user closes the pane
+// itself (not just hides the panel). Free the WebContents and forget the
+// entry so a future pane with a fresh uid creates a fresh view.
+ipcMain.handle('grove:browser-destroy', (_e, paneId: string) => {
+  const entry = browserViews.get(paneId);
+  if (!entry) return;
+  try {
+    if (mainWindow?.contentView.children.includes(entry.view)) {
+      mainWindow.contentView.removeChildView(entry.view);
+    }
+    entry.view.webContents.close();
+  } catch {
+    /* already torn down */
+  }
+  browserViews.delete(paneId);
+});
+
+// When true, all setBounds calls are ignored and EVERY view is parked
+// offscreen. Used by DOM overlays (dropdowns, menus) that need to render
+// above where any WebContentsView would otherwise paint — native views
+// can't be z-ordered against React DOM, so hiding them is the only option.
+let browserOverlayHidden = false;
 
 ipcMain.handle(
   'grove:browser-set-bounds',
-  (_e, b: { x: number; y: number; width: number; height: number; zoom?: number } | null) => {
-    if (!browserView) return;
-    // A null/empty rect parks the view offscreen — used while a DOM overlay
-    // (e.g. the load-error page) needs to show in the view's place.
-    if (!b || b.width <= 0 || b.height <= 0) {
-      browserView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+  (
+    _e,
+    paneId: string,
+    b: { x: number; y: number; width: number; height: number; zoom?: number } | null,
+  ) => {
+    const entry = browserViews.get(paneId);
+    if (!entry) return;
+    if (browserOverlayHidden || !b || b.width <= 0 || b.height <= 0) {
+      entry.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
       return;
     }
-    browserView.setBounds({
+    entry.view.setBounds({
       x: Math.round(b.x),
       y: Math.round(b.y),
       width: Math.round(b.width),
       height: Math.round(b.height),
     });
-    // zoomFactor < 1 keeps a wider logical (CSS) viewport than the physical
-    // panel — used to preserve a desktop layout in a narrow panel.
-    browserView.webContents.setZoomFactor(b.zoom && b.zoom > 0 ? b.zoom : 1);
+    entry.view.webContents.setZoomFactor(b.zoom && b.zoom > 0 ? b.zoom : 1);
   },
 );
 
-ipcMain.handle('grove:browser-navigate', (_e, url: string) => {
-  if (!browserView || typeof url !== 'string' || !/^https?:\/\//i.test(url)) return;
-  browserViewUrl = url;
-  browserView.webContents.loadURL(url);
+ipcMain.handle('grove:browser-set-overlay-hidden', (_e, hidden: boolean) => {
+  browserOverlayHidden = !!hidden;
+  if (browserOverlayHidden) {
+    for (const entry of browserViews.values()) {
+      entry.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+    }
+  }
+  // When unhidden, BrowserPanel's continuous rAF will reassert real bounds.
 });
 
-ipcMain.handle('grove:browser-reload', () => {
-  browserView?.webContents.reload();
+ipcMain.handle('grove:browser-navigate', (_e, paneId: string, url: string) => {
+  const entry = browserViews.get(paneId);
+  if (!entry || typeof url !== 'string' || !/^https?:\/\//i.test(url)) return;
+  entry.url = url;
+  entry.view.webContents.loadURL(url);
 });
 
-ipcMain.handle('grove:browser-back', () => {
-  const nav = browserView?.webContents.navigationHistory;
+ipcMain.handle('grove:browser-reload', (_e, paneId: string) => {
+  browserViews.get(paneId)?.view.webContents.reload();
+});
+
+ipcMain.handle('grove:browser-back', (_e, paneId: string) => {
+  const nav = browserViews.get(paneId)?.view.webContents.navigationHistory;
   if (nav?.canGoBack()) nav.goBack();
 });
 
-ipcMain.handle('grove:browser-forward', () => {
-  const nav = browserView?.webContents.navigationHistory;
+ipcMain.handle('grove:browser-forward', (_e, paneId: string) => {
+  const nav = browserViews.get(paneId)?.view.webContents.navigationHistory;
   if (nav?.canGoForward()) nav.goForward();
 });
 
 // --- Playwright MCP wiring -------------------------------------------------
 // Resolves the CDP target id of the active browser panel by matching its
-// current URL against /json. Fragile if two targets share a URL — fine for
-// v1 where Grove has a single browser panel.
+// current URL against /json. With multiple browser panes today this just
+// picks an arbitrary one — fine until MCP needs per-pane routing.
 async function resolveActiveTargetId(): Promise<string | null> {
-  if (!browserView) return null;
-  const url = browserView.webContents.getURL();
+  const first = browserViews.values().next().value;
+  if (!first) return null;
+  const url = first.view.webContents.getURL();
   if (!url || !/^https?:\/\//i.test(url)) return null;
   try {
     const res = await fetch(`http://127.0.0.1:${CDP_PORT}/json`);

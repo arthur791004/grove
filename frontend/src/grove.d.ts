@@ -45,20 +45,27 @@ declare global {
         }): Promise<{ deleted: number; errors: Array<{ branch: string; message: string }> }>;
       };
       browser: {
-        open(url: string): Promise<void>;
-        close(): Promise<void>;
+        open(paneId: string, url: string): Promise<void>;
+        close(paneId: string): Promise<void>;
+        destroy(paneId: string): Promise<void>;
         setBounds(
+          paneId: string,
           bounds: { x: number; y: number; width: number; height: number; zoom?: number } | null,
         ): Promise<void>;
-        navigate(url: string): Promise<void>;
-        reload(): Promise<void>;
-        back(): Promise<void>;
-        forward(): Promise<void>;
-        onNav(cb: (url: string) => void): () => void;
-        onNavState(cb: (state: { canGoBack: boolean; canGoForward: boolean }) => void): () => void;
-        onFail(cb: (info: { url: string; code: number; message: string }) => void): () => void;
-        onLoading(cb: (loading: boolean) => void): () => void;
-        clearFail(): void;
+        setOverlayHidden(hidden: boolean): Promise<void>;
+        navigate(paneId: string, url: string): Promise<void>;
+        reload(paneId: string): Promise<void>;
+        back(paneId: string): Promise<void>;
+        forward(paneId: string): Promise<void>;
+        onNav(cb: (ev: { paneId: string; url: string }) => void): () => void;
+        onNavState(
+          cb: (state: { paneId: string; canGoBack: boolean; canGoForward: boolean }) => void,
+        ): () => void;
+        onFail(
+          cb: (info: { paneId: string; url: string; code: number; message: string }) => void,
+        ): () => void;
+        onLoading(cb: (ev: { paneId: string; loading: boolean }) => void): () => void;
+        clearFail(paneId: string): void;
       };
       mcp: {
         writePlaywrightConfig(tabId: string): Promise<string | null>;

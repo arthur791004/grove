@@ -77,18 +77,28 @@ function relativeToBase(filePath: string, base: string): string {
 export function FileBrowserPanel({
   forcedFullscreen = false,
   panelWidth,
+  paneId,
 }: {
   forcedFullscreen?: boolean;
   panelWidth: number;
+  paneId?: string;
 }) {
   const activeTabId = useStore((s) => s.activeTabId);
-  const closePanel = useStore((s) => s.closePanel);
-  const togglePanelFullscreen = useStore((s) => s.togglePanelFullscreen);
-  const fullscreen = useStore((s) => !!s.panelFullscreen.files);
-  const togglePanel = closePanel;
-  const toggleFullscreen = () => togglePanelFullscreen('files');
-  const listOpen = useStore((s) => s.fileBrowserListOpen);
-  const toggleList = useStore((s) => s.toggleFileBrowserList);
+  const setPaneState = useStore((s) => s.setPaneState);
+  // Per-pane list-open state (with legacy global as fallback for trees that
+  // pre-date paneState).
+  const listOpen = useStore((s) => {
+    if (paneId) {
+      const ps = s.paneState[paneId];
+      if (ps && ps.kind === 'files' && typeof ps.listOpen === 'boolean') return ps.listOpen;
+    }
+    return s.fileBrowserListOpen;
+  });
+  const toggleList = () => {
+    if (paneId) setPaneState(paneId, { kind: 'files', listOpen: !listOpen });
+    else useStore.getState().toggleFileBrowserList();
+  };
+  void forcedFullscreen;
   const fileRequest = useStore((s) => s.fileBrowserRequest);
   const consumeRequest = useStore((s) => s.consumeFileBrowserRequest);
   const [path, setPath] = useState<string | null>(null);
@@ -344,9 +354,23 @@ export function FileBrowserPanel({
           </HeaderIconButton>
         ) : (
           <HeaderIconButton
-            title={listOpen ? 'Hide file list' : 'Show file list'}
-            active={listOpen}
-            onClick={toggleList}
+            title={
+              isNarrow
+                ? narrowView === 'list'
+                  ? 'Show file preview'
+                  : 'Show file list'
+                : listOpen
+                  ? 'Hide file list'
+                  : 'Show file list'
+            }
+            active={isNarrow ? narrowView === 'list' : listOpen}
+            onClick={() => {
+              if (isNarrow) {
+                setNarrowView((v) => (v === 'list' ? 'preview' : 'list'));
+              } else {
+                toggleList();
+              }
+            }}
           >
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor">
               <rect x="2" y="3" width="12" height="10" rx="1.5" strokeWidth="1.2" />
@@ -383,37 +407,6 @@ export function FileBrowserPanel({
             <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor">
               <circle cx="6" cy="6" r="3.5" strokeWidth="1.3" />
               <path d="M9 9l3 3" strokeWidth="1.3" strokeLinecap="round" />
-            </svg>
-          </HeaderIconButton>
-          {!forcedFullscreen && (
-            <HeaderIconButton
-              title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-              onClick={toggleFullscreen}
-            >
-              {fullscreen ? (
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
-                  <path
-                    d="M10 2L6.5 5.5M6.5 5.5V2.5M6.5 5.5H9.5M2 10l3.5-3.5M5.5 6.5v3M5.5 6.5h-3"
-                    strokeWidth="1.3"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              ) : (
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
-                  <path
-                    d="M7 2h3v3M10 2L6.5 5.5M5 10H2V7M2 10l3.5-3.5"
-                    strokeWidth="1.3"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              )}
-            </HeaderIconButton>
-          )}
-          <HeaderIconButton title="Close" onClick={togglePanel}>
-            <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor">
-              <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" strokeWidth="1.4" strokeLinecap="round" />
             </svg>
           </HeaderIconButton>
         </Flex>

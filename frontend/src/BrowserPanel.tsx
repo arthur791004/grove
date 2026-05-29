@@ -21,19 +21,33 @@ interface ServicesResponse {
 
 export function BrowserPanel({
   forcedFullscreen = false,
+  paneId,
 }: {
   forcedFullscreen?: boolean;
   panelWidth: number;
+  paneId?: string;
 }) {
   const activeTabId = useStore((s) => s.activeTabId);
-  const closePanel = useStore((s) => s.closePanel);
-  const togglePanelFullscreen = useStore((s) => s.togglePanelFullscreen);
-  const fullscreen = useStore((s) => !!s.panelFullscreen.browser);
-  const togglePanel = closePanel;
-  const toggleFullscreen = () => togglePanelFullscreen('browser');
-  const url = useStore((s) => s.browserPanelUrl);
-  const setUrl = useStore((s) => s.setBrowserPanelUrl);
+  const setPaneState = useStore((s) => s.setPaneState);
+  // Per-pane URL. The Electron WebContentsView is still a process singleton
+  // (slice 3) so two browser panes today render the most-recently-navigated
+  // URL, but each pane remembers its own address-bar input + history scope.
+  const url = useStore((s) => {
+    if (paneId) {
+      const ps = s.paneState[paneId];
+      if (ps && ps.kind === 'browser') return ps.url ?? null;
+    }
+    return s.browserPanelUrl;
+  });
+  const setUrl = (next: string | null) => {
+    if (paneId) setPaneState(paneId, { kind: 'browser', url: next });
+    // Also mirror to the legacy global so the WebContentsView's actual
+    // navigation request reaches main via setBrowserPanelUrl's existing
+    // pathway (history recording, normalization).
+    useStore.getState().setBrowserPanelUrl(next);
+  };
   const removeHistory = useStore((s) => s.removeBrowserHistory);
+  void forcedFullscreen;
   // Recents are scoped to the active tab's workspace cwd so each project sees
   // its own set of URLs.
   const groupCwd = useStore((s) => {
@@ -52,14 +66,18 @@ export function BrowserPanel({
   const MOBILE_WIDTH = 390; // iPhone 14/15 logical width
   const DESKTOP_WIDTH = 1280; // logical desktop viewport kept regardless of panel width
 
+  // Each browser pane owns its own WebContentsView in main, keyed by pane id.
+  // Fall back to a stable placeholder if no paneId was passed (lets the
+  // panel still work in legacy single-instance call sites during migration).
+  const id = paneId ?? 'browser';
   const reload = () => {
-    window.grove?.browser?.reload();
+    window.grove?.browser?.reload(id);
   };
   const goBack = () => {
-    window.grove?.browser?.back();
+    window.grove?.browser?.back(id);
   };
   const goForward = () => {
-    window.grove?.browser?.forward();
+    window.grove?.browser?.forward(id);
   };
 
   useEffect(() => {
@@ -69,22 +87,27 @@ export function BrowserPanel({
   const [frameError, setFrameError] = useState<{ code: number; message: string } | null>(null);
   const [navState, setNavState] = useState({ canGoBack: false, canGoForward: false });
 
-  // The embedded browser lives in an Electron WebContentsView (a real
-  // top-level browsing context, not an iframe). The main process forwards its
-  // navigation/load events over IPC. Preload buffers the last failure so we
-  // still catch instant ECONNREFUSED errors that fire before this listener
-  // mounts.
   useEffect(() => {
     const b = window.grove?.browser;
     if (!b) return;
-    const offNav = b.onNav((u) => {
-      setAddr(u);
+    // Filter events to this pane only — other browser panes broadcast on
+    // the same channels but should not steer this panel's UI state.
+    const offNav = b.onNav((ev) => {
+      if (ev.paneId !== id) return;
+      setAddr(ev.url);
       setFrameError(null);
     });
-    const offNavState = b.onNavState(setNavState);
-    const offFail = b.onFail((info) => setFrameError({ code: info.code, message: info.message }));
-    const offLoading = b.onLoading((loading) => {
-      if (loading) setFrameError(null);
+    const offNavState = b.onNavState((s) => {
+      if (s.paneId !== id) return;
+      setNavState({ canGoBack: s.canGoBack, canGoForward: s.canGoForward });
+    });
+    const offFail = b.onFail((info) => {
+      if (info.paneId !== id) return;
+      setFrameError({ code: info.code, message: info.message });
+    });
+    const offLoading = b.onLoading((ev) => {
+      if (ev.paneId !== id) return;
+      if (ev.loading) setFrameError(null);
     });
     return () => {
       offNav();
@@ -92,25 +115,26 @@ export function BrowserPanel({
       offFail();
       offLoading();
     };
-  }, []);
+  }, [id]);
   useEffect(() => {
     setFrameError(null);
-    window.grove?.browser?.clearFail?.();
-  }, [url]);
+    window.grove?.browser?.clearFail?.(id);
+  }, [url, id]);
 
-  // Drive the WebContentsView: open/navigate when a URL is set, remove it from
-  // the window when showing the services list, and tear it down on unmount.
+  // Drive the WebContentsView for this pane: open/navigate when a URL is
+  // set, remove it from the window when showing the services list, destroy
+  // it when the panel unmounts (i.e., the pane was closed in the tree).
   useEffect(() => {
     const b = window.grove?.browser;
     if (!b) return;
-    if (url) b.open(url);
-    else b.close();
-  }, [url]);
+    if (url) b.open(id, url);
+    else b.close(id);
+  }, [url, id]);
   useEffect(
     () => () => {
-      window.grove?.browser?.close();
+      window.grove?.browser?.destroy(id);
     },
-    [],
+    [id],
   );
 
   // The view is an OS-compositor layer above the DOM — it can't be positioned
@@ -139,11 +163,11 @@ export function BrowserPanel({
         const key = `${Math.round(x)}|${Math.round(r.top)}|${Math.round(width)}|${Math.round(r.height)}|${zoom.toFixed(3)}`;
         if (key !== lastKey) {
           lastKey = key;
-          b.setBounds({ x, y: r.top, width, height: r.height, zoom });
+          b.setBounds(id, { x, y: r.top, width, height: r.height, zoom });
         }
       } else if (lastKey !== 'hidden') {
         lastKey = 'hidden';
-        b.setBounds(null);
+        b.setBounds(id, null);
       }
       raf = requestAnimationFrame(tick);
     };
@@ -361,37 +385,6 @@ export function BrowserPanel({
               </svg>
             </HeaderIconButton>
           )}
-          {!forcedFullscreen && (
-            <HeaderIconButton
-              title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-              onClick={toggleFullscreen}
-            >
-              {fullscreen ? (
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
-                  <path
-                    d="M10 2L6.5 5.5M6.5 5.5V2.5M6.5 5.5H9.5M2 10l3.5-3.5M5.5 6.5v3M5.5 6.5h-3"
-                    strokeWidth="1.3"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              ) : (
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
-                  <path
-                    d="M7 2h3v3M10 2L6.5 5.5M5 10H2V7M2 10l3.5-3.5"
-                    strokeWidth="1.3"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              )}
-            </HeaderIconButton>
-          )}
-          <HeaderIconButton title="Close" onClick={togglePanel}>
-            <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor">
-              <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" strokeWidth="1.4" strokeLinecap="round" />
-            </svg>
-          </HeaderIconButton>
         </Flex>
       </Flex>
       <Box flex="1" minH="0" position="relative">
