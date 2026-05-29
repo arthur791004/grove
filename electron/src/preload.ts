@@ -102,6 +102,13 @@ contextBridge.exposeInMainWorld('grove', {
       ipcRenderer.invoke('grove:browser-set-bounds', paneId, bounds),
     setOverlayHidden: (hidden: boolean): Promise<void> =>
       ipcRenderer.invoke('grove:browser-set-overlay-hidden', hidden),
+    captureAll: (): Promise<
+      Array<{
+        paneId: string;
+        dataUrl: string;
+        bounds: { x: number; y: number; width: number; height: number };
+      }>
+    > => ipcRenderer.invoke('grove:browser-capture-all'),
     navigate: (paneId: string, url: string): Promise<void> =>
       ipcRenderer.invoke('grove:browser-navigate', paneId, url),
     reload: (paneId: string): Promise<void> => ipcRenderer.invoke('grove:browser-reload', paneId),

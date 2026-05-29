@@ -1,6 +1,37 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Box, Flex, HStack, Input, Text } from '@chakra-ui/react';
 import { useStore } from './store';
+import type { LayoutNode } from './layout/types';
+
+// Refcount per pane id. A BrowserPanel that gets unmounted by React during a
+// tree reshape (split/move) re-mounts immediately afterwards; the refcount
+// goes 1→0→1 within milliseconds. Only schedule destroy when the count is
+// genuinely zero, and double-check the store before firing the IPC.
+const paneMounts = new Map<string, number>();
+function incPane(id: string) {
+  paneMounts.set(id, (paneMounts.get(id) ?? 0) + 1);
+}
+function decPaneAndShouldDestroy(id: string): boolean {
+  const next = (paneMounts.get(id) ?? 0) - 1;
+  if (next > 0) {
+    paneMounts.set(id, next);
+    return false;
+  }
+  paneMounts.delete(id);
+  // Final guard: confirm the pane is actually gone from every workspace's
+  // tree. A remount may have raced after the timeout fired.
+  const stillThere = (function find(state: ReturnType<typeof useStore.getState>): boolean {
+    for (const t of Object.values(state.layoutTreeByGroup)) {
+      const has = (function walk(n: LayoutNode): boolean {
+        if (n.type === 'leaf') return n.panes.some((p) => p.id === id);
+        return n.children.some(walk);
+      })(t);
+      if (has) return true;
+    }
+    return false;
+  })(useStore.getState());
+  return !stillThere;
+}
 import { API_BASE } from './api';
 import { SquareLoader } from './SquareLoader';
 
@@ -64,7 +95,12 @@ export function BrowserPanel({
   const stageRef = useRef<HTMLDivElement | null>(null);
 
   const MOBILE_WIDTH = 390; // iPhone 14/15 logical width
-  const DESKTOP_WIDTH = 1280; // logical desktop viewport kept regardless of panel width
+  // Logical viewport width used when the panel is narrower than this — we
+  // keep a stable desktop layout by zooming the page out. Going lower than
+  // ~1024 here means narrow panels need less zoom, which makes the page's
+  // logical viewport height closer to the physical height and prevents
+  // tall pages from feeling truncated.
+  const DESKTOP_WIDTH = 1024;
 
   // Each browser pane owns its own WebContentsView in main, keyed by pane id.
   // Fall back to a stable placeholder if no paneId was passed (lets the
@@ -123,19 +159,29 @@ export function BrowserPanel({
 
   // Drive the WebContentsView for this pane: open/navigate when a URL is
   // set, remove it from the window when showing the services list, destroy
-  // it when the panel unmounts (i.e., the pane was closed in the tree).
+  // it only when the pane is *truly* gone (not on a transient unmount/
+  // remount caused by a split or tree reshape).
   useEffect(() => {
     const b = window.grove?.browser;
     if (!b) return;
     if (url) b.open(id, url);
     else b.close(id);
   }, [url, id]);
-  useEffect(
-    () => () => {
-      window.grove?.browser?.destroy(id);
-    },
-    [id],
-  );
+  useEffect(() => {
+    incPane(id);
+    return () => {
+      // Schedule a destroy check 200ms out — long enough that any tree-
+      // reshape remount has run its mount/setup and bumped the refcount
+      // back up. If the pane is still in any workspace tree at that point,
+      // the unmount was just a React reshuffle; otherwise the user actually
+      // closed it.
+      window.setTimeout(() => {
+        if (decPaneAndShouldDestroy(id)) {
+          window.grove?.browser?.destroy(id);
+        }
+      }, 200);
+    };
+  }, [id]);
 
   // The view is an OS-compositor layer above the DOM — it can't be positioned
   // with CSS. Instead we mirror the placeholder Box's screen rect into the
@@ -212,11 +258,15 @@ export function BrowserPanel({
   };
 
   return (
-    <Flex direction="column" h="100%" w="100%" bg="#010409" borderLeft="1px solid #21262d">
+    <Flex direction="column" h="100%" w="100%" bg="#010409">
       <Flex
         align="center"
         gap="1.5"
         px="2"
+        // Right-side padding leaves room for the floating PaneOverlay
+        // (grip + split-h + split-v + close) so its icons don't collide
+        // with the URL bar / viewport / reload / open-external buttons.
+        pr={url ? '112px' : '2'}
         h={url ? '36px' : '0px'}
         borderBottom={url ? '1px solid #21262d' : 'none'}
         bg="#0d1117"

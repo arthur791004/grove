@@ -61,6 +61,12 @@ let attentionPending = false;
 interface BrowserViewEntry {
   view: WebContentsView;
   url: string | null;
+  // Last bounds the renderer asked us to apply. Cached so we can replay
+  // them when an overlay (dropdown / drag / modal) un-hides the view —
+  // the renderer's rAF dedupes on bounds-change and won't otherwise repaint
+  // if the panel hasn't resized in the meantime, leaving the view parked
+  // at 0,0,0,0.
+  lastBounds: { x: number; y: number; width: number; height: number; zoom: number } | null;
 }
 const browserViews = new Map<string, BrowserViewEntry>();
 
@@ -320,7 +326,7 @@ function ensureBrowserView(paneId: string): BrowserViewEntry {
     }
     return { action: 'deny' };
   });
-  const entry: BrowserViewEntry = { view, url: null };
+  const entry: BrowserViewEntry = { view, url: null, lastBounds: null };
   browserViews.set(paneId, entry);
   return entry;
 }
@@ -380,15 +386,53 @@ ipcMain.handle(
       entry.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
       return;
     }
-    entry.view.setBounds({
-      x: Math.round(b.x),
-      y: Math.round(b.y),
-      width: Math.round(b.width),
-      height: Math.round(b.height),
-    });
-    entry.view.webContents.setZoomFactor(b.zoom && b.zoom > 0 ? b.zoom : 1);
+    // Floor the position + ceil the size so the view always fully covers
+    // its stage rect. Plain Math.round leaves half-pixel gaps on the top or
+    // left edge that read as "padding around the page" — most visible on
+    // hi-DPI displays where each CSS pixel maps to two device pixels.
+    const x = Math.floor(b.x);
+    const y = Math.floor(b.y);
+    const width = Math.ceil(b.x + b.width) - x;
+    const height = Math.ceil(b.y + b.height) - y;
+    const zoom = b.zoom && b.zoom > 0 ? b.zoom : 1;
+    entry.view.setBounds({ x, y, width, height });
+    entry.view.webContents.setZoomFactor(zoom);
+    entry.lastBounds = { x, y, width, height, zoom };
   },
 );
+
+// Capture every live browser view's current page as a PNG plus its last
+// known bounds. Used by the renderer to render a static snapshot while an
+// overlay (split dropdown, modal, drag preview) parks the view offscreen,
+// so the user doesn't see a blank rectangle where the page used to be.
+ipcMain.handle('grove:browser-capture-all', async () => {
+  const out: Array<{
+    paneId: string;
+    dataUrl: string;
+    bounds: { x: number; y: number; width: number; height: number };
+  }> = [];
+  for (const [paneId, entry] of browserViews) {
+    if (!entry.lastBounds) continue;
+    if (entry.lastBounds.width <= 0 || entry.lastBounds.height <= 0) continue;
+    try {
+      const img = await entry.view.webContents.capturePage();
+      if (img.isEmpty()) continue;
+      out.push({
+        paneId,
+        dataUrl: img.toDataURL(),
+        bounds: {
+          x: entry.lastBounds.x,
+          y: entry.lastBounds.y,
+          width: entry.lastBounds.width,
+          height: entry.lastBounds.height,
+        },
+      });
+    } catch {
+      /* page could be navigating; skip */
+    }
+  }
+  return out;
+});
 
 ipcMain.handle('grove:browser-set-overlay-hidden', (_e, hidden: boolean) => {
   browserOverlayHidden = !!hidden;
@@ -396,8 +440,22 @@ ipcMain.handle('grove:browser-set-overlay-hidden', (_e, hidden: boolean) => {
     for (const entry of browserViews.values()) {
       entry.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
     }
+    return;
   }
-  // When unhidden, BrowserPanel's continuous rAF will reassert real bounds.
+  // Unhiding — replay the last accepted bounds for each view so the page
+  // reappears immediately. Without this, the renderer's rAF dedupes on
+  // bounds-change and never reissues setBounds when the panel hasn't
+  // resized in the meantime, leaving the view parked at 0,0,0,0.
+  for (const entry of browserViews.values()) {
+    if (!entry.lastBounds) continue;
+    entry.view.setBounds({
+      x: entry.lastBounds.x,
+      y: entry.lastBounds.y,
+      width: entry.lastBounds.width,
+      height: entry.lastBounds.height,
+    });
+    entry.view.webContents.setZoomFactor(entry.lastBounds.zoom);
+  }
 });
 
 ipcMain.handle('grove:browser-navigate', (_e, paneId: string, url: string) => {

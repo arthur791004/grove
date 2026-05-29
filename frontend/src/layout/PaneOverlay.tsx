@@ -3,12 +3,14 @@
 // the panel's own internal header. Workspace leaves (shell / claude tabs)
 // don't get this overlay — those tabs live in the sidebar today.
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Box, Flex, Text } from '@chakra-ui/react';
 import { useDraggable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import { X, Columns2, GripVertical, Rows2 } from 'lucide-react';
 import { useStore, makePanelPane } from '../store';
+import { useHideBrowserOverlay } from '../useHideBrowserOverlay';
 import type { LeafNode, Pane, PaneKind } from './types';
 
 const SPLIT_KIND_LABELS: Array<{ kind: PaneKind; label: string }> = [
@@ -114,20 +116,38 @@ function SplitButton({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
   const splitLeafInTree = useStore((s) => s.splitLeafInTree);
   const splitLeafWithNewTab = useStore((s) => s.splitLeafWithNewTab);
+  // BrowserPanel's WebContentsView is a native overlay above the DOM — no
+  // HTML z-index can sit over it. Park it offscreen while the menu is open
+  // so the dropdown is actually visible over a browser leaf.
+  useHideBrowserOverlay(open);
+
+  // Position the portaled menu just below the trigger's right edge so it
+  // visually attaches like the inline dropdown did.
+  useLayoutEffect(() => {
+    if (!open || !ref.current) return;
+    const place = () => {
+      const r = ref.current!.getBoundingClientRect();
+      setPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) });
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const inTrigger = ref.current && ref.current.contains(e.target as Node);
+      const inMenu = menuRef.current && menuRef.current.contains(e.target as Node);
+      if (!inTrigger && !inMenu) setOpen(false);
     };
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
   }, [open]);
-
-  // All five pane kinds are splittable now — Terminal/Claude create a fresh
-  // tab in the new leaf, panels mint a new instance with its own state.
 
   return (
     <Box ref={ref} position="relative">
@@ -142,19 +162,20 @@ function SplitButton({
           <Rows2 size={13} strokeWidth={1.8} />
         )}
       </OverlayIconButton>
-      {open && (
+      {open && pos &&
+        createPortal(
         <Box
-          position="absolute"
-          top="100%"
-          right="0"
-          mt="4px"
+          ref={menuRef}
+          position="fixed"
+          top={`${pos.top}px`}
+          right={`${pos.right}px`}
           bg="#161b22"
           border="1px solid #30363d"
           borderRadius="6px"
           boxShadow="0 10px 30px rgba(0,0,0,0.5)"
           py="1"
           minW="160px"
-          zIndex={100}
+          zIndex={3000}
         >
           {SPLIT_KIND_LABELS.map(({ kind, label }) => (
             <Box
@@ -187,7 +208,8 @@ function SplitButton({
               {label}
             </Box>
           ))}
-        </Box>
+        </Box>,
+        document.body,
       )}
     </Box>
   );

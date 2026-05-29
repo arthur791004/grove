@@ -53,6 +53,13 @@ declare global {
           bounds: { x: number; y: number; width: number; height: number; zoom?: number } | null,
         ): Promise<void>;
         setOverlayHidden(hidden: boolean): Promise<void>;
+        captureAll(): Promise<
+          Array<{
+            paneId: string;
+            dataUrl: string;
+            bounds: { x: number; y: number; width: number; height: number };
+          }>
+        >;
         navigate(paneId: string, url: string): Promise<void>;
         reload(paneId: string): Promise<void>;
         back(paneId: string): Promise<void>;

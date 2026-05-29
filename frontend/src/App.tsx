@@ -21,7 +21,7 @@ import { IS_ELECTRON } from './env';
 import { Sidebar } from './Sidebar';
 import { AgentsView } from './AgentsView';
 import { LayoutHost } from './layout/LayoutHost';
-import { useHideBrowserOverlay } from './useHideBrowserOverlay';
+import { useHideBrowserOverlay, useBrowserSnapshots } from './useHideBrowserOverlay';
 import { CommandPalette } from './CommandPalette';
 import { ReconnectBanner } from './ReconnectBanner';
 import { SessionChoiceDialog } from './SessionChoiceDialog';
@@ -282,7 +282,39 @@ export function App() {
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <SessionChoiceDialog />
       <ReconnectBanner />
+      <BrowserSnapshotOverlay />
     </Flex>
+  );
+}
+
+// Renders frozen still-frames over every parked browser pane while the hide
+// counter is up. Bounds come from main (last known view rect) so the image
+// lands exactly where the live page was a moment ago. Sits below dropdown
+// portals (zIndex 3000) but above the rest of the app.
+function BrowserSnapshotOverlay() {
+  const shots = useBrowserSnapshots();
+  if (shots.length === 0) return null;
+  return (
+    <>
+      {shots.map((s) => (
+        <img
+          key={s.paneId}
+          src={s.dataUrl}
+          alt=""
+          draggable={false}
+          style={{
+            position: 'fixed',
+            left: `${s.bounds.x}px`,
+            top: `${s.bounds.y}px`,
+            width: `${s.bounds.width}px`,
+            height: `${s.bounds.height}px`,
+            pointerEvents: 'none',
+            zIndex: 1500,
+            userSelect: 'none',
+          }}
+        />
+      ))}
+    </>
   );
 }
 
