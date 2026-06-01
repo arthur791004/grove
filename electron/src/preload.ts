@@ -19,6 +19,8 @@ const navSubs = new Set<(ev: NavEvent) => void>();
 const navStateSubs = new Set<(state: NavState) => void>();
 const loadingSubs = new Set<(ev: LoadingEvent) => void>();
 
+
+
 ipcRenderer.on('grove:browser-fail', (_e, info: FailInfo) => {
   lastFailByPane.set(info.paneId, info);
   for (const fn of failSubs) fn(info);
@@ -64,6 +66,20 @@ contextBridge.exposeInMainWorld('grove', {
   stateSet: (content: string): Promise<void> => ipcRenderer.invoke('grove:state-set', content),
   revealPath: (target: string): Promise<void> => ipcRenderer.invoke('grove:reveal-path', target),
   notifyAttention: (): Promise<void> => ipcRenderer.invoke('grove:notify-attention'),
+  overlay: {
+    isOverlay: typeof window !== 'undefined' && window.location.search.includes('overlay=1'),
+    setInteractive: (interactive: boolean): Promise<void> =>
+      ipcRenderer.invoke('grove:overlay-set-interactive', interactive),
+    sendState: (state: unknown): void => {
+      ipcRenderer.send('grove:overlay-state', state);
+    },
+    onState: (cb: (state: unknown) => void): (() => void) => {
+      const handler = (_e: unknown, state: unknown) => cb(state);
+      ipcRenderer.on('grove:overlay-state', handler);
+      return () => ipcRenderer.off('grove:overlay-state', handler);
+    },
+    requestState: (): Promise<unknown> => ipcRenderer.invoke('grove:overlay-state-request'),
+  },
   notifyBlocked: (notice: {
     tabId: string;
     title: string;
@@ -102,13 +118,6 @@ contextBridge.exposeInMainWorld('grove', {
       ipcRenderer.invoke('grove:browser-set-bounds', paneId, bounds),
     setOverlayHidden: (hidden: boolean): Promise<void> =>
       ipcRenderer.invoke('grove:browser-set-overlay-hidden', hidden),
-    captureAll: (): Promise<
-      Array<{
-        paneId: string;
-        dataUrl: string;
-        bounds: { x: number; y: number; width: number; height: number };
-      }>
-    > => ipcRenderer.invoke('grove:browser-capture-all'),
     navigate: (paneId: string, url: string): Promise<void> =>
       ipcRenderer.invoke('grove:browser-navigate', paneId, url),
     reload: (paneId: string): Promise<void> => ipcRenderer.invoke('grove:browser-reload', paneId),

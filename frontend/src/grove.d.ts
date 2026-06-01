@@ -14,6 +14,13 @@ declare global {
       stateSet(content: string): Promise<void>;
       revealPath(target: string): Promise<void>;
       notifyAttention(): Promise<void>;
+      overlay: {
+        isOverlay: boolean;
+        setInteractive(interactive: boolean): Promise<void>;
+        sendState(state: unknown): void;
+        onState(cb: (state: unknown) => void): () => void;
+        requestState(): Promise<unknown>;
+      };
       notifyBlocked(notice: {
         tabId: string;
         title: string;
@@ -53,13 +60,6 @@ declare global {
           bounds: { x: number; y: number; width: number; height: number; zoom?: number } | null,
         ): Promise<void>;
         setOverlayHidden(hidden: boolean): Promise<void>;
-        captureAll(): Promise<
-          Array<{
-            paneId: string;
-            dataUrl: string;
-            bounds: { x: number; y: number; width: number; height: number };
-          }>
-        >;
         navigate(paneId: string, url: string): Promise<void>;
         reload(paneId: string): Promise<void>;
         back(paneId: string): Promise<void>;

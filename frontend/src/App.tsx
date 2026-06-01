@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { forwardRef, useEffect, useRef, useState } from 'react';
 import {
   Box,
   CloseButton,
@@ -21,8 +21,10 @@ import { IS_ELECTRON } from './env';
 import { Sidebar } from './Sidebar';
 import { AgentsView } from './AgentsView';
 import { LayoutHost } from './layout/LayoutHost';
-import { useHideBrowserOverlay, useBrowserSnapshots } from './useHideBrowserOverlay';
 import { CommandPalette } from './CommandPalette';
+import { PopupMenu } from './popupMenu';
+import { showPopupMenu } from './showPopupMenu';
+import { HeaderOmnibox } from './HeaderOmnibox';
 import { ReconnectBanner } from './ReconnectBanner';
 import { SessionChoiceDialog } from './SessionChoiceDialog';
 import { sendSessionInput } from './api';
@@ -38,8 +40,68 @@ const EMPTY_GROUPS: Group[] = [];
 
 const SIDEBAR_WIDTH = 220;
 
+// The overlay window loads the same renderer with ?overlay=1 and renders
+// ONLY DOM modals so they paint above the WebContentsView. The main
+// window renders the workspace UI and skips those modal components.
+const IS_OVERLAY_RENDERER = window.grove?.overlay?.isOverlay ?? false;
+
+function OverlayRoot() {
+  const paletteOpen = useStore((s) => s.paletteOpen);
+  const setPaletteOpen = useStore((s) => s.setPaletteOpen);
+  const settingsOpen = useStore((s) => s.settingsOpen);
+  const setSettingsOpen = useStore((s) => s.setSettingsOpen);
+  const sessionChoice = useStore((s) => s.sessionChoice);
+  const popupMenu = useStore((s) => s.popupMenu);
+  const headerOmnibox = useStore((s) => s.headerOmnibox);
+
+  // Any DOM overlay open ⇒ the overlay window needs to receive pointer
+  // events. Otherwise pass clicks through so the user can still interact
+  // with the main workspace underneath the (transparent) overlay.
+  const anyOpen =
+    paletteOpen ||
+    settingsOpen ||
+    sessionChoice !== null ||
+    popupMenu !== null ||
+    headerOmnibox !== null;
+  useEffect(() => {
+    void window.grove?.overlay?.setInteractive(anyOpen);
+  }, [anyOpen]);
+
+  return (
+    <Box position="fixed" inset={0} pointerEvents={anyOpen ? 'auto' : 'none'}>
+      {/* When the overlay is interactive, paint a near-transparent full-
+          screen scrim. The colour is essentially invisible (alpha 0.01)
+          but it gives the overlay's compositor layer opaque pixels for
+          macOS hit-testing — without it, clicks on the "empty" regions
+          of the transparent overlay view fall through to the browser-
+          pane view beneath. We don't render it when nothing is open so
+          the main view receives clicks normally. */}
+      {anyOpen && (
+        <Box
+          position="fixed"
+          inset={0}
+          bg="rgba(0,0,0,0.18)"
+          zIndex={0}
+          // Modals carry their own backdrops on top of this; the popup
+          // menu's own backdrop handles outside-click dismissal. Pass
+          // mousedown through so PopupMenu's backdrop resolves.
+          pointerEvents="none"
+        />
+      )}
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <SessionChoiceDialog />
+      <PopupMenu />
+      <HeaderOmnibox />
+    </Box>
+  );
+}
+
 export function App() {
-  const [paletteOpen, setPaletteOpen] = useState(false);
+  if (IS_OVERLAY_RENDERER) return <OverlayRoot />;
+
+  const paletteOpen = useStore((s) => s.paletteOpen);
+  const setPaletteOpen = useStore((s) => s.setPaletteOpen);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const agentsViewOpen = useStore((s) => s.agentsViewOpen);
@@ -47,7 +109,8 @@ export function App() {
   const blockedAgentCount = useStore(
     (s) => Object.values(s.agentStates).filter((x) => x === 'blocked').length,
   );
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsOpen = useStore((s) => s.settingsOpen);
+  const setSettingsOpen = useStore((s) => s.setSettingsOpen);
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
   useEffect(() => {
     const onResize = () => setWindowWidth(window.innerWidth);
@@ -162,7 +225,7 @@ export function App() {
           onTogglePanel={togglePanel}
           onOpenDrawer={() => setMobileDrawerOpen((o) => !o)}
           settingsOpen={settingsOpen}
-          onToggleSettings={() => setSettingsOpen((o) => !o)}
+          onToggleSettings={() => setSettingsOpen(!settingsOpen)}
           isElectron={IS_ELECTRON}
         />
       ) : (
@@ -218,7 +281,7 @@ export function App() {
                 {p.icon}
               </TitlebarIconButton>
             ))}
-            <SettingsButton open={settingsOpen} onClick={() => setSettingsOpen((o) => !o)} />
+            <SettingsButton open={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)} />
           </Flex>
         </Flex>
       )}
@@ -278,45 +341,19 @@ export function App() {
           </Portal>
         </Drawer.Root>
       )}
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      <SessionChoiceDialog />
+      {/* In Electron the modals + popup menu render in the overlay
+          window (above the WebContentsView). In web mode they render
+          here. */}
+      {!IS_ELECTRON && (
+        <>
+          <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+          <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+          <SessionChoiceDialog />
+          <PopupMenu />
+        </>
+      )}
       <ReconnectBanner />
-      <BrowserSnapshotOverlay />
     </Flex>
-  );
-}
-
-// Renders frozen still-frames over every parked browser pane while the hide
-// counter is up. Bounds come from main (last known view rect) so the image
-// lands exactly where the live page was a moment ago. zIndex 40 keeps the
-// snapshot under the titlebar's stacking context (z:50) so titlebar
-// dropdowns still appear above it, while still floating over the workspace
-// area where the live WebContentsView used to paint.
-function BrowserSnapshotOverlay() {
-  const shots = useBrowserSnapshots();
-  if (shots.length === 0) return null;
-  return (
-    <>
-      {shots.map((s) => (
-        <img
-          key={s.paneId}
-          src={s.dataUrl}
-          alt=""
-          draggable={false}
-          style={{
-            position: 'fixed',
-            left: `${s.bounds.x}px`,
-            top: `${s.bounds.y}px`,
-            width: `${s.bounds.width}px`,
-            height: `${s.bounds.height}px`,
-            pointerEvents: 'none',
-            zIndex: 40,
-            userSelect: 'none',
-          }}
-        />
-      ))}
-    </>
   );
 }
 
@@ -391,6 +428,8 @@ function LayoutContent({ contentW }: { contentW: number }) {
   const activeEmpty =
     !activeTree || (activeTree.type === 'leaf' && activeTree.panes.length === 0);
 
+  // Render every mounted group; only the active one is visible. Preserve
+  // groupOrder so React reconciliation stays stable as groups come and go.
   const renderGroups: string[] = [];
   for (const gid of groupOrder) {
     if (mounted.has(gid) && layoutTreeByGroup[gid]) renderGroups.push(gid);
@@ -468,21 +507,20 @@ function nodeContains(node: import('./layout/types').LayoutNode, paneId: string)
 
 const TITLEBAR_ICON_COLOR = '#c9d1d9';
 
-function TitlebarIconButton({
-  title,
-  onClick,
-  active,
-  children,
-}: {
-  title: string;
-  onClick: () => void;
-  active?: boolean;
-  children: React.ReactNode;
-}) {
+const TitlebarIconButton = forwardRef<
+  HTMLButtonElement,
+  {
+    title: string;
+    onClick: () => void;
+    active?: boolean;
+    children: React.ReactNode;
+  }
+>(function TitlebarIconButton({ title, onClick, active, children }, ref) {
   const [hover, setHover] = useState(false);
   const bg = active ? '#30363d' : hover ? '#21262d' : 'transparent';
   return (
     <button
+      ref={ref}
       onClick={onClick}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
@@ -507,7 +545,7 @@ function TitlebarIconButton({
       {children}
     </button>
   );
-}
+});
 
 function AgentsToggleButton({
   active,
@@ -556,39 +594,9 @@ function AddWorkspaceSplitButton() {
   const newGroup = useStore((s) => s.newGroup);
   const setAutoEditCwdGroupId = useStore((s) => s.setAutoEditCwdGroupId);
   const forkGroup = useStore((s) => s.forkGroup);
-  const [open, setOpen] = useState(false);
-  useHideBrowserOverlay(open);
-  const [showForkPicker, setShowForkPicker] = useState(false);
-  // groupId → is its cwd a git repo. Populated on demand when the fork
-  // picker opens (or when the user clicks "Fork workspace…" with one group).
-  const [forkable, setForkable] = useState<Record<string, boolean>>({});
-  const ref = useRef<HTMLDivElement>(null);
-
-  // Only subscribe to the heavy arrays while the picker is actually open —
-  // otherwise this button re-renders on every tab title edit or pty tick.
-  const groups = useStore((s) => (showForkPicker ? s.groups : EMPTY_GROUPS));
-  const activeGroupId = useStore((s) => {
-    if (!showForkPicker) return null;
-    const t = s.tabs.find((t) => t.id === s.activeTabId);
-    return t?.groupId ?? null;
-  });
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [open]);
-
-  const quickAdd = () => {
-    newGroup(undefined, '~');
-    setOpen(false);
-  };
+  const ref = useRef<HTMLButtonElement>(null);
 
   const addWithFolder = async () => {
-    setOpen(false);
     if (window.grove?.pickFolder) {
       const folder = await window.grove.pickFolder();
       if (folder) newGroup(undefined, folder);
@@ -599,8 +607,6 @@ function AddWorkspaceSplitButton() {
   };
 
   const doFork = async (sourceId: string) => {
-    setOpen(false);
-    setShowForkPicker(false);
     const res = await forkGroup(sourceId);
     if ('error' in res) {
       // eslint-disable-next-line no-alert
@@ -608,111 +614,103 @@ function AddWorkspaceSplitButton() {
     }
   };
 
-  const forkClicked = async () => {
-    if (!window.grove?.workspace) return;
-    const all = useStore.getState().groups;
-    // Resolve gitness for everything we don't already know, in parallel —
-    // forks (forkedFromId set) are git-backed by construction so skip them.
-    const checks = await Promise.all(
-      all.map(async (g) => {
-        if (g.forkedFromId) return [g.id, true] as const;
-        const ok = await window.grove!.workspace.isGitRepo({ cwd: g.cwd });
-        return [g.id, !!ok] as const;
-      }),
+  // Open a custom-styled dropdown via showPopupMenu — rendered in the
+  // overlay window in Electron (so it floats above the WebContentsView)
+  // and in the main renderer in web. Fork opens a second popup with
+  // the eligible workspaces, matching the original UX.
+  const onClick = async () => {
+    if (!ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    const picked = await showPopupMenu(
+      [
+        { id: 'quick-add', label: 'Quick add', hint: 'Adds a workspace rooted at ~' },
+        {
+          id: 'add-with-folder',
+          label: 'Add with folder…',
+          hint: 'Create then immediately edit folder',
+        },
+        {
+          id: 'fork',
+          label: 'Fork workspace…',
+          hint: 'Clean parallel copy on a fresh branch',
+        },
+      ],
+      { x: r.left, y: r.bottom + 4 },
     );
-    const map = Object.fromEntries(checks);
-    setForkable(map);
-    const eligible = all.filter((g) => map[g.id]);
-    if (eligible.length === 0) {
-      // eslint-disable-next-line no-alert
-      window.alert(
-        'No git repositories among your workspaces. Fork is only available for workspaces inside a git repo.',
+    if (!picked) return;
+    if (picked === 'quick-add') {
+      newGroup(undefined, '~');
+      return;
+    }
+    if (picked === 'add-with-folder') {
+      await addWithFolder();
+      return;
+    }
+    if (picked === 'fork') {
+      // Resolve which workspaces are git-backed (forks always are), then
+      // either auto-fork the single eligible one or open a picker.
+      const all = useStore.getState().groups;
+      let forkable: Record<string, boolean> = {};
+      if (window.grove?.workspace) {
+        const checks = await Promise.all(
+          all.map(async (g) => {
+            if (g.forkedFromId) return [g.id, true] as const;
+            const ok = await window.grove!.workspace.isGitRepo({ cwd: g.cwd });
+            return [g.id, !!ok] as const;
+          }),
+        );
+        forkable = Object.fromEntries(checks);
+      }
+      const eligible = all.filter((g) => forkable[g.id]);
+      if (eligible.length === 0) {
+        // eslint-disable-next-line no-alert
+        window.alert(
+          'No git repositories among your workspaces. Fork is only available for workspaces inside a git repo.',
+        );
+        return;
+      }
+      if (eligible.length === 1) {
+        await doFork(eligible[0].id);
+        return;
+      }
+      const activeTab = useStore
+        .getState()
+        .tabs.find((t) => t.id === useStore.getState().activeTabId);
+      const activeGroupId = activeTab?.groupId ?? null;
+      const sorted = [...eligible].sort((a, b) => {
+        if (a.id === activeGroupId) return -1;
+        if (b.id === activeGroupId) return 1;
+        return 0;
+      });
+      const source = await showPopupMenu(
+        sorted.map((g) => ({
+          id: g.id,
+          label: g.name,
+          hint: g.id === activeGroupId ? 'active' : g.cwd,
+        })),
+        { x: r.left, y: r.bottom + 4 },
       );
-      setOpen(false);
-      return;
+      if (source) await doFork(source);
     }
-    if (eligible.length === 1) {
-      doFork(eligible[0].id);
-      return;
-    }
-    setShowForkPicker(true);
   };
 
-  // Reset the picker sub-view when the dropdown closes so reopening starts
-  // clean.
-  useEffect(() => {
-    if (!open) setShowForkPicker(false);
-  }, [open]);
-
   return (
-    <Box ref={ref} position="relative" display="inline-flex" alignItems="center">
-      <TitlebarIconButton title="Add workspace" active={open} onClick={() => setOpen((o) => !o)}>
-        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-          <path
-            d="M2 5.5a1 1 0 0 1 1-1h4l1.5 1.5h6a1 1 0 0 1 1 1V13.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5.5z"
-            stroke="currentColor"
-            strokeWidth="1.3"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M9 8.5v3.5M7.25 10.25h3.5"
-            stroke="currentColor"
-            strokeWidth="1.4"
-            strokeLinecap="round"
-          />
-        </svg>
-      </TitlebarIconButton>
-      {open && (
-        <Box
-          position="absolute"
-          top="100%"
-          left="0"
-          mt="6px"
-          bg="#161b22"
-          border="1px solid #30363d"
-          borderRadius="6px"
-          boxShadow="0 10px 30px rgba(0,0,0,0.5)"
-          py="1"
-          minW="240px"
-          zIndex={100}
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-        >
-          {!showForkPicker && (
-            <>
-              <MenuItem onClick={quickAdd} hint="Adds a workspace rooted at ~">
-                Quick add
-              </MenuItem>
-              <MenuItem onClick={addWithFolder} hint="Create then immediately edit folder">
-                Add with folder…
-              </MenuItem>
-              <MenuItem onClick={forkClicked} hint="Clean parallel copy on a fresh branch">
-                Fork workspace…
-              </MenuItem>
-            </>
-          )}
-          {showForkPicker && (
-            <>
-              <Box px="3" py="1.5">
-                <Text fontSize="11px" color="#7d8590">
-                  Fork from…
-                </Text>
-              </Box>
-              {groups
-                .filter((g) => forkable[g.id])
-                .map((g) => (
-                  <MenuItem
-                    key={g.id}
-                    onClick={() => doFork(g.id)}
-                    hint={g.id === activeGroupId ? 'active' : g.cwd}
-                  >
-                    {g.name}
-                  </MenuItem>
-                ))}
-            </>
-          )}
-        </Box>
-      )}
-    </Box>
+    <TitlebarIconButton ref={ref} title="Add workspace" onClick={onClick}>
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+        <path
+          d="M2 5.5a1 1 0 0 1 1-1h4l1.5 1.5h6a1 1 0 0 1 1 1V13.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5.5z"
+          stroke="currentColor"
+          strokeWidth="1.3"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M9 8.5v3.5M7.25 10.25h3.5"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+        />
+      </svg>
+    </TitlebarIconButton>
   );
 }
 
@@ -1328,7 +1326,6 @@ type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
 
 function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [section, setSection] = useState<SettingsSectionId>('appearance');
-  useHideBrowserOverlay(open);
 
   // Always land on the first category when the dialog is reopened.
   useEffect(() => {

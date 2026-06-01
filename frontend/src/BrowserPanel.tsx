@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import { Box, Flex, HStack, Input, Text } from '@chakra-ui/react';
 import { useStore } from './store';
 import type { LayoutNode } from './layout/types';
@@ -34,6 +34,7 @@ function decPaneAndShouldDestroy(id: string): boolean {
 }
 import { API_BASE } from './api';
 import { SquareLoader } from './SquareLoader';
+import { showHeaderOmnibox } from './showHeaderOmnibox';
 
 interface ServiceEntry {
   port: number;
@@ -93,6 +94,7 @@ export function BrowserPanel({
   const [addr, setAddr] = useState(url ?? '');
   const [viewport, setViewport] = useState<'desktop' | 'mobile'>('desktop');
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const addrWrapRef = useRef<HTMLDivElement | null>(null);
 
   const MOBILE_WIDTH = 390; // iPhone 14/15 logical width
   // Logical viewport width used when the panel is narrower than this — we
@@ -318,7 +320,12 @@ export function BrowserPanel({
                 <path d="M4.5 2.5L8 6l-3.5 3.5" />
               </svg>
             </HeaderIconButton>
-            <Box as="form" onSubmit={onSubmitAddr} flex="1">
+            <Box
+              as="form"
+              onSubmit={onSubmitAddr}
+              flex="1"
+              ref={addrWrapRef}
+            >
               <Input
                 size="xs"
                 value={addr}
@@ -331,7 +338,34 @@ export function BrowserPanel({
                 px="3"
                 h="24px"
                 placeholder="http://127.0.0.1:5173"
-                _focus={{ borderColor: '#1f6feb', boxShadow: '0 0 0 1px #1f6feb' }}
+                spellCheck={false}
+                autoComplete="off"
+                // Resting border on focus — the overlay omnibox handles
+                // the focus affordance.
+                _focus={{ borderColor: '#30363d', boxShadow: 'none', outline: 'none' }}
+                _focusVisible={{ borderColor: '#30363d', boxShadow: 'none', outline: 'none' }}
+                // Click / focus opens the overlay omnibox above the
+                // WebContentsView so the page stays visible underneath.
+                // We blur immediately so the underlying input doesn't
+                // hold a caret while the overlay's input has focus.
+                onMouseDown={async (e) => {
+                  e.preventDefault();
+                  (e.currentTarget as HTMLInputElement).blur();
+                  const wrap = addrWrapRef.current;
+                  if (!wrap) return;
+                  const r = wrap.getBoundingClientRect();
+                  const picked = await showHeaderOmnibox({
+                    anchor: { x: r.left, y: r.top, width: r.width },
+                    initialValue: addr,
+                    services,
+                    history,
+                  });
+                  if (picked != null) {
+                    setAddr(picked);
+                    setUrl(picked);
+                  }
+                }}
+                readOnly
               />
             </Box>
             <HeaderIconButton
@@ -752,6 +786,7 @@ function EmptyBrowserState({
     </Box>
   );
 }
+
 
 // Services that bind to a wildcard address (`*` from lsof, or 0.0.0.0 / ::)
 // are reachable on localhost; show the host the user would actually click,

@@ -3,14 +3,13 @@
 // the panel's own internal header. Workspace leaves (shell / claude tabs)
 // don't get this overlay — those tabs live in the sidebar today.
 
-import { useState, useRef, useEffect, useLayoutEffect } from 'react';
-import { createPortal } from 'react-dom';
-import { Box, Flex, Text } from '@chakra-ui/react';
+import { useState, useRef } from 'react';
+import { Box, Flex } from '@chakra-ui/react';
 import { useDraggable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import { X, Columns2, GripVertical, Rows2 } from 'lucide-react';
 import { useStore, makePanelPane } from '../store';
-import { useHideBrowserOverlay } from '../useHideBrowserOverlay';
+import { showPopupMenu } from '../showPopupMenu';
 import type { LeafNode, Pane, PaneKind } from './types';
 
 const SPLIT_KIND_LABELS: Array<{ kind: PaneKind; label: string }> = [
@@ -114,47 +113,41 @@ function SplitButton({
   groupId: string;
   dir: 'h' | 'v';
 }) {
-  const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
   const splitLeafInTree = useStore((s) => s.splitLeafInTree);
   const splitLeafWithNewTab = useStore((s) => s.splitLeafWithNewTab);
-  // BrowserPanel's WebContentsView is a native overlay above the DOM — no
-  // HTML z-index can sit over it. Park it offscreen while the menu is open
-  // so the dropdown is actually visible over a browser leaf.
-  useHideBrowserOverlay(open);
 
-  // Position the portaled menu just below the trigger's right edge so it
-  // visually attaches like the inline dropdown did.
-  useLayoutEffect(() => {
-    if (!open || !ref.current) return;
-    const place = () => {
-      const r = ref.current!.getBoundingClientRect();
-      setPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) });
-    };
-    place();
-    window.addEventListener('resize', place);
-    return () => window.removeEventListener('resize', place);
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      const inTrigger = ref.current && ref.current.contains(e.target as Node);
-      const inMenu = menuRef.current && menuRef.current.contains(e.target as Node);
-      if (!inTrigger && !inMenu) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [open]);
+  // Render a custom-styled dropdown in whichever renderer hosts the modal
+  // layer (overlay window in Electron, main renderer in web). The styled
+  // menu matches Grove's dark theme and avoids the WebContentsView
+  // z-fight because in Electron it paints in the overlay window above
+  // every Chromium layer.
+  const onClick = async () => {
+    if (!ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    const picked = await showPopupMenu(
+      SPLIT_KIND_LABELS.map(({ kind, label }) => ({ id: kind, label })),
+      { x: r.left, y: r.bottom + 4 },
+    );
+    if (!picked) return;
+    const kind = picked as (typeof SPLIT_KIND_LABELS)[number]['kind'];
+    if (kind === 'shell' || kind === 'claude') {
+      splitLeafWithNewTab(groupId, leaf.id, dir, kind);
+      return;
+    }
+    const { pane, state } = makePanelPane(kind);
+    splitLeafInTree(groupId, leaf.id, dir, pane, true);
+    useStore.setState((prev) => ({
+      activePanelId: pane.id,
+      paneState: { ...prev.paneState, [pane.id]: state },
+    }));
+  };
 
   return (
     <Box ref={ref} position="relative">
       <OverlayIconButton
         title={dir === 'h' ? 'Split right' : 'Split down'}
-        onClick={() => setOpen((o) => !o)}
-        active={open}
+        onClick={onClick}
       >
         {dir === 'h' ? (
           <Columns2 size={13} strokeWidth={1.8} />
@@ -162,55 +155,6 @@ function SplitButton({
           <Rows2 size={13} strokeWidth={1.8} />
         )}
       </OverlayIconButton>
-      {open && pos &&
-        createPortal(
-        <Box
-          ref={menuRef}
-          position="fixed"
-          top={`${pos.top}px`}
-          right={`${pos.right}px`}
-          bg="#161b22"
-          border="1px solid #30363d"
-          borderRadius="6px"
-          boxShadow="0 10px 30px rgba(0,0,0,0.5)"
-          py="1"
-          minW="160px"
-          zIndex={3000}
-        >
-          {SPLIT_KIND_LABELS.map(({ kind, label }) => (
-            <Box
-              as="button"
-              key={kind}
-              w="100%"
-              textAlign="left"
-              px="3"
-              py="1.5"
-              cursor="pointer"
-              bg="transparent"
-              border="none"
-              color="#f0f6fc"
-              fontSize="12px"
-              _hover={{ bg: '#1f6feb' }}
-              onClick={() => {
-                setOpen(false);
-                if (kind === 'shell' || kind === 'claude') {
-                  splitLeafWithNewTab(groupId, leaf.id, dir, kind);
-                  return;
-                }
-                const { pane, state } = makePanelPane(kind);
-                splitLeafInTree(groupId, leaf.id, dir, pane, true);
-                useStore.setState((prev) => ({
-                  activePanelId: pane.id,
-                  paneState: { ...prev.paneState, [pane.id]: state },
-                }));
-              }}
-            >
-              {label}
-            </Box>
-          ))}
-        </Box>,
-        document.body,
-      )}
     </Box>
   );
 }

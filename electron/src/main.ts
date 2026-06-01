@@ -62,8 +62,8 @@ interface BrowserViewEntry {
   view: WebContentsView;
   url: string | null;
   // Last bounds the renderer asked us to apply. Cached so we can replay
-  // them when an overlay (dropdown / drag / modal) un-hides the view —
-  // the renderer's rAF dedupes on bounds-change and won't otherwise repaint
+  // them when an overlay (drag / modal) un-hides the view — the
+  // renderer's rAF dedupes on bounds-change and won't otherwise repaint
   // if the panel hasn't resized in the meantime, leaving the view parked
   // at 0,0,0,0.
   lastBounds: { x: number; y: number; width: number; height: number; zoom: number } | null;
@@ -156,6 +156,103 @@ function attachWebContentsLogging(wc: WebContents, label: string) {
 // daemon on 127.0.0.1:4317 instead of spawning it as a child — see the Grove
 // Daemon Persistence design doc.
 
+// Frameless transparent always-on-top sibling of the main window. Hosts
+// DOM modals (CommandPalette, SettingsModal, SessionChoiceDialog) so they
+// can paint above the WebContentsView without the renderer having to park
+// it. Same renderer bundle as main, loaded with ?overlay=1 — code splits
+// inside App.tsx based on that flag.
+// The overlay is a WebContentsView attached as the TOP child of the main
+// window's contentView. It loads the same renderer bundle as main with
+// ?overlay=1 and hosts DOM modals + the popup menu — those paint above
+// the browser-pane WebContentsViews because contentView children render
+// in append order and we keep this one on top by re-adding it on every
+// activation.
+//
+// Why a child WebContentsView instead of a separate BrowserWindow: the
+// transparent frameless BrowserWindow approach has well-known macOS bugs
+// where the window appears and is "focused" but never receives OS click
+// events (we hit this exact thing — visible=true focused=true and clicks
+// still didn't reach the renderer). A child view inside the same window
+// is the same primitive that already works for the browser panes, so
+// clicks route naturally.
+let overlayView: WebContentsView | null = null;
+let overlayInteractive = false;
+
+function syncOverlayBounds() {
+  if (!mainWindow || !overlayView || !overlayInteractive) return;
+  const [w, h] = mainWindow.getContentSize();
+  overlayView.setBounds({ x: 0, y: 0, width: w, height: h });
+}
+
+function createOverlayView() {
+  if (!mainWindow || overlayView) return;
+  overlayView = new WebContentsView({
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.resolve(__dirname, 'preload.js'),
+    },
+  });
+  overlayView.setBackgroundColor('#00000000');
+  // Park at 0x0 until a modal/popup wants it.
+  overlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+  mainWindow.contentView.addChildView(overlayView);
+
+  const devUrl = process.env.GROVE_DEV_URL;
+  if (devUrl) {
+    overlayView.webContents.loadURL(`${devUrl}?overlay=1`);
+    // In dev, open the overlay's DevTools detached so we can actually
+    // see its console without juggling window focus. The main window's
+    // DevTools won't show overlay logs — separate webContents.
+    overlayView.webContents.once('did-finish-load', () => {
+      overlayView?.webContents.openDevTools({ mode: 'detach' });
+    });
+  } else {
+    overlayView.webContents.loadURL(`${APP_SCHEME}://app/index.html?overlay=1`);
+  }
+
+  mainWindow.on('resize', syncOverlayBounds);
+}
+
+ipcMain.handle('grove:overlay-set-interactive', (_e, interactive: boolean) => {
+  if (!overlayView || !mainWindow) return;
+  overlayInteractive = !!interactive;
+  if (overlayInteractive) {
+    // Re-add to push to the TOP of the contentView stack — any browser
+    // panes opened since createOverlayView() would otherwise sit above
+    // us. addChildView appends, so removing first and re-adding moves
+    // the overlay to the end (= top).
+    if (mainWindow.contentView.children.includes(overlayView)) {
+      mainWindow.contentView.removeChildView(overlayView);
+    }
+    mainWindow.contentView.addChildView(overlayView);
+    const [w, h] = mainWindow.getContentSize();
+    overlayView.setBounds({ x: 0, y: 0, width: w, height: h });
+  } else {
+    overlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+  }
+  logLine(`[overlay] setInteractive(${interactive})`);
+});
+
+// State bridge: main keeps the canonical store snapshot in memory, and
+// forwards every update to the OTHER renderer. The main renderer is the
+// source of truth (it owns persistence); the overlay renderer mirrors it
+// so its modals see the same data, and dispatches user actions back via
+// the same channel.
+let canonicalState: unknown = null;
+ipcMain.on('grove:overlay-state', (e, state: unknown) => {
+  canonicalState = state;
+  const senderId = e.sender.id;
+  const targets: WebContents[] = [];
+  if (mainWindow && !mainWindow.isDestroyed()) targets.push(mainWindow.webContents);
+  if (overlayView) targets.push(overlayView.webContents);
+  for (const wc of targets) {
+    if (wc.id === senderId) continue;
+    wc.send('grove:overlay-state', state);
+  }
+});
+ipcMain.handle('grove:overlay-state-request', () => canonicalState);
+
 function createWindow() {
   const state = windowStateKeeper({ defaultWidth: 1280, defaultHeight: 800 });
 
@@ -198,6 +295,14 @@ function createWindow() {
       }
     }
     browserViews.clear();
+    if (overlayView) {
+      try {
+        overlayView.webContents.close();
+      } catch {
+        /* already torn down */
+      }
+      overlayView = null;
+    }
     if (mainWindow === win) mainWindow = null;
   });
 
@@ -277,6 +382,12 @@ ipcMain.handle('grove:remote-set', async (_e, enabled: unknown) => {
 });
 
 // --- Embedded browser (BrowserPanel) ---------------------------------------
+// When true, all setBounds calls are ignored and EVERY view is parked
+// offscreen. Declared up here so the per-view capture loop in
+// ensureBrowserView can skip captures while the view is parked at 0x0
+// (would otherwise produce empty images).
+let browserOverlayHidden = false;
+
 // One WebContentsView per pane id. Views are created lazily on first open
 // and reused for the window's lifetime so page state survives panel
 // toggling.
@@ -367,12 +478,6 @@ ipcMain.handle('grove:browser-destroy', (_e, paneId: string) => {
   browserViews.delete(paneId);
 });
 
-// When true, all setBounds calls are ignored and EVERY view is parked
-// offscreen. Used by DOM overlays (dropdowns, menus) that need to render
-// above where any WebContentsView would otherwise paint — native views
-// can't be z-ordered against React DOM, so hiding them is the only option.
-let browserOverlayHidden = false;
-
 ipcMain.handle(
   'grove:browser-set-bounds',
   (
@@ -401,53 +506,30 @@ ipcMain.handle(
   },
 );
 
-// Capture every live browser view's current page as a PNG plus its last
-// known bounds. Used by the renderer to render a static snapshot while an
-// overlay (split dropdown, modal, drag preview) parks the view offscreen,
-// so the user doesn't see a blank rectangle where the page used to be.
-ipcMain.handle('grove:browser-capture-all', async () => {
-  const out: Array<{
-    paneId: string;
-    dataUrl: string;
-    bounds: { x: number; y: number; width: number; height: number };
-  }> = [];
-  for (const [paneId, entry] of browserViews) {
-    if (!entry.lastBounds) continue;
-    if (entry.lastBounds.width <= 0 || entry.lastBounds.height <= 0) continue;
-    try {
-      const img = await entry.view.webContents.capturePage();
-      if (img.isEmpty()) continue;
-      out.push({
-        paneId,
-        dataUrl: img.toDataURL(),
-        bounds: {
-          x: entry.lastBounds.x,
-          y: entry.lastBounds.y,
-          width: entry.lastBounds.width,
-          height: entry.lastBounds.height,
-        },
-      });
-    } catch {
-      /* page could be navigating; skip */
-    }
-  }
-  return out;
-});
-
 ipcMain.handle('grove:browser-set-overlay-hidden', (_e, hidden: boolean) => {
   browserOverlayHidden = !!hidden;
   if (browserOverlayHidden) {
+    // Fully remove every view from the window's content tree rather than
+    // moving it offscreen. Offscreen translation leaves the layer in the
+    // compositor's scene graph; the GPU still has to schedule a repaint
+    // of the vacated area, and during that schedule the area can show a
+    // brief uncleared frame (the "flash"). removeChildView drops the
+    // layer entirely so the DOM underneath (with the streamed snapshot
+    // <img>) is exposed at the next compositor swap with no transition.
     for (const entry of browserViews.values()) {
-      entry.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+      if (mainWindow?.contentView.children.includes(entry.view)) {
+        mainWindow.contentView.removeChildView(entry.view);
+      }
     }
     return;
   }
-  // Unhiding — replay the last accepted bounds for each view so the page
-  // reappears immediately. Without this, the renderer's rAF dedupes on
-  // bounds-change and never reissues setBounds when the panel hasn't
-  // resized in the meantime, leaving the view parked at 0,0,0,0.
+  // Unhiding — re-add each view to the content tree and replay its last
+  // bounds so it appears at the same rect it was at before hide.
   for (const entry of browserViews.values()) {
     if (!entry.lastBounds) continue;
+    if (mainWindow && !mainWindow.contentView.children.includes(entry.view)) {
+      mainWindow.contentView.addChildView(entry.view);
+    }
     entry.view.setBounds({
       x: entry.lastBounds.x,
       y: entry.lastBounds.y,
@@ -651,8 +733,12 @@ app.whenReady().then(async () => {
   registerAppProtocol();
   registerWorktreeHandlers();
   createWindow();
+  createOverlayView();
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+      createOverlayView();
+    }
   });
 });
 

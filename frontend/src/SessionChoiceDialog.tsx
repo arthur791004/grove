@@ -1,7 +1,6 @@
 import { Button, Dialog, Portal, Text } from '@chakra-ui/react';
 import { useStore } from './store';
 import { launchClaude } from './claudeLaunch';
-import { useHideBrowserOverlay } from './useHideBrowserOverlay';
 
 // New-session / Join-existing prompt. Shown when a Claude tab is bootstrapped
 // into a workspace that already runs a Claude session — `bootstrapClaude`
@@ -10,7 +9,6 @@ import { useHideBrowserOverlay } from './useHideBrowserOverlay';
 export function SessionChoiceDialog() {
   const choice = useStore((s) => s.sessionChoice);
   const setSessionChoice = useStore((s) => s.setSessionChoice);
-  useHideBrowserOverlay(!!choice);
 
   const startNew = () => {
     if (choice) void launchClaude(choice.tabId, { sessionId: crypto.randomUUID() });

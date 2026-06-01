@@ -244,6 +244,43 @@ interface State {
   // Cross-workspace agents view: takes over the main content area when open.
   // Transient — opening it is always a deliberate action, no need to persist.
   agentsViewOpen: boolean;
+  // Modal open state. Lives in the store (rather than per-component useState)
+  // so the Electron overlay renderer — a separate BrowserWindow that hosts
+  // these modals above the WebContentsView — can subscribe to it via the
+  // state bridge at the bottom of this file. In web mode the same state
+  // drives the modals rendered directly in the main renderer.
+  paletteOpen: boolean;
+  settingsOpen: boolean;
+  // Renderer-side custom dropdown menu. The main renderer requests via
+  // showPopupMenu() (helper below); the overlay renderer renders the
+  // styled menu and writes the picked id back via popupMenuResult. In
+  // web mode the same state drives a menu rendered in the only renderer.
+  popupMenu: {
+    id: string;
+    items: Array<{ id: string; label: string; hint?: string; enabled?: boolean }>;
+    anchor: { x: number; y: number };
+  } | null;
+  popupMenuResult: { id: string; pickedId: string | null } | null;
+  // Header URL omnibox. Opened from the browser pane's URL bar with a
+  // snapshot of the live services + workspace history; rendered above
+  // the WebContentsView in the overlay window so the page stays visible
+  // underneath. The picked URL (or null on dismiss) flows back via
+  // headerOmniboxResult.
+  headerOmnibox: {
+    id: string;
+    anchor: { x: number; y: number; width: number };
+    initialValue: string;
+    services: Array<{
+      port: number;
+      host: string;
+      pid: number;
+      cmd: string;
+      cwd: string | null;
+      url: string;
+    }> | null;
+    history: Array<{ url: string; visitedAt: number }>;
+  } | null;
+  headerOmniboxResult: { id: string; pickedUrl: string | null } | null;
   // Per-workspace pane tree. One LayoutNode per group; mutated alongside the
   // legacy tabs[] / activePanelId fields. LayoutHost reads from here so the
   // user can drag dividers, split panels off, and (slice 5) drag tabs
@@ -354,6 +391,12 @@ interface Actions {
   openAgentsView(): void;
   closeAgentsView(): void;
   toggleAgentsView(): void;
+  setPaletteOpen(open: boolean): void;
+  setSettingsOpen(open: boolean): void;
+  setPopupMenu(req: State['popupMenu']): void;
+  setPopupMenuResult(r: State['popupMenuResult']): void;
+  setHeaderOmnibox(req: State['headerOmnibox']): void;
+  setHeaderOmniboxResult(r: State['headerOmniboxResult']): void;
   // Layout-tree mutations (slice 4+). Resize is wired in slice 3 so the
   // user-dragged divider persists across renders.
   resizeLayoutSplit(groupId: string, splitId: string, sizes: number[]): void;
@@ -667,6 +710,12 @@ export const useStore = create<State & Actions>()(
       pendingPinDraft: null,
       sessionChoice: null,
       agentsViewOpen: false,
+      paletteOpen: false,
+      settingsOpen: false,
+      popupMenu: null,
+      popupMenuResult: null,
+      headerOmnibox: null,
+      headerOmniboxResult: null,
       pendingFirstMessages: {},
       layoutTreeByGroup: { default: makeLeaf([]) },
       paneState: {},
@@ -1131,6 +1180,24 @@ export const useStore = create<State & Actions>()(
       },
       toggleAgentsView() {
         set((s) => ({ agentsViewOpen: !s.agentsViewOpen }));
+      },
+      setPaletteOpen(open) {
+        set({ paletteOpen: open });
+      },
+      setSettingsOpen(open) {
+        set({ settingsOpen: open });
+      },
+      setPopupMenu(req) {
+        set({ popupMenu: req });
+      },
+      setPopupMenuResult(r) {
+        set({ popupMenuResult: r });
+      },
+      setHeaderOmnibox(req) {
+        set({ headerOmnibox: req });
+      },
+      setHeaderOmniboxResult(r) {
+        set({ headerOmniboxResult: r });
       },
       setPaneState(paneId, patch) {
         set((s) => {
@@ -1679,3 +1746,94 @@ export const useStore = create<State & Actions>()(
     },
   ),
 );
+
+// --- Cross-renderer state bridge ------------------------------------------
+// In Electron, modals (CommandPalette, SettingsModal, SessionChoiceDialog)
+// live in a separate overlay BrowserWindow that draws above the
+// WebContentsView. Both renderers share this useStore module but each has
+// its own zustand instance; the bridge below keeps them in lockstep by
+// broadcasting every local setState (data fields only — actions stay
+// per-renderer) to main, which forwards to the other window. Incoming
+// updates are applied under a `syncing` flag so they don't echo back.
+//
+// In web mode (no window.grove), the bridge is a no-op — there's no
+// overlay window, and the modals render in the only renderer there is.
+if (typeof window !== 'undefined' && window.grove?.overlay) {
+  const overlay = window.grove.overlay;
+
+  const stripFns = (state: Record<string, unknown>): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (const k in state) {
+      if (typeof state[k] !== 'function') out[k] = state[k];
+    }
+    return out;
+  };
+
+  // Suppress only the IMMEDIATE echo of a just-applied remote state. We
+  // can't use a `syncing` boolean wrapped around setState: if a local
+  // subscriber reacts to the remote update by triggering another
+  // setState (e.g. showPopupMenu's subscriber calling setPopupMenu(null)
+  // after receiving a popupMenuResult), that nested setState ALSO fires
+  // with syncing=true and the bridge silently drops it — the divergent
+  // local change never makes it back to the other renderer. Instead we
+  // record the exact state we just applied; the next bridge-subscribe
+  // tick that matches it (the echo from applyRemote's own setState) is
+  // skipped, and any further state changes (the nested local ones) go
+  // through normally.
+  let lastApplied: string | null = null;
+
+  const applyRemote = (remote: unknown) => {
+    if (!remote || typeof remote !== 'object') return;
+    const current = useStore.getState() as unknown as Record<string, unknown>;
+    const merged: Record<string, unknown> = {};
+    for (const k in remote as Record<string, unknown>) {
+      if (typeof current[k] !== 'function') {
+        merged[k] = (remote as Record<string, unknown>)[k];
+      }
+    }
+    // Snapshot of what the store WILL look like for stripFns-visible
+    // keys after this remote is merged in. Subscribe compares against
+    // this and skips the matching echo.
+    const projected: Record<string, unknown> = stripFns(current);
+    for (const k in merged) projected[k] = merged[k];
+    lastApplied = JSON.stringify(projected);
+    useStore.setState(merged as never, false);
+  };
+
+  overlay.onState(applyRemote);
+
+  // Coalesce multiple setStates within a frame into a single broadcast —
+  // setState fires often during pty replay, drag, etc.
+  let pendingBroadcast: Record<string, unknown> | null = null;
+  let scheduled = false;
+  useStore.subscribe((state) => {
+    const stripped = stripFns(state as unknown as Record<string, unknown>);
+    if (lastApplied !== null && JSON.stringify(stripped) === lastApplied) {
+      // Exactly the state we just received — don't echo it back. Clear
+      // the marker so a later identical local change (unlikely but
+      // possible) DOES broadcast.
+      lastApplied = null;
+      return;
+    }
+    lastApplied = null;
+    pendingBroadcast = stripped;
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => {
+      scheduled = false;
+      if (pendingBroadcast) {
+        overlay.sendState(pendingBroadcast);
+        pendingBroadcast = null;
+      }
+    });
+  });
+
+  if (overlay.isOverlay) {
+    // Overlay: hydrate from main on startup. Main has loaded from persist
+    // already and is the canonical source; we want to mirror it before
+    // any modal renders.
+    void overlay.requestState().then((s) => {
+      if (s) applyRemote(s);
+    });
+  }
+}
