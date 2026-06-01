@@ -342,45 +342,120 @@ function LayoutContent({ contentW }: { contentW: number }) {
     const tab = s.tabs.find((t) => t.id === s.activeTabId);
     return tab?.groupId ?? s.groupOrder[0] ?? null;
   });
-  const tree = useStore((s) => (activeGroupId ? s.layoutTreeByGroup[activeGroupId] : null));
+  const layoutTreeByGroup = useStore((s) => s.layoutTreeByGroup);
+  const groupOrder = useStore((s) => s.groupOrder);
+  const focusedId = useStore((s) => s.activePanelId ?? s.activeTabId);
   const resizeLayoutSplit = useStore((s) => s.resizeLayoutSplit);
 
-  // The user-visible "tabs" are the top-level entries under root. Main
-  // screen only renders the ACTIVE entry — never multiple top-level entries
-  // side-by-side. Splits are sub-trees within an entry and *do* render
-  // side-by-side, because the user explicitly asked to see those panes
-  // simultaneously.
-  const focusedId = useStore((s) => s.activePanelId ?? s.activeTabId);
-  if (!tree || (tree.type === 'leaf' && tree.panes.length === 0)) {
-    return (
-      <Flex h="100%" w="100%" align="center" justify="center" bg="#010409">
-        <Text color="#7d8590" fontSize="sm">
-          No tabs. Press ⌘T to create one.
-        </Text>
-      </Flex>
-    );
+  // Lazy-mount: a workspace's LayoutHost mounts the first time it becomes
+  // active and stays mounted (hidden with display:none) afterwards, so
+  // terminal WebSockets and xterm buffers survive workspace switches
+  // without replay. Workspaces the user never visits cost nothing.
+  const [mounted, setMounted] = useState<Set<string>>(() =>
+    activeGroupId ? new Set([activeGroupId]) : new Set(),
+  );
+  useEffect(() => {
+    if (!activeGroupId) return;
+    setMounted((prev) => {
+      if (prev.has(activeGroupId)) return prev;
+      const next = new Set(prev);
+      next.add(activeGroupId);
+      return next;
+    });
+  }, [activeGroupId]);
+  // Drop mounted entries for groups that no longer exist (workspace closed),
+  // so we don't keep referencing dead layouts or leak the ref cache.
+  useEffect(() => {
+    const live = new Set(groupOrder);
+    setMounted((prev) => {
+      let changed = false;
+      const next = new Set<string>();
+      for (const gid of prev) {
+        if (live.has(gid)) next.add(gid);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+    for (const gid of lastRenderedRef.current.keys()) {
+      if (!live.has(gid)) lastRenderedRef.current.delete(gid);
+    }
+  }, [groupOrder]);
+
+  // Per-group last-rendered top-level entry id. focusedId only belongs to
+  // the active group; without this cache, an inactive group would snap
+  // back to its first top-level entry on every render and unmount whatever
+  // entry the user had open there.
+  const lastRenderedRef = useRef(new Map<string, string>());
+
+  const activeTree = activeGroupId ? layoutTreeByGroup[activeGroupId] : null;
+  const activeEmpty =
+    !activeTree || (activeTree.type === 'leaf' && activeTree.panes.length === 0);
+
+  const renderGroups: string[] = [];
+  for (const gid of groupOrder) {
+    if (mounted.has(gid) && layoutTreeByGroup[gid]) renderGroups.push(gid);
   }
-  // Find the top-level entry that owns the focused pane; fall back to the
-  // first entry if nothing matches.
-  let renderedTree = tree;
-  if (tree.type === 'split' && focusedId) {
-    const containing = tree.children.find((c) => nodeContains(c, focusedId));
-    if (containing) renderedTree = containing;
-    else renderedTree = tree.children[0];
-  } else if (tree.type === 'split') {
-    renderedTree = tree.children[0];
+  if (
+    activeGroupId &&
+    layoutTreeByGroup[activeGroupId] &&
+    !renderGroups.includes(activeGroupId)
+  ) {
+    renderGroups.push(activeGroupId);
   }
 
   return (
-    <LayoutHost
-      tree={renderedTree}
-      groupId={activeGroupId ?? ''}
-      forcedFullscreen={false}
-      panelWidth={contentW}
-      onSplitResize={(splitId, sizes) => {
-        if (activeGroupId) resizeLayoutSplit(activeGroupId, splitId, sizes);
-      }}
-    />
+    <Box position="relative" w="100%" h="100%">
+      {activeEmpty && (
+        <Flex
+          position="absolute"
+          inset="0"
+          align="center"
+          justify="center"
+          bg="#010409"
+          zIndex={1}
+        >
+          <Text color="#7d8590" fontSize="sm">
+            No tabs. Press ⌘T to create one.
+          </Text>
+        </Flex>
+      )}
+      {renderGroups.map((gid) => {
+        const tree = layoutTreeByGroup[gid];
+        if (!tree) return null;
+        if (tree.type === 'leaf' && tree.panes.length === 0) return null;
+        const isActive = gid === activeGroupId;
+
+        let renderedTree = tree;
+        if (tree.type === 'split') {
+          if (isActive && focusedId) {
+            const containing = tree.children.find((c) => nodeContains(c, focusedId));
+            renderedTree = containing ?? tree.children[0];
+          } else {
+            const lastId = lastRenderedRef.current.get(gid);
+            const cached = lastId ? tree.children.find((c) => c.id === lastId) : undefined;
+            renderedTree = cached ?? tree.children[0];
+          }
+        }
+        lastRenderedRef.current.set(gid, renderedTree.id);
+
+        return (
+          <Box
+            key={gid}
+            position="absolute"
+            inset="0"
+            display={isActive ? 'block' : 'none'}
+          >
+            <LayoutHost
+              tree={renderedTree}
+              groupId={gid}
+              forcedFullscreen={false}
+              panelWidth={contentW}
+              onSplitResize={(splitId, sizes) => resizeLayoutSplit(gid, splitId, sizes)}
+            />
+          </Box>
+        );
+      })}
+    </Box>
   );
 }
 
