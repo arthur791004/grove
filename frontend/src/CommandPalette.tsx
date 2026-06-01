@@ -3,7 +3,7 @@ import { Box, Input, Text } from '@chakra-ui/react';
 import Fuse from 'fuse.js';
 import { useStore } from './store';
 import { COLOR_HEX } from './colors';
-import { useHideBrowserOverlay } from './useHideBrowserOverlay';
+import { FADE_MS, useFadePresence } from './useFadePresence';
 
 interface Props {
   open: boolean;
@@ -11,7 +11,6 @@ interface Props {
 }
 
 export function CommandPalette({ open, onClose }: Props) {
-  useHideBrowserOverlay(open);
   const tabs = useStore((s) => s.tabs);
   const groups = useStore((s) => s.groups);
   const setActiveTab = useStore((s) => s.setActiveTab);
@@ -62,7 +61,8 @@ export function CommandPalette({ open, onClose }: Props) {
     }
   }
 
-  if (!open) return null;
+  const { mounted, visible } = useFadePresence(open);
+  if (!mounted) return null;
 
   return (
     <Box
@@ -74,6 +74,10 @@ export function CommandPalette({ open, onClose }: Props) {
       justifyContent="center"
       pt="80px"
       onClick={onClose}
+      style={{
+        opacity: visible ? 1 : 0,
+        transition: `opacity ${FADE_MS}ms ease`,
+      }}
     >
       <Box
         w="520px"
@@ -83,6 +87,11 @@ export function CommandPalette({ open, onClose }: Props) {
         boxShadow="0 20px 60px rgba(0,0,0,0.6)"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={onKey}
+        style={{
+          opacity: visible ? 1 : 0,
+          transform: visible ? 'translateY(0)' : 'translateY(-6px)',
+          transition: `opacity ${FADE_MS}ms ease, transform ${FADE_MS}ms ease`,
+        }}
       >
         <Input
           autoFocus
