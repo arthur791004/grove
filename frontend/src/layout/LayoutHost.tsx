@@ -33,6 +33,7 @@ import { LeafTabBar } from './LeafTabBar';
 import { LeafTerminalHost } from './LeafTerminalHost';
 import type { LayoutNode, LeafNode, Pane } from './types';
 import { isLeaf } from './types';
+import { WorkspaceVisibilityProvider } from './visibility';
 
 interface LayoutHostProps {
   tree: LayoutNode;
@@ -47,6 +48,12 @@ interface LayoutHostProps {
   // Group id whose tree is being rendered — leaves use it to call the
   // tree-mutation actions (close, split).
   groupId: string;
+  // False when this workspace's LayoutHost is mounted but hidden via
+  // display:none (other workspace is in front). Descendants — chiefly
+  // TerminalView and BrowserPanel — read this through
+  // useWorkspaceVisible() so they can refit / re-attach when the
+  // workspace flips back to visible.
+  visible?: boolean;
 }
 
 // Threaded through the layout tree so a leaf can dim itself when it's the
@@ -153,22 +160,24 @@ export function LayoutHost(props: LayoutHostProps) {
     : null;
   const swapLeafId = activeId?.startsWith('swap:') ? activeId.slice(5) : null;
   return (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCenter}
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
-      onDragCancel={() => setActiveId(null)}
-    >
-      <Node node={props.tree} {...props} activeSwapLeafId={swapLeafId} />
-      <DragOverlay dropAnimation={null}>
-        {swapLeafPane ? (
-          <PaneCardPreview pane={swapLeafPane} />
-        ) : activePane ? (
-          <TabPreview pane={activePane} />
-        ) : null}
-      </DragOverlay>
-    </DndContext>
+    <WorkspaceVisibilityProvider value={props.visible ?? true}>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
+        onDragCancel={() => setActiveId(null)}
+      >
+        <Node node={props.tree} {...props} activeSwapLeafId={swapLeafId} />
+        <DragOverlay dropAnimation={null}>
+          {swapLeafPane ? (
+            <PaneCardPreview pane={swapLeafPane} />
+          ) : activePane ? (
+            <TabPreview pane={activePane} />
+          ) : null}
+        </DragOverlay>
+      </DndContext>
+    </WorkspaceVisibilityProvider>
   );
 }
 

@@ -450,6 +450,7 @@ function LayoutContent({ contentW }: { contentW: number }) {
               groupId={gid}
               forcedFullscreen={false}
               panelWidth={contentW}
+              visible={isActive}
               onSplitResize={(splitId, sizes) => resizeLayoutSplit(gid, splitId, sizes)}
             />
           </Box>

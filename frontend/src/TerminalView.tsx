@@ -19,6 +19,7 @@ import { MobileKeyBar } from './MobileKeyBar';
 import { BranchIcon, DiffIcon, FileIcon, FolderIcon, NodeIcon, PrIcon, ScriptIcon } from './icons';
 import { useIsMobile } from './useViewport';
 import { Tooltip } from './Tooltip';
+import { useWorkspaceVisible } from './layout/visibility';
 
 const ALT_ON = /\x1b\[\?(?:1049|47|1047)h/g;
 const ALT_OFF = /\x1b\[\?(?:1049|47|1047)l/g;
@@ -330,6 +331,11 @@ const MAX_INPUT_HEIGHT = 220;
 const INPUT_LINE_HEIGHT = 22;
 
 export function TerminalView({ tabId, active }: Props) {
+  // The workspace this TerminalView lives in may be parked under
+  // display:none while another workspace is in front. ResizeObserver fires
+  // a frame too late on visible→hidden→visible, so we also drive a refit
+  // off this context value.
+  const workspaceVisible = useWorkspaceVisible();
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [input, setInput] = useState('');
   const [history, setHistory] = useState<string[]>([]);
@@ -1018,6 +1024,40 @@ export function TerminalView({ tabId, active }: Props) {
       });
     }
   }, [rawMode, active, isRunning]);
+
+  // Refit on workspace visibility flips. Mirrors the leaf-active effect
+  // above for the workspace-level display:none toggle (LayoutContent
+  // hides parked workspaces). Also covers the first-mount race: if the
+  // initial RO observe fires while host.clientWidth is still 0, no fit
+  // ever runs and the PTY sits at xterm's default 80x24 — which is what
+  // a TUI like Codex captures when it prints its first block. We retry
+  // for ~0.5s until the host actually has a non-zero width.
+  useEffect(() => {
+    if (!workspaceVisible) return;
+    let frames = 0;
+    let cancelled = false;
+    const tryFit = () => {
+      if (cancelled) return;
+      const t = xtermRef.current;
+      const f = fitRef.current;
+      const ws = wsRef.current;
+      const host = xtermHostRef.current;
+      if (t && f && host && host.clientWidth > 0 && host.clientHeight > 0) {
+        try {
+          f.fit();
+        } catch {}
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
+        }
+        return;
+      }
+      if (frames++ < 30) requestAnimationFrame(tryFit);
+    };
+    requestAnimationFrame(tryFit);
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceVisible]);
 
   // Grow the prompt textarea with its content up to MAX_INPUT_HEIGHT, after
   // which it scrolls internally.
