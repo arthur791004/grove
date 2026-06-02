@@ -20,6 +20,7 @@ import { BranchIcon, DiffIcon, FileIcon, FolderIcon, NodeIcon, PrIcon, ScriptIco
 import { useIsMobile } from './useViewport';
 import { Tooltip } from './Tooltip';
 import { useWorkspaceVisible } from './layout/visibility';
+import { BranchPopoverTrigger } from './BranchPopover';
 
 const ALT_ON = /\x1b\[\?(?:1049|47|1047)h/g;
 const ALT_OFF = /\x1b\[\?(?:1049|47|1047)l/g;
@@ -2287,13 +2288,16 @@ function ChipStrip({ ctx, tabId }: { ctx: ReturnType<typeof useTabContext>; tabI
         />
       )}
       {branch && (
-        <Chip
-          icon={<BranchIcon size={12} />}
-          label={branch}
-          labelColor="#7ee787"
-          compact={compact}
-          tooltip={`branch ${branch}`}
-        />
+        <BranchPopoverTrigger cwd={groupCwd ?? ''}>
+          <Chip
+            icon={<BranchIcon size={12} />}
+            label={branch}
+            labelColor="#7ee787"
+            compact={compact}
+            // Tooltip would race the popover (both react to hover); the
+            // popover itself surfaces enough context.
+          />
+        </BranchPopoverTrigger>
       )}
       {ctx?.diff && ctx.diff.files > 0 && (
         <Chip
