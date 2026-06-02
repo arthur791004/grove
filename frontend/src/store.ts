@@ -1293,6 +1293,33 @@ export const useStore = create<State & Actions>()(
         set((s) => {
           let tree = s.layoutTreeByGroup[groupId];
           if (!tree) return s;
+          // Multi-pane leaf: extract the active pane into its own leaf
+          // first so the split is about THAT pane's space, not the whole
+          // leaf. Otherwise the new panel ends up as a sibling of the
+          // entire leaf, which the sidebar then merges into a single
+          // group row that visually hides the original sibling tabs. See
+          // splitLeafWithNewTab for the same rationale.
+          const sourceLeaf = findLeaf(tree, leafId);
+          if (sourceLeaf && sourceLeaf.panes.length > 1) {
+            const activePaneId = sourceLeaf.activePaneId ?? sourceLeaf.panes[0]?.id;
+            const activePane = activePaneId
+              ? sourceLeaf.panes.find((p) => p.id === activePaneId)
+              : null;
+            if (activePane) {
+              const trimmed =
+                mapLeaves(tree, (l) => {
+                  if (l.id !== sourceLeaf.id) return l;
+                  const remaining = l.panes.filter((p) => p.id !== activePaneId);
+                  const stillActive = remaining[0]?.id ?? null;
+                  return { ...l, panes: remaining, activePaneId: stillActive };
+                }) ?? tree;
+              const extractedLeaf = makeLeaf([activePane]);
+              const withExtracted = splitLeafOp(trimmed, sourceLeaf.id, dir, extractedLeaf, true);
+              const newLeaf = makeLeaf([pane]);
+              const next = splitLeafOp(withExtracted, extractedLeaf.id, dir, newLeaf, after);
+              return { layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: next } };
+            }
+          }
           // If the entire root is the leaf being split, wrap it in a single-
           // child "tabs" split first. Otherwise splitting a root-leaf gives
           // a split with two top-level children, which the layout treats as
@@ -1332,6 +1359,59 @@ export const useStore = create<State & Actions>()(
         const pane: Pane = { id, kind: tab.kind as PaneKind, title: tab.title };
         set((s) => {
           let tree = s.layoutTreeByGroup[groupId] ?? makeLeaf([]);
+          // Multi-pane leaf case: the split should be ABOUT the active pane,
+          // not the whole leaf. Otherwise we end up with a sub-split that
+          // wraps every co-resident tab into one merged sidebar group, which
+          // visually loses the sibling tabs (they're no longer top-level
+          // entries — they're stuck inside the new sub-split). Fix: pull
+          // the active pane out into its own leaf first; the siblings stay
+          // behind in the original leaf and remain a separate top-level
+          // tab. Then split the extracted leaf with the new pane.
+          const sourceLeaf = findLeaf(tree, leafId);
+          if (sourceLeaf && sourceLeaf.panes.length > 1) {
+            const activePaneId = sourceLeaf.activePaneId ?? sourceLeaf.panes[0]?.id;
+            const activePane = activePaneId
+              ? sourceLeaf.panes.find((p) => p.id === activePaneId)
+              : null;
+            if (activePane) {
+              const trimmed =
+                mapLeaves(tree, (l) => {
+                  if (l.id !== sourceLeaf.id) return l;
+                  const remaining = l.panes.filter((p) => p.id !== activePaneId);
+                  const stillActive = remaining[0]?.id ?? null;
+                  return { ...l, panes: remaining, activePaneId: stillActive };
+                }) ?? tree;
+              const extractedLeaf = makeLeaf([activePane]);
+              // Step 1: insert the extracted leaf as a sibling of the
+              // trimmed source — same direction as the requested split so
+              // the placement matches the user's intent.
+              const withExtracted = splitLeafOp(trimmed, sourceLeaf.id, dir, extractedLeaf, true);
+              // Step 2: split the extracted leaf with the new pane.
+              const nextTree = splitLeafOp(
+                withExtracted,
+                extractedLeaf.id,
+                dir,
+                makeLeaf([pane]),
+                true,
+              );
+              const next: Partial<State> = {
+                tabs: [...s.tabs, tab],
+                tabOrderByGroup: {
+                  ...s.tabOrderByGroup,
+                  [groupId]: [...(s.tabOrderByGroup[groupId] ?? []), id],
+                },
+                layoutTreeByGroup: { ...s.layoutTreeByGroup, [groupId]: nextTree },
+                activeTabId: id,
+              };
+              if (mode === 'claude') {
+                next.claudeBootstrapTabs = { ...s.claudeBootstrapTabs, [id]: true };
+              }
+              return next;
+            }
+          }
+          // Single-pane leaf (or fallback): wrap a bare-leaf root in a tabs
+          // container so closing one side later doesn't collapse the split,
+          // then split.
           if (tree.type === 'leaf' && tree.id === leafId) {
             tree = {
               type: 'split',
