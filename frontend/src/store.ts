@@ -281,6 +281,15 @@ interface State {
     history: Array<{ url: string; visitedAt: number }>;
   } | null;
   headerOmniboxResult: { id: string; pickedUrl: string | null } | null;
+  // System CPU / memory pushed by the backend over /system-stats. Read
+  // only by the sidebar footer gauges via a tight selector; broader
+  // components do not subscribe, so the 2s tick doesn't fan out.
+  systemStats: {
+    cpu: number;
+    memUsed: number;
+    memTotal: number;
+    ts: number;
+  } | null;
   // Per-workspace pane tree. One LayoutNode per group; mutated alongside the
   // legacy tabs[] / activePanelId fields. LayoutHost reads from here so the
   // user can drag dividers, split panels off, and (slice 5) drag tabs
@@ -397,6 +406,7 @@ interface Actions {
   setPopupMenuResult(r: State['popupMenuResult']): void;
   setHeaderOmnibox(req: State['headerOmnibox']): void;
   setHeaderOmniboxResult(r: State['headerOmniboxResult']): void;
+  setSystemStats(s: State['systemStats']): void;
   // Layout-tree mutations (slice 4+). Resize is wired in slice 3 so the
   // user-dragged divider persists across renders.
   resizeLayoutSplit(groupId: string, splitId: string, sizes: number[]): void;
@@ -716,6 +726,7 @@ export const useStore = create<State & Actions>()(
       popupMenuResult: null,
       headerOmnibox: null,
       headerOmniboxResult: null,
+      systemStats: null,
       pendingFirstMessages: {},
       layoutTreeByGroup: { default: makeLeaf([]) },
       paneState: {},
@@ -1198,6 +1209,9 @@ export const useStore = create<State & Actions>()(
       },
       setHeaderOmniboxResult(r) {
         set({ headerOmniboxResult: r });
+      },
+      setSystemStats(s) {
+        set({ systemStats: s });
       },
       setPaneState(paneId, patch) {
         set((s) => {

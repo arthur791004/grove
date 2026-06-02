@@ -29,6 +29,7 @@ import { ReconnectBanner } from './ReconnectBanner';
 import { SessionChoiceDialog } from './SessionChoiceDialog';
 import { sendSessionInput } from './api';
 import { useShortcuts } from './useShortcuts';
+import { useSystemStatsConnection } from './useSystemStats';
 import { useStore, type Group, type NewTabMode, type TabPosition } from './store';
 import { shortPath } from './paths';
 import './extensions/builtins';
@@ -145,6 +146,9 @@ export function App() {
 
   const contentW = windowWidth - (!isMobile && sidebarOpen ? SIDEBAR_WIDTH : 0);
   useShortcuts(() => setPaletteOpen(true));
+  // Subscribe to /system-stats once — only the sidebar footer reads the
+  // resulting slice, so the 2s tick doesn't fan out re-renders.
+  useSystemStatsConnection();
 
   useEffect(() => {
     const s = useStore.getState();

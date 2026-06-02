@@ -276,8 +276,75 @@ export function Sidebar() {
             </DragOverlay>
           </DndContext>
         </Box>
+        <SystemStatsFooter />
       </Box>
     </ColorPopupContext.Provider>
+  );
+}
+
+// Compact CPU + RAM gauges at the sidebar bottom. Reads only the
+// systemStats slice via a tight selector — no other component
+// subscribes — so the 2-second tick doesn't fan out re-renders.
+function SystemStatsFooter() {
+  const stats = useStore((s) => s.systemStats);
+  const cpuPct = stats ? Math.round(stats.cpu * 100) : null;
+  const memPct = stats ? Math.round((stats.memUsed / stats.memTotal) * 100) : null;
+  const memUsedGb = stats ? stats.memUsed / (1024 * 1024 * 1024) : null;
+  const memTotalGb = stats ? stats.memTotal / (1024 * 1024 * 1024) : null;
+  return (
+    <Box
+      flexShrink={0}
+      borderTop="1px solid #21262d"
+      px="3"
+      py="2"
+      display="flex"
+      gap="3"
+      title={
+        stats
+          ? `CPU ${cpuPct}% — RAM ${memUsedGb?.toFixed(1)} / ${memTotalGb?.toFixed(1)} GB`
+          : 'System stats loading…'
+      }
+    >
+      <Gauge label="CPU" pct={cpuPct} />
+      <Gauge label="RAM" pct={memPct} />
+    </Box>
+  );
+}
+
+function Gauge({ label, pct }: { label: string; pct: number | null }) {
+  // Color steps mark hot regions without turning the strip into a chart.
+  const color = pct == null ? '#30363d' : pct >= 85 ? '#f85149' : pct >= 65 ? '#d29922' : '#3fb950';
+  return (
+    <Box flex="1" minW="0">
+      <Box display="flex" justifyContent="space-between" mb="1">
+        <Box
+          as="span"
+          fontSize="10px"
+          color="#7d8590"
+          fontFamily="var(--grove-mono), monospace"
+        >
+          {label}
+        </Box>
+        <Box
+          as="span"
+          fontSize="10px"
+          color="#c9d1d9"
+          fontFamily="var(--grove-mono), monospace"
+        >
+          {pct == null ? '—' : `${pct}%`}
+        </Box>
+      </Box>
+      <Box position="relative" h="4px" bg="#21262d" borderRadius="2px" overflow="hidden">
+        <Box
+          position="absolute"
+          inset="0"
+          right="auto"
+          w={pct == null ? '0%' : `${pct}%`}
+          bg={color}
+          style={{ transition: 'width 600ms ease, background-color 300ms ease' }}
+        />
+      </Box>
+    </Box>
   );
 }
 
