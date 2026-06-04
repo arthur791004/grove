@@ -13,6 +13,7 @@ import { useStore, type AgentState, type AgentPrompt } from './store';
 import { API_BASE, WS_BASE, sendSessionInput } from './api';
 import { bootstrapClaude } from './claudeLaunch';
 import { TerminalOutput } from './TerminalOutput';
+import { LazyMount } from './LazyMount';
 import { SquareLoader } from './SquareLoader';
 import { PinBar } from './PinBar';
 import { MobileKeyBar } from './MobileKeyBar';
@@ -1486,18 +1487,27 @@ export function TerminalView({ tabId, active }: Props) {
           flexDirection="column"
         >
           <Box flex="1" />
-          {blocks.map((b) => (
-            <BlockCard
-              key={b.id}
-              block={b}
-              ctxNode={ctx?.node ?? null}
-              cmdHeld={cmdHeld}
-              onDelete={() => setBlocks((bs) => bs.filter((x) => x.id !== b.id))}
-              onRerun={() => {
-                if (b.cmd) send(b.cmd + '\r');
-              }}
-            />
-          ))}
+          {blocks.map((b, i) => {
+            // Always mount the last few blocks (the ones the user is
+            // most likely looking at right after a command finishes) so
+            // their first paint isn't gated on an IntersectionObserver
+            // tick. Older blocks lazy-mount when they scroll near the
+            // viewport.
+            const forceMount = i >= blocks.length - 5;
+            return (
+              <LazyMount key={b.id} forceMount={forceMount}>
+                <BlockCard
+                  block={b}
+                  ctxNode={ctx?.node ?? null}
+                  cmdHeld={cmdHeld}
+                  onDelete={() => setBlocks((bs) => bs.filter((x) => x.id !== b.id))}
+                  onRerun={() => {
+                    if (b.cmd) send(b.cmd + '\r');
+                  }}
+                />
+              </LazyMount>
+            );
+          })}
         </Box>
         {!pinned && blocks.length > 0 && (
           <Box
