@@ -659,7 +659,14 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
   const env: Record<string, string> = { ...(process.env as Record<string, string>) };
   if (isZsh) env.ZDOTDIR = ensureShellInitDir();
 
-  const term = pty.spawn(userShell, [], {
+  // Login shell (`-l`) so /etc/{z,}profile runs and macOS's path_helper
+  // populates PATH from /etc/paths.d/ — that's where Docker Desktop,
+  // Homebrew, etc. drop their entries. Without -l, an Electron-launched
+  // daemon inherits the stripped LaunchServices PATH (just
+  // /usr/bin:/bin:/usr/sbin:/sbin) and `docker`, `brew`, etc. aren't on
+  // PATH. Costs a single login-init pass per new tab, matching what
+  // Terminal.app / iTerm do by default.
+  const term = pty.spawn(userShell, ['-l'], {
     name: 'xterm-256color',
     cols: 200,
     rows: 50,
