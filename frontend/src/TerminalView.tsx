@@ -1034,8 +1034,14 @@ export function TerminalView({ tabId, active }: Props) {
   // ever runs and the PTY sits at xterm's default 80x24 — which is what
   // a TUI like Codex captures when it prints its first block. We retry
   // for ~0.5s until the host actually has a non-zero width.
+  //
+  // Also focus the appropriate input here: the [active] effect doesn't
+  // refire on workspace switches (the leaf's active pane id doesn't
+  // change), so without this, switching workspaces would leave both
+  // panes' inputs unfocused even though the workspace is now in front.
   useEffect(() => {
     if (!workspaceVisible) return;
+    if (!active) return;
     let frames = 0;
     let cancelled = false;
     const tryFit = () => {
@@ -1051,6 +1057,8 @@ export function TerminalView({ tabId, active }: Props) {
         if (ws?.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
         }
+        if (rawModeRef.current) t.focus();
+        else inputRef.current?.focus();
         return;
       }
       if (frames++ < 30) requestAnimationFrame(tryFit);
@@ -1059,7 +1067,7 @@ export function TerminalView({ tabId, active }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [workspaceVisible]);
+  }, [workspaceVisible, active]);
 
   // Grow the prompt textarea with its content up to MAX_INPUT_HEIGHT, after
   // which it scrolls internally.
@@ -1401,18 +1409,25 @@ export function TerminalView({ tabId, active }: Props) {
       bg="#010409"
       overflow="hidden"
       position="relative"
-      // Refocus xterm after any pointerdown inside the terminal area while in
-      // raw mode. Otherwise tapping/clicking on chrome (PinBar, chip strip, a
-      // pinned action button, the on-screen key bar) silently steals focus
-      // from xterm's helper textarea — the overlay still renders, the cursor
-      // still blinks, but keystrokes go nowhere. The focus useEffect only
-      // fires on rawMode/active/isRunning changes, so quiet focus drift wasn't
-      // covered. PointerDown unifies mouse + touch so it works on iOS / Android
-      // too; rAF lets the gesture's own focus change settle first before we
-      // override it.
-      onPointerDown={() => {
-        if (!rawMode) return;
-        requestAnimationFrame(() => xtermRef.current?.focus());
+      // Refocus the right element after any pointerdown inside the terminal
+      // area. In raw mode that's xterm's helper textarea; in block mode it's
+      // the prompt input. Otherwise tapping/clicking on chrome (PinBar, chip
+      // strip, a pinned action button, the on-screen key bar) — or just the
+      // empty area between blocks — silently steals focus and keystrokes go
+      // nowhere. PointerDown unifies mouse + touch; rAF lets the gesture's
+      // own focus change settle first before we override it. Skip when the
+      // user is starting a text selection (mouse down on text content), so
+      // we don't snatch focus mid-drag — the click handler catches the
+      // collapsed-selection case below.
+      onPointerDown={(e) => {
+        // If the user clicked into a focusable element themselves
+        // (button, input, link, etc.), don't override their target.
+        const target = e.target as HTMLElement | null;
+        if (target?.closest('button, a, input, textarea, select, [contenteditable]')) return;
+        requestAnimationFrame(() => {
+          if (rawModeRef.current) xtermRef.current?.focus();
+          else inputRef.current?.focus();
+        });
       }}
     >
       {/* Terminal region — output, shell footer, and the raw-mode xterm
