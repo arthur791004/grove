@@ -35,7 +35,16 @@ export function BranchPopoverTrigger({
 }) {
   const triggerRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
-  const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(null);
+  const [anchor, setAnchor] = useState<
+    | {
+        left: number;
+        top?: number;
+        bottom?: number;
+        maxHeight: number;
+        placement: 'below' | 'above';
+      }
+    | null
+  >(null);
   const openTimer = useRef<number | null>(null);
   const closeTimer = useRef<number | null>(null);
 
@@ -54,7 +63,30 @@ export function BranchPopoverTrigger({
     clearTimers();
     openTimer.current = window.setTimeout(() => {
       const r = triggerRef.current?.getBoundingClientRect();
-      if (r) setAnchor({ left: r.left, top: r.bottom + 6 });
+      if (r) {
+        const GAP = 6;
+        const MARGIN = 8;
+        const vh = window.innerHeight;
+        const spaceBelow = vh - r.bottom - GAP - MARGIN;
+        const spaceAbove = r.top - GAP - MARGIN;
+        const desired = Math.min(vh * 0.6, 480);
+        const flip = spaceBelow < Math.min(desired, 200) && spaceAbove > spaceBelow;
+        if (flip) {
+          setAnchor({
+            left: r.left,
+            bottom: vh - r.top + GAP,
+            maxHeight: Math.max(120, spaceAbove),
+            placement: 'above',
+          });
+        } else {
+          setAnchor({
+            left: r.left,
+            top: r.bottom + GAP,
+            maxHeight: Math.max(120, spaceBelow),
+            placement: 'below',
+          });
+        }
+      }
       setOpen(true);
     }, OPEN_DELAY_MS);
   };
@@ -96,7 +128,13 @@ function BranchPopover({
   onClose,
 }: {
   cwd: string;
-  anchor: { left: number; top: number };
+  anchor: {
+    left: number;
+    top?: number;
+    bottom?: number;
+    maxHeight: number;
+    placement: 'below' | 'above';
+  };
   onMouseEnter: () => void;
   onMouseLeave: () => void;
   onClose: () => void;
@@ -150,14 +188,15 @@ function BranchPopover({
   return (
     <Box
       position="fixed"
-      top={`${anchor.top}px`}
+      top={anchor.top != null ? `${anchor.top}px` : undefined}
+      bottom={anchor.bottom != null ? `${anchor.bottom}px` : undefined}
       left={`${anchor.left}px`}
       bg="#0d1117"
       border="1px solid #30363d"
       borderRadius="8px"
       boxShadow="0 12px 32px rgba(0,0,0,0.5)"
       width="320px"
-      maxH="60vh"
+      maxH={`${anchor.maxHeight}px`}
       overflow="hidden"
       zIndex={1500}
       onMouseEnter={onMouseEnter}
