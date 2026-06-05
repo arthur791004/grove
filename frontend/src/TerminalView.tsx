@@ -1424,10 +1424,17 @@ export function TerminalView({ tabId, active }: Props) {
         // (button, input, link, etc.), don't override their target.
         const target = e.target as HTMLElement | null;
         if (target?.closest('button, a, input, textarea, select, [contenteditable]')) return;
-        requestAnimationFrame(() => {
+        // Defer to pointerup so an in-progress text selection isn't snapped
+        // away by the focus(). If the user actually dragged out a selection,
+        // leave focus where the browser put it so the selection survives.
+        const onUp = () => {
+          document.removeEventListener('pointerup', onUp);
+          const sel = window.getSelection();
+          if (sel && !sel.isCollapsed) return;
           if (rawModeRef.current) xtermRef.current?.focus();
           else inputRef.current?.focus();
-        });
+        };
+        document.addEventListener('pointerup', onUp);
       }}
     >
       {/* Terminal region — output, shell footer, and the raw-mode xterm
