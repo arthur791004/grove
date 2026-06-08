@@ -355,6 +355,13 @@ export function TerminalView({ tabId, active }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
   const currentBlockRef = useRef<number | null>(null);
+  // Set true once an alt-buffer snapshot has been written into the current
+  // block (via the willExitRaw branch in the raw stream handler). Prevents
+  // block-end from re-snapshotting the now-restored normal buffer and wiping
+  // the good capture — happens for commands like `git rebase -i` where vim
+  // cleanly emits ?1049l on exit but the tty-mode raw=false poll hasn't yet
+  // cleared rawModeRef by the time block-end arrives.
+  const snapshotAppliedRef = useRef(false);
   const [caretLeft, setCaretLeft] = useState(0);
   const [caretTop, setCaretTop] = useState(0);
   const [caretVisible, setCaretVisible] = useState(true);
@@ -602,7 +609,10 @@ export function TerminalView({ tabId, active }: Props) {
               xtermRef.current?.write(msg.data);
             }
 
-            if (snapshot) applySnapshotToInteractiveBlock(snapshot);
+            if (snapshot) {
+              applySnapshotToInteractiveBlock(snapshot);
+              snapshotAppliedRef.current = true;
+            }
 
             if (result.alt !== null) setAltScreen(result.alt);
             if (result.cursor !== null) setCursorHide(result.cursor);
@@ -658,6 +668,7 @@ export function TerminalView({ tabId, active }: Props) {
               startedAt: Date.now(),
               interactive: interactive || undefined,
             };
+            snapshotAppliedRef.current = false;
             setBlocks((bs) => [...bs.slice(-200), pending]);
             if (interactive) {
               // Only reset xterm if we haven't already entered raw mode via
@@ -680,7 +691,14 @@ export function TerminalView({ tabId, active }: Props) {
             // both forcedRaw exits (commands like `claude` that never emit
             // ?1049h) and any straggler where raw toggles weren't observed
             // before the block ended.
-            const snapshot = rawModeRef.current ? snapshotXtermBuffer() : null;
+            // Skip if the raw stream already snapshotted the alt buffer on
+            // ?1049l — re-snapshotting now would capture the restored normal
+            // buffer (e.g. shell prompt after `git rebase -i`) and overwrite
+            // the good vim capture with near-empty content.
+            const snapshot =
+              rawModeRef.current && !snapshotAppliedRef.current
+                ? snapshotXtermBuffer()
+                : null;
             const cur = currentBlockRef.current;
             if (cur !== null) {
               setBlocks((bs) =>
@@ -1420,21 +1438,16 @@ export function TerminalView({ tabId, active }: Props) {
       // we don't snatch focus mid-drag — the click handler catches the
       // collapsed-selection case below.
       onPointerDown={(e) => {
-        // If the user clicked into a focusable element themselves
-        // (button, input, link, etc.), don't override their target.
         const target = e.target as HTMLElement | null;
+        // Don't override the user's own focus target (button/input/link/etc.).
         if (target?.closest('button, a, input, textarea, select, [contenteditable]')) return;
-        // Defer to pointerup so an in-progress text selection isn't snapped
-        // away by the focus(). If the user actually dragged out a selection,
-        // leave focus where the browser put it so the selection survives.
-        const onUp = () => {
-          document.removeEventListener('pointerup', onUp);
-          const sel = window.getSelection();
-          if (sel && !sel.isCollapsed) return;
-          if (rawModeRef.current) xtermRef.current?.focus();
-          else inputRef.current?.focus();
-        };
-        document.addEventListener('pointerup', onUp);
+        // Don't touch focus when the pointerdown lands on selectable block text.
+        // The focus() would clear the in-progress selection drag. Block output
+        // is wrapped in .grove-output; the block's command line and metadata
+        // also live inside BlockCard, so guard on that too.
+        if (target?.closest('.grove-output, .grove-block')) return;
+        if (rawModeRef.current) xtermRef.current?.focus();
+        else inputRef.current?.focus();
       }}
     >
       {/* Terminal region — output, shell footer, and the raw-mode xterm
@@ -1927,6 +1940,7 @@ function BlockCard({
   const durStr = formatDuration(block.durationMs, running);
   return (
     <Box
+      className="grove-block"
       px="6"
       py="2"
       borderTop="1px solid #21262d"
@@ -2027,6 +2041,8 @@ function BlockCard({
             fontFeatureSettings: '"liga" 0, "calt" 0, "kern" 0',
             fontVariantLigatures: 'none',
             cursor: cmdHeld ? 'pointer' : 'text',
+            userSelect: 'text',
+            WebkitUserSelect: 'text',
           }}
         >
           <TerminalOutput text={block.output} cwd={block.cwd} />
