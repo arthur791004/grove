@@ -54,6 +54,7 @@
   mac: {
     target: [
       { target: 'dir', arch: ['arm64'] },
+      { target: 'zip', arch: ['arm64'] },
     ],
     icon: 'electron/assets/icon.icns',
     category: 'public.app-category.developer-tools',
