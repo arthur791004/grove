@@ -177,7 +177,7 @@ function findEmitBoundary(buf: string): number {
   return buf.length;
 }
 
-function emitWithClearDetect(session: Session, text: string) {
+function emitWithClearDetect(session: Session, text: string, wasRawBeforeChunk: boolean) {
   if (!text) return;
   function pushOutput(s: string) {
     if (!s) return;
@@ -195,6 +195,18 @@ function emitWithClearDetect(session: Session, text: string) {
   }
   if (text.indexOf('\x1b') === -1) {
     pushOutput(text);
+    return;
+  }
+  // `\x1b[2J` from a TUI redraw (vim full-frame paint, the alt-screen wipe
+  // emitted as part of vim's exit sequence, etc.) is NOT a shell `clear` and
+  // must not nuke the block history. Treat the whole chunk as TUI traffic if
+  // the session was in raw mode before this chunk arrived (vim/htop/etc.) OR
+  // is in raw mode now (just entered alt screen mid-chunk, the next byte after
+  // ?1049h would be the alt-buffer clear). Only `clear` typed at the shell —
+  // chunk that starts cooked and stays cooked — should drop blocks.
+  const inTui = wasRawBeforeChunk || session.altScreen || session.cursorHide || session.ttyRaw;
+  if (inTui) {
+    pushOutput(sanitize(text));
     return;
   }
   let rest = text;
@@ -321,7 +333,7 @@ function decodeMarker(kind: 'pre' | 'post', body: string): BlockEvent | null {
   }
 }
 
-function processChunk(session: Session, chunk: string) {
+function processChunk(session: Session, chunk: string, wasRawBeforeChunk: boolean) {
   session.parseBuffer += chunk;
 
   if (session.parseBuffer.indexOf('\x1b]7;') !== -1) {
@@ -362,12 +374,12 @@ function processChunk(session: Session, chunk: string) {
       if (safeUpto > 0) {
         const emit = session.parseBuffer.slice(0, safeUpto);
         session.parseBuffer = session.parseBuffer.slice(safeUpto);
-        emitWithClearDetect(session, emit);
+        emitWithClearDetect(session, emit, wasRawBeforeChunk);
       }
       break;
     }
     const before = session.parseBuffer.slice(0, found.index);
-    if (before) emitWithClearDetect(session, before);
+    if (before) emitWithClearDetect(session, before, wasRawBeforeChunk);
     const event = decodeMarker(found[1] as 'pre' | 'post', found[2]);
     if (event) {
       if (event.kind === 'pre') {
@@ -701,9 +713,17 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
     session.rawBuffer += data;
     if (session.rawBuffer.length > MAX_BUFFER)
       session.rawBuffer = session.rawBuffer.slice(-MAX_BUFFER);
+    // Snapshot raw-mode state BEFORE updateRawModeState mutates it. A chunk
+    // that arrived while the foreground program was a TUI (vim/htop/etc.)
+    // belongs to that TUI even if it ends with ?1049l flipping us back to
+    // cooked. Without this, vim's exit-time ?1049l + \x1b[2J wipes the block
+    // history because the gate in emitWithClearDetect would see altScreen
+    // already cleared.
+    const wasRawBeforeChunk =
+      session.altScreen || session.cursorHide || session.ttyRaw;
     updateRawModeState(session, data);
     broadcast(session, { type: 'raw', data });
-    processChunk(session, data);
+    processChunk(session, data, wasRawBeforeChunk);
     const nextState = detectAgentState(session);
     const nextReply = nextState ? extractLastReply(session) : null;
     const nextPrompt = nextState === 'blocked' ? extractAgentPrompt(session) : null;
