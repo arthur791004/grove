@@ -823,6 +823,12 @@ export function TerminalView({ tabId, active }: Props) {
       cursorBlink: true,
       scrollback: 5000,
       allowProposedApi: true,
+      // Default xterm word-separators include `/`, `-`, `.`, `:` — so a
+      // double-click on `src/checkout.tsx` selects just `checkout`, and a
+      // double-click on `feature/foo-bar` selects just `feature`. Keep only
+      // whitespace and matched-pair quotes/brackets as separators so paths,
+      // branches, URLs, and identifiers all select as one token.
+      wordSeparator: ' \t\n()[]{}\'"`',
     });
     const fit = new FitAddon();
     const serialize = new SerializeAddon();
