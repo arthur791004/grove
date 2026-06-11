@@ -16,10 +16,25 @@ registerActionHandler('open-url', (payload) => {
 });
 
 registerActionHandler('open-file', (payload) => {
-  const p = payload as { path?: unknown; kind?: unknown };
+  const p = payload as {
+    path?: unknown;
+    kind?: unknown;
+    line?: unknown;
+    col?: unknown;
+    claudeEditRange?: unknown;
+  };
   if (typeof p?.path !== 'string') return;
   const kind = p.kind === 'dir' ? 'dir' : 'file';
-  useStore.getState().openFileInBrowser(p.path, kind);
+  const line = typeof p.line === 'number' && p.line >= 1 ? p.line : undefined;
+  const col = typeof p.col === 'number' && p.col >= 1 ? p.col : undefined;
+  let claudeEditRange: { fromLine: number; toLine: number } | undefined;
+  if (p.claudeEditRange && typeof p.claudeEditRange === 'object') {
+    const r = p.claudeEditRange as { fromLine?: unknown; toLine?: unknown };
+    if (typeof r.fromLine === 'number' && typeof r.toLine === 'number') {
+      claudeEditRange = { fromLine: r.fromLine, toLine: r.toLine };
+    }
+  }
+  useStore.getState().openFileInBrowser(p.path, kind, { line, col, claudeEditRange });
 });
 
 // Code-split the three built-in panels — each pulls a non-trivial dep tree

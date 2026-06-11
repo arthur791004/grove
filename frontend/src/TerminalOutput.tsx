@@ -285,6 +285,17 @@ function stripLineCol(p: string): string {
   return p.replace(/:\d+(?::\d+)?$/, '');
 }
 
+function parseLineCol(p: string): { line?: number; col?: number } {
+  const m = p.match(/:(\d+)(?::(\d+))?$/);
+  if (!m) return {};
+  const line = parseInt(m[1], 10);
+  const col = m[2] ? parseInt(m[2], 10) : undefined;
+  return {
+    line: Number.isFinite(line) && line >= 1 ? line : undefined,
+    col: col !== undefined && Number.isFinite(col) && col >= 1 ? col : undefined,
+  };
+}
+
 function urlToPath(url: string): string {
   if (url.startsWith('file://')) {
     let p = url.replace(/^file:\/\/[^/]*/, '');
@@ -316,6 +327,9 @@ async function openLink(rawTarget: string, blockCwd: string) {
   let p = urlToPath(rawTarget);
   p = cleanToken(p);
   p = p.replace(/[#?].*$/, '');
+  // Capture `:line:col` before stripping it for the filesystem resolve, so a
+  // click on `src/checkout.tsx:42:18` lands the editor at that exact spot.
+  const { line, col } = parseLineCol(p);
   p = stripLineCol(p);
   if (!p) return;
   try {
@@ -326,7 +340,7 @@ async function openLink(rawTarget: string, blockCwd: string) {
     const json = await res.json();
     if (!json.exists) return;
     const kind: 'file' | 'dir' = json.isDir ? 'dir' : 'file';
-    dispatch('open-file', { path: json.abs, kind });
+    dispatch('open-file', { path: json.abs, kind, line, col });
   } catch (err) {
     console.error('[grove] file resolve failed', err);
   }

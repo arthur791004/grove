@@ -202,7 +202,14 @@ interface State {
   panelFullscreen: Record<string, boolean>;
   diffFileListOpen: boolean;
   fileBrowserListOpen: boolean;
-  fileBrowserRequest: { path: string; kind: 'file' | 'dir'; nonce: number } | null;
+  fileBrowserRequest: {
+    path: string;
+    kind: 'file' | 'dir';
+    nonce: number;
+    line?: number;
+    col?: number;
+    claudeEditRange?: { fromLine: number; toLine: number };
+  } | null;
   browserPanelListOpen: boolean;
   browserPanelUrl: string | null;
   browserHistory: Array<{ url: string; visitedAt: number; cwd: string }>;
@@ -375,7 +382,11 @@ interface Actions {
   togglePanelFullscreen(id: string): void;
   toggleDiffFileList(): void;
   toggleFileBrowserList(): void;
-  openFileInBrowser(path: string, kind?: 'file' | 'dir'): void;
+  openFileInBrowser(
+    path: string,
+    kind?: 'file' | 'dir',
+    opts?: { line?: number; col?: number; claudeEditRange?: { fromLine: number; toLine: number } },
+  ): void;
   consumeFileBrowserRequest(): void;
   toggleBrowserPanelList(): void;
   setBrowserPanelUrl(url: string | null): void;
@@ -1138,13 +1149,20 @@ export const useStore = create<State & Actions>()(
         }));
       },
 
-      openFileInBrowser(path, kind = 'file') {
+      openFileInBrowser(path, kind = 'file', opts) {
         // Route through focus-or-open: reuse the workspace's existing Files
         // pane if one exists rather than spawning a fresh pane every time a
         // terminal block routes a file here.
         set((s) => ({
           ...withPanelFocusOrOpen(s, 'files'),
-          fileBrowserRequest: { path, kind, nonce: Date.now() },
+          fileBrowserRequest: {
+            path,
+            kind,
+            nonce: Date.now(),
+            line: opts?.line,
+            col: opts?.col,
+            claudeEditRange: opts?.claudeEditRange,
+          },
         }));
       },
       consumeFileBrowserRequest() {

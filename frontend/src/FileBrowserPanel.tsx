@@ -1,11 +1,14 @@
 import { Box, Flex, Text } from '@chakra-ui/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso } from 'react-virtuoso';
-import { Highlight, themes } from 'prism-react-renderer';
-import { detectLanguage } from './codeLanguage';
 import { Icon } from '@iconify/react';
 import { useStore } from './store';
 import { iconNameForFile } from './fileIcon';
+import {
+  CodeMirrorEditor,
+  type CodeMirrorHandle,
+  type CursorPosition,
+} from './codemirror/CodeMirrorEditor';
 
 // Module-level home-dir cache. Filled by the first /env/home call; lets the
 // frontend resolve `~/foo` paths to absolute without a per-render fetch.
@@ -108,6 +111,19 @@ export function FileBrowserPanel({
   const [fileContent, setFileContent] = useState<FileContentResponse | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
   const [pendingSelect, setPendingSelect] = useState<string | null>(null);
+  // Target line/col + Claude-edit range to apply once the selected file's
+  // content has been loaded. Set when the panel receives a `fileBrowserRequest`
+  // and consumed by the editor effect; cleared after application so a future
+  // re-render of the same file doesn't re-jump.
+  const editorTargetRef = useRef<{
+    path: string;
+    line?: number;
+    col?: number;
+    claudeEditRange?: { fromLine: number; toLine: number };
+  } | null>(null);
+  const editorRef = useRef<CodeMirrorHandle>(null);
+  const [cursorPos, setCursorPos] = useState<CursorPosition | null>(null);
+  const [languageLabel, setLanguageLabel] = useState<string>('Plain Text');
   const [query, setQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchHit[] | null>(null);
@@ -306,6 +322,15 @@ export function FileBrowserPanel({
       setPath(p);
       setSelectedFile(null);
     } else {
+      // Stash line/col + Claude-edit range so the editor jumps to the right
+      // spot once the content fetch resolves. Keyed by path so a late content
+      // load for a different file doesn't accidentally apply the target.
+      editorTargetRef.current = {
+        path: p,
+        line: fileRequest.line,
+        col: fileRequest.col,
+        claudeEditRange: fileRequest.claudeEditRange,
+      };
       const slash = p.lastIndexOf('/');
       const parent = slash > 0 ? p.slice(0, slash) : null;
       if (parent && parent !== (dir?.cwd ?? null)) {
@@ -330,6 +355,54 @@ export function FileBrowserPanel({
     setPendingSelect(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dir?.cwd, pendingSelect]);
+
+  // Push the loaded file into CodeMirror. The target (line/col + Claude edit
+  // range) is read from editorTargetRef and consumed exactly once — a second
+  // re-render of the same file (e.g. the same path clicked twice in the tree)
+  // shouldn't re-jump the cursor or re-show the highlight.
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    if (!selectedFile) {
+      editor.clear();
+      setCursorPos(null);
+      return;
+    }
+    if (!fileContent) return; // still loading; FilePreview shows the loader
+    if (fileContent.error || fileContent.content === null) {
+      editor.clear();
+      setCursorPos(null);
+      return;
+    }
+    const target =
+      editorTargetRef.current && editorTargetRef.current.path === selectedFile
+        ? editorTargetRef.current
+        : null;
+    editorTargetRef.current = null;
+    editor.openFile({
+      path: selectedFile,
+      content: fileContent.content,
+      line: target?.line,
+      col: target?.col,
+      claudeEditRange: target?.claudeEditRange,
+    });
+    setCursorPos({ line: target?.line ?? 1, col: target?.col ?? 1 });
+  }, [selectedFile, fileContent]);
+
+  // ⌘G — prompt for a line number and jump. Only fires when the Files panel
+  // is the active panel (the listener is mounted on the panel root, which
+  // only renders when this panel is active in its pane).
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!selectedFile) return;
+      const isCmdG = (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'g';
+      if (!isCmdG) return;
+      e.preventDefault();
+      editorRef.current?.promptGotoLine();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedFile]);
 
   return (
     <Flex direction="column" h="100%" w="100%" bg="#0d1117" minW="0" overflow="hidden">
@@ -490,9 +563,25 @@ export function FileBrowserPanel({
         )}
 
         {showPreview && (
-          <Box flex="1" minW="0" overflow="hidden" position="relative">
-            <FilePreview file={selectedFile} content={fileContent} loading={fileLoading} />
-          </Box>
+          <Flex flex="1" direction="column" minW="0" overflow="hidden" position="relative">
+            <Box flex="1" minH="0" minW="0" position="relative">
+              <PreviewSurface
+                file={selectedFile}
+                content={fileContent}
+                loading={fileLoading}
+                editorRef={editorRef}
+                onCursorChange={setCursorPos}
+                onLanguageChange={setLanguageLabel}
+              />
+            </Box>
+            {selectedFile && (
+              <StatusBar
+                language={languageLabel}
+                cursor={cursorPos}
+                truncated={!!fileContent?.truncated}
+              />
+            )}
+          </Flex>
         )}
       </Flex>
     </Flex>
@@ -681,137 +770,110 @@ function SearchResults({
   );
 }
 
-function FilePreview({
+// CodeMirror-backed preview. The editor view itself is mounted once and lives
+// for the panel's lifetime — content swaps happen via the imperative handle
+// (see the editor effect in FileBrowserPanel). This wrapper renders the
+// loading / error / empty states layered above the editor; the editor stays
+// underneath so the next file swap is instant rather than mount-flashing.
+function PreviewSurface({
   file,
   content,
   loading,
+  editorRef,
+  onCursorChange,
+  onLanguageChange,
 }: {
   file: string | null;
   content: FileContentResponse | null;
   loading: boolean;
+  editorRef: React.RefObject<CodeMirrorHandle>;
+  onCursorChange: (p: CursorPosition) => void;
+  onLanguageChange: (label: string) => void;
 }) {
-  if (!file) {
-    return (
-      <Flex h="100%" align="center" justify="center" px="4">
-        <Text fontSize="12px" color="#7d8590">
-          Select a file to preview
-        </Text>
-      </Flex>
-    );
-  }
-  if (loading && !content) {
-    return (
-      <Flex h="100%" align="center" justify="center">
-        <SquareLoader />
-      </Flex>
-    );
-  }
-  if (content?.error) {
-    return (
-      <Flex h="100%" align="center" justify="center" px="4">
-        <Text fontSize="12px" color="#f85149">
-          {content.error}
-        </Text>
-      </Flex>
-    );
-  }
-  const text = content?.content ?? '';
-  const language = detectLanguage(file);
+  const showEmpty = !file;
+  const showLoader = !!file && loading && !content;
+  const showError = !!content?.error;
+  const tooLarge = !!file && !content?.error && content?.content === null;
   return (
-    <Box
-      h="100%"
-      minH="0"
-      overflow="auto"
-      bg="#010409"
-      fontFamily="var(--grove-mono)"
-      fontSize="12px"
-      lineHeight="1.5"
-      color="#c9d1d9"
-    >
-      <Highlight code={text} language={language} theme={themes.vsDark}>
-        {({ tokens, getLineProps, getTokenProps }) => (
-          <Box as="pre" m="0" p="0" style={{ whiteSpace: 'pre', background: 'transparent' }}>
-            {tokens.map((line, i) => {
-              const lineProps = getLineProps({ line });
-              return (
-                <Box
-                  key={i}
-                  display="flex"
-                  px="0"
-                  style={lineProps.style}
-                  className={lineProps.className}
-                >
-                  <Box
-                    flexShrink={0}
-                    w="44px"
-                    textAlign="right"
-                    pr="3"
-                    color="#484f58"
-                    userSelect="none"
-                    style={{ whiteSpace: 'pre' }}
-                  >
-                    {i + 1}
-                  </Box>
-                  <Box flex="1" minW="0" style={{ whiteSpace: 'pre' }}>
-                    {line.map((token, j) => {
-                      const tp = getTokenProps({ token });
-                      // Render whitespace as visible glyphs so the user can
-                      // tell tabs from spaces. We only mark token content,
-                      // not the syntactic spacing between tokens — that's
-                      // already correctly rendered by the browser.
-                      const rendered = renderWithWhitespace(token.content);
-                      return (
-                        <span key={j} className={tp.className} style={tp.style}>
-                          {rendered}
-                        </span>
-                      );
-                    })}
-                  </Box>
-                </Box>
-              );
-            })}
-          </Box>
-        )}
-      </Highlight>
+    <Box position="relative" h="100%" w="100%">
+      <Flex
+        position="absolute"
+        inset="0"
+        direction="column"
+        bg="#010409"
+        // Hide the editor (instead of unmounting) while overlays show, so the
+        // first paint after a swap is a fully-built view rather than a fresh
+        // mount cycle.
+        visibility={showEmpty || showError || tooLarge ? 'hidden' : 'visible'}
+      >
+        <CodeMirrorEditor
+          ref={editorRef}
+          onCursorChange={onCursorChange}
+          onLanguageChange={onLanguageChange}
+        />
+      </Flex>
+      {showEmpty && (
+        <Flex position="absolute" inset="0" align="center" justify="center" px="4">
+          <Text fontSize="12px" color="#7d8590">
+            Select a file to preview
+          </Text>
+        </Flex>
+      )}
+      {showLoader && (
+        <Flex position="absolute" inset="0" align="center" justify="center">
+          <SquareLoader />
+        </Flex>
+      )}
+      {showError && (
+        <Flex position="absolute" inset="0" align="center" justify="center" px="4">
+          <Text fontSize="12px" color="#f85149">
+            {content!.error}
+          </Text>
+        </Flex>
+      )}
+      {tooLarge && (
+        <Flex position="absolute" inset="0" align="center" justify="center" px="4">
+          <Text fontSize="12px" color="#7d8590" textAlign="center">
+            File too large to preview ({Math.round((content?.size ?? 0) / 1024)} KB).
+          </Text>
+        </Flex>
+      )}
     </Box>
   );
 }
 
-// Visible glyphs for tab and space. Rendered as muted overlay chars so the
-// code stays readable but indentation is unambiguous.
-function renderWithWhitespace(s: string): React.ReactNode {
-  if (!s) return s;
-  if (s.indexOf('\t') === -1 && s.indexOf(' ') === -1) return s;
-  const parts: React.ReactNode[] = [];
-  let buf = '';
-  const flush = () => {
-    if (buf) {
-      parts.push(buf);
-      buf = '';
-    }
-  };
-  for (let i = 0; i < s.length; i++) {
-    const c = s[i];
-    if (c === '\t') {
-      flush();
-      parts.push(
-        <span key={`t${i}`} style={{ color: '#30363d' }}>
-          →{'\t'}
-        </span>,
-      );
-    } else if (c === ' ') {
-      flush();
-      parts.push(
-        <span key={`s${i}`} style={{ color: '#21262d' }}>
-          ·
-        </span>,
-      );
-    } else {
-      buf += c;
-    }
-  }
-  flush();
-  return parts;
+function StatusBar({
+  language,
+  cursor,
+  truncated,
+}: {
+  language: string;
+  cursor: CursorPosition | null;
+  truncated: boolean;
+}) {
+  return (
+    <Flex
+      flexShrink={0}
+      align="center"
+      justify="space-between"
+      px="3"
+      h="22px"
+      borderTop="1px solid #21262d"
+      bg="#0d1117"
+      fontFamily="var(--grove-mono)"
+      fontSize="11px"
+      color="#7d8590"
+    >
+      <Text>{language}</Text>
+      <Flex gap="3" align="center">
+        {truncated && <Text color="#d29922">truncated</Text>}
+        <Text>UTF-8</Text>
+        <Text>
+          Ln {cursor?.line ?? 1}, Col {cursor?.col ?? 1}
+        </Text>
+      </Flex>
+    </Flex>
+  );
 }
 
 function FileRow({
