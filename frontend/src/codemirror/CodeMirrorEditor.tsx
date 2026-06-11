@@ -40,11 +40,14 @@ export interface CodeMirrorHandle {
   clear(): void;
   promptGotoLine(): void;
   openSearch(): void;
+  getValue(): string;
+  markClean(): void;
 }
 
 interface Props {
   onCursorChange?: (pos: CursorPosition) => void;
   onLanguageChange?: (label: string) => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 // Try-import these in case CM6 doesn't expose `commands` in older minor
@@ -54,7 +57,7 @@ interface Props {
 const LARGE_FILE_LINES = 5_000;
 
 export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function CodeMirrorEditor(
-  { onCursorChange, onLanguageChange },
+  { onCursorChange, onLanguageChange, onDirtyChange },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -62,8 +65,17 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function Cod
   const langCompartmentRef = useRef<Compartment>(new Compartment());
   const cursorListenerRef = useRef<((p: CursorPosition) => void) | undefined>(onCursorChange);
   const langListenerRef = useRef<((s: string) => void) | undefined>(onLanguageChange);
+  const dirtyListenerRef = useRef<((d: boolean) => void) | undefined>(onDirtyChange);
+  const dirtyRef = useRef(false);
   cursorListenerRef.current = onCursorChange;
   langListenerRef.current = onLanguageChange;
+  dirtyListenerRef.current = onDirtyChange;
+
+  function setDirty(next: boolean) {
+    if (dirtyRef.current === next) return;
+    dirtyRef.current = next;
+    dirtyListenerRef.current?.(next);
+  }
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -79,8 +91,6 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function Cod
       history(),
       search({ top: true }),
       keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap]),
-      EditorState.readOnly.of(true),
-      EditorView.editable.of(false),
       EditorView.lineWrapping,
       groveTheme,
       groveHighlighting,
@@ -96,6 +106,7 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function Cod
             col: head - line.from + 1,
           });
         }
+        if (v.docChanged) setDirty(true);
       }),
     ];
     const view = new EditorView({
@@ -133,6 +144,7 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function Cod
           // doc's end if it was further than the new length.
           selection: { anchor: 0 },
         });
+        setDirty(false);
 
         langListenerRef.current?.(
           lineCount > limit ? `${langInfo.label} (no highlight)` : langInfo.label,
@@ -186,6 +198,13 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function Cod
           ],
         });
         langListenerRef.current?.('Plain Text');
+        setDirty(false);
+      },
+      getValue() {
+        return viewRef.current?.state.doc.toString() ?? '';
+      },
+      markClean() {
+        setDirty(false);
       },
       promptGotoLine() {
         const view = viewRef.current;

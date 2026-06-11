@@ -124,6 +124,10 @@ export function FileBrowserPanel({
   const editorRef = useRef<CodeMirrorHandle>(null);
   const [cursorPos, setCursorPos] = useState<CursorPosition | null>(null);
   const [languageLabel, setLanguageLabel] = useState<string>('Plain Text');
+  const [dirty, setDirty] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
   const [query, setQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchHit[] | null>(null);
@@ -299,12 +303,21 @@ export function FileBrowserPanel({
   const showPreview = isNarrow ? narrowView === 'preview' : true;
 
   function selectFile(p: string) {
+    if (
+      dirtyRef.current &&
+      selectedFile &&
+      selectedFile !== p &&
+      !window.confirm('Discard unsaved changes?')
+    ) {
+      return;
+    }
     // Clear synchronously so the next render swaps straight to the loader
     // instead of briefly painting the new path against the previous file's
     // content while the useEffect-driven fetch is still mounting.
     setSelectedFile(p);
     setFileContent(null);
     setFileLoading(true);
+    setSaveError(null);
     if (isNarrow) setNarrowView('preview');
   }
   function backToList() {
@@ -403,6 +416,50 @@ export function FileBrowserPanel({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [selectedFile]);
+
+  // ⌘S — save the active file to disk.
+  useEffect(() => {
+    async function save() {
+      if (!selectedFile || !activeTabId) return;
+      const editor = editorRef.current;
+      if (!editor) return;
+      if (fileContent?.truncated) {
+        setSaveError('Cannot save: file was truncated on load');
+        return;
+      }
+      const content = editor.getValue();
+      try {
+        const res = await fetch(`${API_BASE}/file/content`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ tabId: activeTabId, path: selectedFile, content }),
+        });
+        const json = await res.json();
+        if (!json.ok) {
+          setSaveError(json.error || 'Save failed');
+          return;
+        }
+        setSaveError(null);
+        editor.markClean();
+        // Refresh local size/mtime so the status bar's truncated indicator
+        // stays accurate after a save.
+        setFileContent((prev) =>
+          prev ? { ...prev, content, size: json.size ?? prev.size } : prev,
+        );
+      } catch (err) {
+        setSaveError(String((err as Error).message || err));
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      const isCmdS = (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 's';
+      if (!isCmdS) return;
+      if (!selectedFile) return;
+      e.preventDefault();
+      void save();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedFile, activeTabId, fileContent?.truncated]);
 
   return (
     <Flex direction="column" h="100%" w="100%" bg="#0d1117" minW="0" overflow="hidden">
@@ -572,6 +629,7 @@ export function FileBrowserPanel({
                 editorRef={editorRef}
                 onCursorChange={setCursorPos}
                 onLanguageChange={setLanguageLabel}
+                onDirtyChange={setDirty}
               />
             </Box>
             {selectedFile && (
@@ -579,6 +637,8 @@ export function FileBrowserPanel({
                 language={languageLabel}
                 cursor={cursorPos}
                 truncated={!!fileContent?.truncated}
+                dirty={dirty}
+                saveError={saveError}
               />
             )}
           </Flex>
@@ -782,6 +842,7 @@ function PreviewSurface({
   editorRef,
   onCursorChange,
   onLanguageChange,
+  onDirtyChange,
 }: {
   file: string | null;
   content: FileContentResponse | null;
@@ -789,6 +850,7 @@ function PreviewSurface({
   editorRef: React.RefObject<CodeMirrorHandle>;
   onCursorChange: (p: CursorPosition) => void;
   onLanguageChange: (label: string) => void;
+  onDirtyChange: (d: boolean) => void;
 }) {
   const showEmpty = !file;
   const showLoader = !!file && loading && !content;
@@ -810,6 +872,7 @@ function PreviewSurface({
           ref={editorRef}
           onCursorChange={onCursorChange}
           onLanguageChange={onLanguageChange}
+          onDirtyChange={onDirtyChange}
         />
       </Flex>
       {showEmpty && (
@@ -846,10 +909,14 @@ function StatusBar({
   language,
   cursor,
   truncated,
+  dirty,
+  saveError,
 }: {
   language: string;
   cursor: CursorPosition | null;
   truncated: boolean;
+  dirty: boolean;
+  saveError: string | null;
 }) {
   return (
     <Flex
@@ -864,7 +931,11 @@ function StatusBar({
       fontSize="11px"
       color="#7d8590"
     >
-      <Text>{language}</Text>
+      <Flex gap="2" align="center">
+        <Text>{language}</Text>
+        {dirty && <Text color="#d29922">● modified — ⌘S to save</Text>}
+        {saveError && <Text color="#f85149">{saveError}</Text>}
+      </Flex>
       <Flex gap="3" align="center">
         {truncated && <Text color="#d29922">truncated</Text>}
         <Text>UTF-8</Text>

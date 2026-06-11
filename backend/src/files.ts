@@ -227,4 +227,32 @@ export function registerFileRoutes(app: FastifyInstance) {
       };
     }
   });
+
+  app.post<{ Body: { tabId?: string; path: string; content: string } }>(
+    '/file/content',
+    async (req) => {
+      const { tabId, path: target, content } = req.body || ({} as any);
+      if (typeof target !== 'string' || typeof content !== 'string') {
+        return { ok: false, error: 'Invalid request' };
+      }
+      const sessCwd = tabId ? sessionCwd(tabId) : null;
+      const baseCwd = expandHome(sessCwd || os.homedir());
+      const expanded = expandHome(target);
+      const resolved = path.isAbsolute(expanded) ? expanded : path.resolve(baseCwd, expanded);
+      try {
+        // Refuse to clobber a directory; let creating new files through.
+        try {
+          const stat = fs.statSync(resolved);
+          if (stat.isDirectory()) return { ok: false, error: 'Is a directory' };
+        } catch {
+          // File doesn't exist yet — write will create it.
+        }
+        fs.writeFileSync(resolved, content, 'utf8');
+        const stat = fs.statSync(resolved);
+        return { ok: true, size: stat.size, mtimeMs: stat.mtimeMs };
+      } catch (err) {
+        return { ok: false, error: String((err as Error).message || err) };
+      }
+    },
+  );
 }
