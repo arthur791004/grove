@@ -4,7 +4,7 @@ import { Box, HStack, Text } from '@chakra-ui/react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SerializeAddon } from '@xterm/addon-serialize';
-import { WebLinksAddon } from '@xterm/addon-web-links';
+import { wrappedLinkProvider } from './wrappedLinkProvider';
 import { dispatch } from './extensions/actions';
 import { isLocalUrl } from './urlRouting';
 import '@xterm/xterm/css/xterm.css';
@@ -829,7 +829,11 @@ export function TerminalView({ tabId, active }: Props) {
     // Cmd/Ctrl-click on a URL inside the live TUI (Claude, ssh prompts, etc.):
     //   - localhost / 127.0.0.1 → embedded browser panel (dev servers, etc.)
     //   - everything else → OS default browser via shell.openExternal.
-    const webLinks = new WebLinksAddon((event, uri) => {
+    // Uses our own link provider instead of WebLinksAddon because TUIs that
+    // wrap URLs via explicit cursor moves (claude, less) don't set xterm's
+    // isWrapped flag — the addon's walk would only see the first row and
+    // open a truncated substring.
+    const linkHandler = (event: MouseEvent, uri: string) => {
       if (!(event.metaKey || event.ctrlKey)) return;
       event.preventDefault();
       if (isLocalUrl(uri)) {
@@ -837,11 +841,13 @@ export function TerminalView({ tabId, active }: Props) {
       } else {
         window.grove?.openExternal?.(uri);
       }
-    });
+    };
     term.loadAddon(fit);
     term.loadAddon(serialize);
-    term.loadAddon(webLinks);
     term.open(xtermHostRef.current);
+    const linkProviderDisposable = term.registerLinkProvider(
+      wrappedLinkProvider(term, linkHandler),
+    );
     xtermRef.current = term;
     fitRef.current = fit;
     serializeRef.current = serialize;
@@ -933,6 +939,7 @@ export function TerminalView({ tabId, active }: Props) {
       clearTimeout(t2);
       ro.disconnect();
       host?.removeEventListener('wheel', onWheelMagnet);
+      linkProviderDisposable.dispose();
       term.dispose();
       xtermRef.current = null;
       serializeRef.current = null;
