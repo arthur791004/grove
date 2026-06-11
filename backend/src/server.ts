@@ -9,6 +9,7 @@ import { registerCompletionRoutes } from './completions.js';
 import { registerCompleteRoutes } from './complete.js';
 import { registerDiffRoutes } from './diff.js';
 import { registerFileRoutes } from './files.js';
+import { registerAssistantRoutes } from './assistant.js';
 import { registerServiceRoutes } from './services.js';
 import { registerForkContextRoutes } from './forkContext.js';
 import { registerStateRoutes } from './state.js';
@@ -95,6 +96,7 @@ export async function startServer(opts: StartServerOptions): Promise<FastifyInst
   registerStateRoutes(app);
   registerSystemStatsRoutes(app);
   registerBranchRoutes(app);
+  registerAssistantRoutes(app);
 
   app.get<{ Params: { tabId: string } }>('/session/:tabId/cwd', async (req) => {
     return { cwd: sessionCwd(req.params.tabId) };

@@ -8,7 +8,11 @@ import {
   CodeMirrorEditor,
   type CodeMirrorHandle,
   type CursorPosition,
+  type AssistantRequest,
 } from './codemirror/CodeMirrorEditor';
+import { InlineAssistantBar, type AssistantStatus } from './InlineAssistantBar';
+import { detectCmLanguage } from './codemirror/language-detect';
+import { diffLines } from 'diff';
 
 // Module-level home-dir cache. Filled by the first /env/home call; lets the
 // frontend resolve `~/foo` paths to absolute without a per-render fetch.
@@ -71,6 +75,14 @@ interface CacheEntry {
   data: FilesResponse;
 }
 
+// Strip the markdown code fence Claude sometimes ignores instructions and
+// wraps responses in. Tolerates ```ts, ```typescript, etc.
+function stripCodeFences(text: string): string {
+  const trimmed = text.trim();
+  const fenceMatch = trimmed.match(/^```[a-zA-Z0-9_+-]*\n([\s\S]*?)\n?```$/);
+  return fenceMatch ? fenceMatch[1] : trimmed;
+}
+
 function relativeToBase(filePath: string, base: string): string {
   if (base && filePath.startsWith(base + '/')) return filePath.slice(base.length + 1);
   const idx = filePath.lastIndexOf('/');
@@ -128,6 +140,19 @@ export function FileBrowserPanel({
   const [saveError, setSaveError] = useState<string | null>(null);
   const dirtyRef = useRef(false);
   dirtyRef.current = dirty;
+
+  // Inline AI assistant state. `request` captures the selection snapshot at
+  // ⌘↵ time — we hold onto the original text + offsets so Reject can restore
+  // and Accept knows where to splice the response.
+  const [assistant, setAssistant] = useState<{
+    request: AssistantRequest;
+    prompt: string;
+    status: AssistantStatus;
+    streamingText: string;
+    response: string;
+    errorMessage: string;
+  } | null>(null);
+  const assistantAbortRef = useRef<AbortController | null>(null);
   const [query, setQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchHit[] | null>(null);
@@ -461,6 +486,165 @@ export function FileBrowserPanel({
     return () => window.removeEventListener('keydown', onKey);
   }, [selectedFile, activeTabId, fileContent?.truncated]);
 
+  // Editor → assistant: ⌘↵ in CodeMirror calls this. We replace any existing
+  // session (D7: one active prompt bar at a time).
+  function onAssistantRequest(req: AssistantRequest) {
+    if (!selectedFile) return;
+    assistantAbortRef.current?.abort();
+    assistantAbortRef.current = null;
+    editorRef.current?.clearAiOverlay();
+    setAssistant({
+      request: req,
+      prompt: '',
+      status: 'idle',
+      streamingText: '',
+      response: '',
+      errorMessage: '',
+    });
+  }
+
+  function dismissAssistant() {
+    assistantAbortRef.current?.abort();
+    assistantAbortRef.current = null;
+    editorRef.current?.clearAiOverlay();
+    setAssistant(null);
+  }
+
+  async function submitAssistant() {
+    const cur = assistant;
+    if (!cur || !selectedFile || !activeTabId) return;
+    if (!cur.prompt.trim()) return;
+    const ctrl = new AbortController();
+    assistantAbortRef.current = ctrl;
+    setAssistant({ ...cur, status: 'streaming', streamingText: '', response: '', errorMessage: '' });
+
+    try {
+      const lang = detectCmLanguage(selectedFile).label;
+      const res = await fetch(`${API_BASE}/assistant/run`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          tabId: activeTabId,
+          prompt: cur.prompt,
+          context: {
+            filePath: selectedFile,
+            language: lang,
+            selectedText: cur.request.selectedText,
+            surroundingLines: cur.request.surroundingLines,
+            selectionRange: cur.request.selectionRange,
+          },
+        }),
+      });
+      if (!res.ok || !res.body) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let accumulated = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // SSE frames are separated by a blank line.
+        let idx: number;
+        while ((idx = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          for (const line of frame.split('\n')) {
+            if (!line.startsWith('data:')) continue;
+            try {
+              const evt = JSON.parse(line.slice(5).trim());
+              if (evt.type === 'delta') {
+                accumulated += evt.content as string;
+                setAssistant((s) =>
+                  s ? { ...s, streamingText: accumulated } : s,
+                );
+              } else if (evt.type === 'done') {
+                finalizeAssistantResponse(accumulated);
+                return;
+              } else if (evt.type === 'error') {
+                setAssistant((s) =>
+                  s ? { ...s, status: 'error', errorMessage: String(evt.message) } : s,
+                );
+                return;
+              }
+            } catch {
+              // Skip malformed frames silently.
+            }
+          }
+        }
+      }
+      // Stream closed without a `done` event — treat what we have as final.
+      if (accumulated) finalizeAssistantResponse(accumulated);
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return;
+      setAssistant((s) =>
+        s ? { ...s, status: 'error', errorMessage: String((err as Error).message || err) } : s,
+      );
+    } finally {
+      if (assistantAbortRef.current === ctrl) assistantAbortRef.current = null;
+    }
+  }
+
+  // Compute the diff between the original selection and Claude's response,
+  // paint the overlay over the editor, and flip the bar into result mode.
+  function finalizeAssistantResponse(rawResponse: string) {
+    const response = stripCodeFences(rawResponse).trimEnd();
+    setAssistant((s) => (s ? { ...s, status: 'result', response } : s));
+    const editor = editorRef.current;
+    const cur = assistantRef.current;
+    if (!editor || !cur) return;
+    // Splice the response into a doc copy to figure out which lines will be
+    // "added" relative to the existing doc, then paint those.
+    const original = cur.request.selectedText;
+    const parts = diffLines(original, response);
+    if (parts.every((p) => !p.added && !p.removed)) {
+      // No-op response: just dismiss.
+      editor.clearAiOverlay();
+      return;
+    }
+    // Mark the original selection's line range as "removed" (strikethrough
+    // overlay). The added lines are shown in a side overlay via the prompt
+    // bar's preview — slice-4 v1 keeps the editor doc unchanged until accept.
+    editor.showAiOverlay({
+      addedLines: [],
+      removedFrom: cur.request.selectionRange.fromLine,
+      removedTo: cur.request.selectionRange.toLine,
+    });
+  }
+
+  function acceptAssistant() {
+    const cur = assistant;
+    if (!cur || cur.status !== 'result') return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.applyAiChange({
+      from: cur.request.selectionOffsets.from,
+      to: cur.request.selectionOffsets.to,
+      insert: cur.response,
+    });
+    // Trigger the same ⌘S save path. We synthesise the event so we don't have
+    // to refactor the save closure out of its useEffect.
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 's', metaKey: true, bubbles: true }),
+    );
+    setAssistant(null);
+  }
+
+  function tryAgainAssistant() {
+    const cur = assistant;
+    if (!cur) return;
+    editorRef.current?.clearAiOverlay();
+    setAssistant({ ...cur, status: 'idle', streamingText: '', response: '', errorMessage: '' });
+  }
+
+  // Held in a ref so finalizeAssistantResponse can read the live request
+  // without re-binding on every change.
+  const assistantRef = useRef(assistant);
+  assistantRef.current = assistant;
+
   return (
     <Flex direction="column" h="100%" w="100%" bg="#0d1117" minW="0" overflow="hidden">
       <Flex
@@ -630,7 +814,33 @@ export function FileBrowserPanel({
                 onCursorChange={setCursorPos}
                 onLanguageChange={setLanguageLabel}
                 onDirtyChange={setDirty}
+                onAssistantRequest={onAssistantRequest}
               />
+              {assistant && selectedFile && (
+                <InlineAssistantBar
+                  anchorTop={assistant.request.anchorTop}
+                  context={{
+                    filePath: selectedFile,
+                    language: languageLabel,
+                    selectedText: assistant.request.selectedText,
+                    surroundingLines: assistant.request.surroundingLines,
+                    fullContent: assistant.request.fullContent,
+                    selectionRange: assistant.request.selectionRange,
+                  }}
+                  status={assistant.status}
+                  prompt={assistant.prompt}
+                  onPromptChange={(next) =>
+                    setAssistant((s) => (s ? { ...s, prompt: next } : s))
+                  }
+                  onSubmit={submitAssistant}
+                  onDismiss={dismissAssistant}
+                  streamingText={assistant.streamingText}
+                  errorMessage={assistant.errorMessage}
+                  onAccept={acceptAssistant}
+                  onReject={dismissAssistant}
+                  onTryAgain={tryAgainAssistant}
+                />
+              )}
             </Box>
             {selectedFile && (
               <StatusBar
@@ -843,6 +1053,7 @@ function PreviewSurface({
   onCursorChange,
   onLanguageChange,
   onDirtyChange,
+  onAssistantRequest,
 }: {
   file: string | null;
   content: FileContentResponse | null;
@@ -851,6 +1062,7 @@ function PreviewSurface({
   onCursorChange: (p: CursorPosition) => void;
   onLanguageChange: (label: string) => void;
   onDirtyChange: (d: boolean) => void;
+  onAssistantRequest: (req: AssistantRequest) => void;
 }) {
   const showEmpty = !file;
   const showLoader = !!file && loading && !content;
@@ -873,6 +1085,7 @@ function PreviewSurface({
           onCursorChange={onCursorChange}
           onLanguageChange={onLanguageChange}
           onDirtyChange={onDirtyChange}
+          onAssistantRequest={onAssistantRequest}
         />
       </Flex>
       {showEmpty && (

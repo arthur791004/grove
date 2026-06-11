@@ -15,7 +15,15 @@ import { highlightSelectionMatches, search, searchKeymap } from '@codemirror/sea
 import { keymap } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { groveTheme, groveHighlighting } from './theme';
-import { setTargetLine, targetLineField, setClaudeEdit, claudeEditField } from './decorations';
+import {
+  setTargetLine,
+  targetLineField,
+  setClaudeEdit,
+  claudeEditField,
+  setAiOverlay,
+  aiOverlayField,
+  type AiOverlay,
+} from './decorations';
 import { detectCmLanguage } from './language-detect';
 
 export interface CursorPosition {
@@ -35,6 +43,18 @@ export interface OpenFileOptions {
   syntaxLineLimit?: number;
 }
 
+export interface AssistantRequest {
+  selectedText: string;
+  surroundingLines: string;
+  fullContent: string;
+  selectionRange: { fromLine: number; toLine: number };
+  // Character offsets in the current doc — needed so the caller can later
+  // apply Claude's modified text back into exactly the right range.
+  selectionOffsets: { from: number; to: number };
+  // Pixel anchor (relative to the editor's scroller) for the prompt bar.
+  anchorTop: number;
+}
+
 export interface CodeMirrorHandle {
   openFile(opts: OpenFileOptions): void;
   clear(): void;
@@ -42,12 +62,17 @@ export interface CodeMirrorHandle {
   openSearch(): void;
   getValue(): string;
   markClean(): void;
+  // AI overlay controls.
+  showAiOverlay(overlay: AiOverlay): void;
+  clearAiOverlay(): void;
+  applyAiChange(opts: { from: number; to: number; insert: string }): void;
 }
 
 interface Props {
   onCursorChange?: (pos: CursorPosition) => void;
   onLanguageChange?: (label: string) => void;
   onDirtyChange?: (dirty: boolean) => void;
+  onAssistantRequest?: (req: AssistantRequest) => void;
 }
 
 // Try-import these in case CM6 doesn't expose `commands` in older minor
@@ -57,7 +82,7 @@ interface Props {
 const LARGE_FILE_LINES = 5_000;
 
 export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function CodeMirrorEditor(
-  { onCursorChange, onLanguageChange, onDirtyChange },
+  { onCursorChange, onLanguageChange, onDirtyChange, onAssistantRequest },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -66,10 +91,14 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function Cod
   const cursorListenerRef = useRef<((p: CursorPosition) => void) | undefined>(onCursorChange);
   const langListenerRef = useRef<((s: string) => void) | undefined>(onLanguageChange);
   const dirtyListenerRef = useRef<((d: boolean) => void) | undefined>(onDirtyChange);
+  const assistantListenerRef = useRef<((r: AssistantRequest) => void) | undefined>(
+    onAssistantRequest,
+  );
   const dirtyRef = useRef(false);
   cursorListenerRef.current = onCursorChange;
   langListenerRef.current = onLanguageChange;
   dirtyListenerRef.current = onDirtyChange;
+  assistantListenerRef.current = onAssistantRequest;
 
   function setDirty(next: boolean) {
     if (dirtyRef.current === next) return;
@@ -90,12 +119,28 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function Cod
       highlightSelectionMatches(),
       history(),
       search({ top: true }),
-      keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap]),
+      keymap.of([
+        {
+          key: 'Mod-Enter',
+          preventDefault: true,
+          run: (view) => {
+            const handler = assistantListenerRef.current;
+            if (!handler) return false;
+            const req = buildAssistantRequest(view);
+            if (req) handler(req);
+            return true;
+          },
+        },
+        ...defaultKeymap,
+        ...historyKeymap,
+        ...searchKeymap,
+      ]),
       EditorView.lineWrapping,
       groveTheme,
       groveHighlighting,
       targetLineField,
       claudeEditField,
+      aiOverlayField,
       langCompartment.of([]),
       EditorView.updateListener.of((v) => {
         if (v.selectionSet || v.docChanged) {
@@ -206,6 +251,25 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function Cod
       markClean() {
         setDirty(false);
       },
+      showAiOverlay(overlay) {
+        const view = viewRef.current;
+        if (!view) return;
+        view.dispatch({ effects: setAiOverlay.of(overlay) });
+      },
+      clearAiOverlay() {
+        const view = viewRef.current;
+        if (!view) return;
+        view.dispatch({ effects: setAiOverlay.of(null) });
+      },
+      applyAiChange({ from, to, insert }) {
+        const view = viewRef.current;
+        if (!view) return;
+        view.dispatch({
+          changes: { from, to, insert },
+          effects: setAiOverlay.of(null),
+          selection: { anchor: from + insert.length },
+        });
+      },
       promptGotoLine() {
         const view = viewRef.current;
         if (!view) return;
@@ -263,4 +327,46 @@ function countLines(s: string): number {
   let n = 1;
   for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) === 10) n++;
   return n;
+}
+
+const SURROUNDING_LINES = 10;
+
+function buildAssistantRequest(view: EditorView): AssistantRequest | null {
+  const sel = view.state.selection.main;
+  const doc = view.state.doc;
+  // If the selection is collapsed, treat the current line as the implicit
+  // selection so ⌘↵ has something to act on.
+  let from = sel.from;
+  let to = sel.to;
+  if (from === to) {
+    const line = doc.lineAt(from);
+    from = line.from;
+    to = line.to;
+  }
+  if (from === to) return null;
+
+  const fromLine = doc.lineAt(from).number;
+  const toLine = doc.lineAt(to).number;
+  const surroundFromLine = Math.max(1, fromLine - SURROUNDING_LINES);
+  const surroundToLine = Math.min(doc.lines, toLine + SURROUNDING_LINES);
+  const surroundFrom = doc.line(surroundFromLine).from;
+  const surroundTo = doc.line(surroundToLine).to;
+
+  // Anchor pixel: just below the line containing the selection's tail. Use
+  // coordsAtPos which returns viewport-relative coords; the parent translates
+  // to its own coordinate system.
+  const coords = view.coordsAtPos(to);
+  const scrollerRect = view.scrollDOM.getBoundingClientRect();
+  const anchorTop = coords
+    ? coords.bottom - scrollerRect.top + view.scrollDOM.scrollTop + 4
+    : 0;
+
+  return {
+    selectedText: doc.sliceString(from, to),
+    surroundingLines: doc.sliceString(surroundFrom, surroundTo),
+    fullContent: doc.toString(),
+    selectionRange: { fromLine, toLine },
+    selectionOffsets: { from, to },
+    anchorTop,
+  };
 }

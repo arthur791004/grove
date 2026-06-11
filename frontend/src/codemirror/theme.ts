@@ -52,6 +52,16 @@ export const groveTheme = EditorView.theme(
       backgroundColor: 'rgba(16,185,129,0.07)',
       boxShadow: 'inset 2px 0 0 #10B981',
     },
+    '.cm-ai-added': {
+      backgroundColor: 'rgba(63,185,80,0.16)',
+      boxShadow: 'inset 2px 0 0 #3fb950',
+    },
+    '.cm-ai-removed': {
+      backgroundColor: 'rgba(248,81,73,0.14)',
+      boxShadow: 'inset 2px 0 0 #f85149',
+      textDecoration: 'line-through',
+      textDecorationColor: 'rgba(248,81,73,0.6)',
+    },
     '.cm-panels': { backgroundColor: '#0d1117', color: '#c9d1d9' },
     '.cm-panels.cm-panels-top': { borderBottom: '1px solid #21262d' },
     '.cm-panels.cm-panels-bottom': { borderTop: '1px solid #21262d' },
