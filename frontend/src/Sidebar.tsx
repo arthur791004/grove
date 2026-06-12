@@ -173,11 +173,40 @@ export function Sidebar() {
     // Within-workspace reorder — both ids are direct children of the active
     // workspace's tree root.
     const fromGroup = groupIdForTreeNode(activeId);
-    if (!fromGroup) return;
-    useStore.getState().moveTopLevelInTree(fromGroup, activeId, overId);
-    // Keep the legacy tabOrderByGroup in sync so any consumer that hasn't
-    // moved to the tree (CommandPalette, etc.) sees the same ordering.
-    syncTabOrderFromTree(fromGroup);
+    if (fromGroup) {
+      useStore.getState().moveTopLevelInTree(fromGroup, activeId, overId);
+      // Keep the legacy tabOrderByGroup in sync so any consumer that hasn't
+      // moved to the tree (CommandPalette, etc.) sees the same ordering.
+      syncTabOrderFromTree(fromGroup);
+      return;
+    }
+    // Fallback: the active item isn't a tree node — it's a pane (tab) id from
+    // a single-top-level-leaf workspace. Reorder panes inside that leaf.
+    const leafCtx = findLeafContainingPane(activeId);
+    if (!leafCtx) return;
+    const { groupId, leaf } = leafCtx;
+    const ids = leaf.panes.map((p) => p.id);
+    const from = ids.indexOf(activeId);
+    const to = ids.indexOf(overId);
+    if (from < 0 || to < 0) return;
+    useStore.getState().reorderLeafPanesInTree(groupId, leaf.id, arrayMove(ids, from, to));
+    syncTabOrderFromTree(groupId);
+  }
+
+  function findLeafContainingPane(paneId: string): { groupId: string; leaf: LeafNode } | null {
+    const state = useStore.getState();
+    for (const [gid, tree] of Object.entries(state.layoutTreeByGroup)) {
+      const found = (function walk(n: LayoutNode): LeafNode | null {
+        if (n.type === 'leaf') return n.panes.some((p) => p.id === paneId) ? n : null;
+        for (const c of n.children) {
+          const r = walk(c);
+          if (r) return r;
+        }
+        return null;
+      })(tree);
+      if (found) return { groupId: gid, leaf: found };
+    }
+    return null;
   }
 
   // Helpers: every sidebar row's sortable id IS the top-level tree node id.
