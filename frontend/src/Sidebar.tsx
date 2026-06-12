@@ -48,6 +48,7 @@ import {
   PlusIcon,
   StopIcon,
   TerminalIcon,
+  ClaudeIcon,
   commandIcon,
 } from './icons';
 
@@ -1305,7 +1306,7 @@ function DragPreview({ id }: { id: string }) {
           justifyContent="center"
           color={isDefault ? '#7d8590' : COLOR_HEX[t.color]}
         >
-          <TerminalIcon />
+          {t.kind === 'claude' ? <ClaudeIcon size={12} /> : <TerminalIcon />}
         </Box>
         <Text
           fontSize="12px"
@@ -1348,11 +1349,13 @@ function resolveIconBox({
   runningCmd,
   isDefault,
   tabColorHex,
+  tabKind,
 }: {
   agentState: 'working' | 'blocked' | undefined;
   runningCmd: string | null;
   isDefault: boolean;
   tabColorHex: string;
+  tabKind: 'shell' | 'claude' | undefined;
 }): IconBox {
   if (agentState === 'blocked') {
     return {
@@ -1390,7 +1393,7 @@ function resolveIconBox({
     border: baseBorder,
     color: baseColor,
     title: undefined,
-    icon: <TerminalIcon />,
+    icon: tabKind === 'claude' ? <ClaudeIcon size={12} /> : <TerminalIcon />,
   };
 }
 
@@ -1497,6 +1500,7 @@ export function TabCard({
             runningCmd: runningCmd || null,
             isDefault,
             tabColorHex: COLOR_HEX[tab.color],
+            tabKind: tab.kind,
           });
           return (
             <Box
