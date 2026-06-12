@@ -41,6 +41,13 @@ export interface OpenFileOptions {
   // first render responsive. Caller passes the threshold; the editor handles
   // the rest.
   syntaxLineLimit?: number;
+  // Restore prior cursor / scroll when re-activating a previously-open tab.
+  // line/col (the explicit jump-to path) wins over these when both are set.
+  cursorOffset?: number;
+  scrollTop?: number;
+  // Re-mark the editor as dirty after loading. Used when the cached draft we
+  // load is the user's unsaved edits, not the on-disk content.
+  dirty?: boolean;
 }
 
 export interface AssistantRequest {
@@ -62,6 +69,9 @@ export interface CodeMirrorHandle {
   openSearch(): void;
   getValue(): string;
   markClean(): void;
+  markDirty(): void;
+  getCursorOffset(): number;
+  getScrollTop(): number;
   // AI overlay controls.
   showAiOverlay(overlay: AiOverlay): void;
   clearAiOverlay(): void;
@@ -199,7 +209,24 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function Cod
           selection: { anchor: 0 },
         });
         loadingRef.current = false;
-        setDirty(false);
+        setDirty(!!opts.dirty);
+
+        // Apply cursor/scroll restore unless line/col is going to override it
+        // a few lines below.
+        if (!opts.line && typeof opts.cursorOffset === 'number') {
+          const docLen = view.state.doc.length;
+          const anchor = Math.max(0, Math.min(opts.cursorOffset, docLen));
+          view.dispatch({ selection: { anchor } });
+        }
+        if (typeof opts.scrollTop === 'number') {
+          // After the new state mounts: set scrollTop on the next frame so the
+          // layout is in place.
+          const target = opts.scrollTop;
+          requestAnimationFrame(() => {
+            const v = viewRef.current;
+            if (v) v.scrollDOM.scrollTop = target;
+          });
+        }
 
         langListenerRef.current?.(
           lineCount > limit ? `${langInfo.label} (no highlight)` : langInfo.label,
@@ -263,6 +290,15 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function Cod
       },
       markClean() {
         setDirty(false);
+      },
+      markDirty() {
+        setDirty(true);
+      },
+      getCursorOffset() {
+        return viewRef.current?.state.selection.main.head ?? 0;
+      },
+      getScrollTop() {
+        return viewRef.current?.scrollDOM.scrollTop ?? 0;
       },
       showAiOverlay(overlay) {
         const view = viewRef.current;

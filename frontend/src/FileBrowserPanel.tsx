@@ -11,6 +11,7 @@ import {
   type AssistantRequest,
 } from './codemirror/CodeMirrorEditor';
 import { InlineAssistantBar, type AssistantStatus } from './InlineAssistantBar';
+import { FileTabBar } from './FileTabBar';
 import { detectCmLanguage } from './codemirror/language-detect';
 import { diffLines } from 'diff';
 
@@ -64,6 +65,23 @@ interface SearchResponse {
   results: SearchHit[];
 }
 
+interface GrepHit {
+  line: number;
+  col: number;
+  preview: string;
+}
+interface GrepFile {
+  path: string;
+  abs: string;
+  hits: GrepHit[];
+}
+interface GrepResponse {
+  cwdReady: boolean;
+  root: string;
+  files: GrepFile[];
+  rgAvailable: boolean;
+}
+
 const LIST_W = 240;
 // Below this many pixels of panel width, switch to single-pane master-detail
 // so the preview gets the full panel width while a file is open.
@@ -73,6 +91,21 @@ const DIR_CACHE_MAX = 64;
 interface CacheEntry {
   ts: number;
   data: FilesResponse;
+}
+
+interface FileCacheEntry {
+  // null while still fetching. Errored loads set `error` and leave `content`
+  // null; truncated / unreadable files use truncated/content=null too.
+  content: string | null;
+  truncated: boolean;
+  size: number;
+  error: string | null;
+  loading: boolean;
+  // User's unsaved buffer. When present, this is what we load into the editor
+  // instead of `content`. Saving clears it back to undefined.
+  draft?: string;
+  dirty: boolean;
+  saveError: string | null;
 }
 
 // Strip the markdown code fence Claude sometimes ignores instructions and
@@ -119,9 +152,19 @@ export function FileBrowserPanel({
   const [path, setPath] = useState<string | null>(null);
   const [dir, setDir] = useState<FilesResponse | null>(null);
   const [dirError, setDirError] = useState<string | null>(null);
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [fileContent, setFileContent] = useState<FileContentResponse | null>(null);
-  const [fileLoading, setFileLoading] = useState(false);
+  // Multi-file tabs. `openFiles` is the ordered list of open tabs; `activeFile`
+  // is the one currently in the editor. Per-file state (content / dirty /
+  // load + save status) lives in `fileCache`, keyed by absolute path.
+  const [openFiles, setOpenFiles] = useState<string[]>([]);
+  const [activeFile, setActiveFile] = useState<string | null>(null);
+  const [fileCache, setFileCache] = useState<Record<string, FileCacheEntry>>({});
+  // Cursor + scroll snapshots per file. Refs (not state) because they update
+  // on every keystroke / scroll and we don't want to re-render the panel for
+  // those.
+  const fileSnapshotRef = useRef<Record<string, { cursorOffset: number; scrollTop: number }>>({});
+  // Tracks which file the editor's view currently holds — used to know which
+  // file's snapshot to capture before swapping in the next one.
+  const editorLoadedFileRef = useRef<string | null>(null);
   const [pendingSelect, setPendingSelect] = useState<string | null>(null);
   // Target line/col + Claude-edit range to apply once the selected file's
   // content has been loaded. Set when the panel receives a `fileBrowserRequest`
@@ -136,10 +179,20 @@ export function FileBrowserPanel({
   const editorRef = useRef<CodeMirrorHandle>(null);
   const [cursorPos, setCursorPos] = useState<CursorPosition | null>(null);
   const [languageLabel, setLanguageLabel] = useState<string>('Plain Text');
-  const [dirty, setDirty] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const dirtyRef = useRef(false);
-  dirtyRef.current = dirty;
+  // Active file's derived state (read from the cache). Useful as local
+  // shortcuts in the render + handlers below.
+  const activeEntry = activeFile ? fileCache[activeFile] : null;
+  const fileContent: FileContentResponse | null = activeEntry
+    ? {
+        content: activeEntry.content,
+        truncated: activeEntry.truncated,
+        size: activeEntry.size,
+        error: activeEntry.error,
+      }
+    : null;
+  const fileLoading = !!activeEntry?.loading;
+  const dirty = !!activeEntry?.dirty;
+  const saveError = activeEntry?.saveError ?? null;
 
   // Inline AI assistant state. `request` captures the selection snapshot at
   // ⌘↵ time — we hold onto the original text + offsets so Reject can restore
@@ -157,6 +210,8 @@ export function FileBrowserPanel({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
+  const [grepResults, setGrepResults] = useState<GrepFile[] | null>(null);
+  const [grepAvailable, setGrepAvailable] = useState(true);
   // Narrow viewports switch to a single-pane master-detail flow.
   const isNarrow = panelWidth < NARROW_THRESHOLD;
   const [narrowView, setNarrowView] = useState<'list' | 'preview'>('list');
@@ -190,20 +245,20 @@ export function FileBrowserPanel({
   // navigation. Clear caches too — files may have changed.
   useEffect(() => {
     setPath(null);
-    setSelectedFile(null);
+    setOpenFiles([]);
+    setActiveFile(null);
+    setFileCache({});
+    fileSnapshotRef.current = {};
+    editorLoadedFileRef.current = null;
     setNarrowView('list');
     setDir(null);
     setDirError(null);
     setQuery('');
     setSearchOpen(false);
     setSearchResults(null);
+    setGrepResults(null);
     dirCache.current.clear();
   }, [activeTabId, ctx?.shortCwd]);
-
-  useEffect(() => {
-    setSelectedFile(null);
-    setFileContent(null);
-  }, [path]);
 
   // Wait for the shell to publish its cwd before fetching the default listing
   // — otherwise /files falls back to ~ and the user sees their home directory
@@ -243,62 +298,115 @@ export function FileBrowserPanel({
     const q = query.trim();
     if (!q || !activeTabId) {
       setSearchResults(null);
+      setGrepResults(null);
       setSearching(false);
       return;
     }
     setSearching(true);
     let cancelled = false;
+    // Two parallel queries: fast path-rank for filename matches, then grep
+    // through file contents. The grep is debounced a bit longer so we don't
+    // spin up ripgrep on every keystroke.
     const id = setTimeout(async () => {
       try {
         const params = new URLSearchParams({ tabId: activeTabId, q });
-        const res = await fetch(`${API_BASE}/files/search?${params.toString()}`);
-        const json: SearchResponse = await res.json();
-        if (!cancelled) setSearchResults(json.results ?? []);
+        const [pathRes, grepRes] = await Promise.all([
+          fetch(`${API_BASE}/files/search?${params.toString()}`).then((r) => r.json()) as Promise<SearchResponse>,
+          fetch(`${API_BASE}/files/grep?${params.toString()}`).then((r) => r.json()) as Promise<GrepResponse>,
+        ]);
+        if (cancelled) return;
+        setSearchResults(pathRes.results ?? []);
+        setGrepResults(grepRes.files ?? []);
+        setGrepAvailable(grepRes.rgAvailable !== false);
       } catch (err) {
         if (!cancelled) console.error('[grove] file search failed', err);
       } finally {
         if (!cancelled) setSearching(false);
       }
-    }, 120);
+    }, 180);
     return () => {
       cancelled = true;
       clearTimeout(id);
     };
   }, [activeTabId, query]);
 
+  // Fetch any newly-opened file whose cache slot is empty. Each fetch lives
+  // independently — switching tabs while one is in flight just leaves it
+  // running and the result lands in the cache regardless of which file is
+  // active when it arrives.
   useEffect(() => {
-    if (!selectedFile || !activeTabId) {
-      setFileContent(null);
-      setFileLoading(false);
-      return;
-    }
-    // Clear the previous file's content immediately so the user never sees an
-    // unrelated preview flash while the new file is being fetched.
-    setFileContent(null);
-    setFileLoading(true);
-    let cancelled = false;
-    (async () => {
-      try {
-        const params = new URLSearchParams({ tabId: activeTabId, path: selectedFile });
-        const res = await fetch(`${API_BASE}/file/content?${params.toString()}`);
-        const json: FileContentResponse = await res.json();
-        if (!cancelled) setFileContent(json);
-      } catch (err) {
-        if (!cancelled)
-          setFileContent({
+    if (!activeTabId) return;
+    const toFetch = openFiles.filter((p) => !fileCache[p]);
+    if (toFetch.length === 0) return;
+    // Seed loader entries up-front so the editor swap effect sees `loading:
+    // true` and skips the load until content arrives.
+    setFileCache((prev) => {
+      const next = { ...prev };
+      for (const p of toFetch) {
+        if (!next[p]) {
+          next[p] = {
             content: null,
             truncated: false,
             size: 0,
-            error: String((err as Error).message || err),
-          });
-      } finally {
-        if (!cancelled) setFileLoading(false);
+            error: null,
+            loading: true,
+            dirty: false,
+            saveError: null,
+          };
+        }
       }
-    })();
+      return next;
+    });
+    let cancelled = false;
+    for (const p of toFetch) {
+      (async () => {
+        try {
+          const params = new URLSearchParams({ tabId: activeTabId, path: p });
+          const res = await fetch(`${API_BASE}/file/content?${params.toString()}`);
+          const json: FileContentResponse = await res.json();
+          if (cancelled) return;
+          setFileCache((prev) => ({
+            ...prev,
+            [p]: {
+              ...(prev[p] ?? {
+                draft: undefined,
+                dirty: false,
+                saveError: null,
+              }),
+              content: json.content,
+              truncated: json.truncated,
+              size: json.size,
+              error: json.error,
+              loading: false,
+              dirty: false,
+              saveError: null,
+            },
+          }));
+        } catch (err) {
+          if (cancelled) return;
+          setFileCache((prev) => ({
+            ...prev,
+            [p]: {
+              ...(prev[p] ?? { dirty: false, saveError: null }),
+              content: null,
+              truncated: false,
+              size: 0,
+              error: String((err as Error).message || err),
+              loading: false,
+              dirty: false,
+              saveError: null,
+            },
+          }));
+        }
+      })();
+    }
     return () => {
       cancelled = true;
     };
-  }, [activeTabId, selectedFile]);
+    // fileCache is intentionally excluded — the toFetch filter handles
+    // dedupe, and including it would loop forever as each fetch mutates it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTabId, openFiles]);
 
   const workspaceCwd = useStore((s) => {
     const tab = s.tabs.find((t) => t.id === activeTabId);
@@ -327,23 +435,43 @@ export function FileBrowserPanel({
   const showList = isNarrow ? narrowView === 'list' : listOpen;
   const showPreview = isNarrow ? narrowView === 'preview' : true;
 
-  function selectFile(p: string) {
-    if (
-      dirtyRef.current &&
-      selectedFile &&
-      selectedFile !== p &&
-      !window.confirm('Discard unsaved changes?')
-    ) {
-      return;
-    }
-    // Clear synchronously so the next render swaps straight to the loader
-    // instead of briefly painting the new path against the previous file's
-    // content while the useEffect-driven fetch is still mounting.
-    setSelectedFile(p);
-    setFileContent(null);
-    setFileLoading(true);
-    setSaveError(null);
+  function openOrActivateFile(p: string) {
+    setOpenFiles((prev) => (prev.includes(p) ? prev : [...prev, p]));
+    setActiveFile(p);
     if (isNarrow) setNarrowView('preview');
+  }
+
+  function openFileAt(p: string, line: number, col: number) {
+    editorTargetRef.current = { path: p, line, col };
+    openOrActivateFile(p);
+  }
+
+  function closeFile(p: string) {
+    const entry = fileCache[p];
+    if (entry?.dirty && !window.confirm('Discard unsaved changes?')) return;
+    setOpenFiles((prev) => {
+      const next = prev.filter((x) => x !== p);
+      // If the closed tab was active, fall back to the previous tab — VS
+      // Code's behaviour. Picking the neighbour by index, not history.
+      if (activeFile === p) {
+        if (next.length === 0) {
+          setActiveFile(null);
+          if (isNarrow) setNarrowView('list');
+        } else {
+          const closedIdx = prev.indexOf(p);
+          const fallback = next[Math.max(0, closedIdx - 1)] ?? next[0];
+          setActiveFile(fallback);
+        }
+      }
+      return next;
+    });
+    setFileCache((prev) => {
+      if (!prev[p]) return prev;
+      const { [p]: _drop, ...rest } = prev;
+      void _drop;
+      return rest;
+    });
+    delete fileSnapshotRef.current[p];
   }
   function backToList() {
     setNarrowView('list');
@@ -351,14 +479,13 @@ export function FileBrowserPanel({
 
   // Honor cmd+click requests from terminal blocks. For directories we just
   // navigate. For files we navigate to the parent AND stash a `pendingSelect`
-  // — the [path] reset effect would otherwise clear selectedFile right after
-  // we set it.
+  // — the dir-loaded effect below will open the tab once the parent listing
+  // shows up.
   useEffect(() => {
     if (!fileRequest) return;
     const p = fileRequest.path;
     if (fileRequest.kind === 'dir') {
       setPath(p);
-      setSelectedFile(null);
     } else {
       // Stash line/col + Claude-edit range so the editor jumps to the right
       // spot once the content fetch resolves. Keyed by path so a late content
@@ -375,7 +502,7 @@ export function FileBrowserPanel({
         setPath(parent);
         setPendingSelect(p);
       } else {
-        selectFile(p);
+        openOrActivateFile(p);
       }
     }
     consumeRequest();
@@ -389,7 +516,7 @@ export function FileBrowserPanel({
     const slash = pendingSelect.lastIndexOf('/');
     const parent = slash > 0 ? pendingSelect.slice(0, slash) : '';
     if (parent !== dir.cwd) return;
-    selectFile(pendingSelect);
+    openOrActivateFile(pendingSelect);
     setPendingSelect(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dir?.cwd, pendingSelect]);
@@ -397,42 +524,84 @@ export function FileBrowserPanel({
   // Push the loaded file into CodeMirror. The target (line/col + Claude edit
   // range) is read from editorTargetRef and consumed exactly once — a second
   // re-render of the same file (e.g. the same path clicked twice in the tree)
-  // shouldn't re-jump the cursor or re-show the highlight.
+  // shouldn't re-jump the cursor or re-show the highlight. Before swapping,
+  // capture the outgoing tab's draft / cursor / scroll so a later re-activate
+  // restores the user where they left off.
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
-    if (!selectedFile) {
+
+    // Snapshot the outgoing tab (if it's still open). Skip the snapshot when
+    // the outgoing tab was removed from openFiles (closeFile already cleaned
+    // its state up).
+    const outgoing = editorLoadedFileRef.current;
+    if (outgoing && outgoing !== activeFile && openFiles.includes(outgoing)) {
+      const wasDirty = dirtyOfFileRef.current[outgoing] === true;
+      const draft = wasDirty ? editor.getValue() : undefined;
+      fileSnapshotRef.current[outgoing] = {
+        cursorOffset: editor.getCursorOffset(),
+        scrollTop: editor.getScrollTop(),
+      };
+      if (wasDirty) {
+        setFileCache((prev) =>
+          prev[outgoing] ? { ...prev, [outgoing]: { ...prev[outgoing], draft } } : prev,
+        );
+      }
+    }
+
+    if (!activeFile) {
       editor.clear();
+      editorLoadedFileRef.current = null;
       setCursorPos(null);
       return;
     }
-    if (!fileContent) return; // still loading; FilePreview shows the loader
-    if (fileContent.error || fileContent.content === null) {
+    // Don't re-open the same file just because something in the cache mutated
+    // (e.g. the dirty flag flipped from a keystroke). The editor already has
+    // the live content; reloading here would wipe the user's edits.
+    if (editorLoadedFileRef.current === activeFile) return;
+    const entry = fileCache[activeFile];
+    if (!entry || entry.loading) return; // still fetching
+    if (entry.error || entry.content === null) {
       editor.clear();
+      editorLoadedFileRef.current = null;
       setCursorPos(null);
       return;
     }
     const target =
-      editorTargetRef.current && editorTargetRef.current.path === selectedFile
+      editorTargetRef.current && editorTargetRef.current.path === activeFile
         ? editorTargetRef.current
         : null;
     editorTargetRef.current = null;
+    const snap = fileSnapshotRef.current[activeFile];
+    const loadContent = entry.draft ?? entry.content;
     editor.openFile({
-      path: selectedFile,
-      content: fileContent.content,
+      path: activeFile,
+      content: loadContent,
       line: target?.line,
       col: target?.col,
       claudeEditRange: target?.claudeEditRange,
+      cursorOffset: target ? undefined : snap?.cursorOffset,
+      scrollTop: target ? undefined : snap?.scrollTop,
+      dirty: entry.draft !== undefined,
     });
+    editorLoadedFileRef.current = activeFile;
     setCursorPos({ line: target?.line ?? 1, col: target?.col ?? 1 });
-  }, [selectedFile, fileContent]);
+    // openFiles is included so we can detect when the outgoing tab has been
+    // closed (and skip its snapshot).
+  }, [activeFile, fileCache, openFiles]);
+
+  // Live snapshot of each file's dirty bit, kept in a ref so the swap effect
+  // above (which doesn't subscribe to fileCache mutations between snapshots)
+  // can read the latest value without re-binding.
+  const dirtyOfFileRef = useRef<Record<string, boolean>>({});
+  for (const [p, e] of Object.entries(fileCache)) dirtyOfFileRef.current[p] = e.dirty;
 
   // ⌘G — prompt for a line number and jump. Only fires when the Files panel
   // is the active panel (the listener is mounted on the panel root, which
   // only renders when this panel is active in its pane).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (!selectedFile) return;
+      if (!activeFile) return;
       const isCmdG = (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'g';
       if (!isCmdG) return;
       e.preventDefault();
@@ -440,16 +609,21 @@ export function FileBrowserPanel({
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedFile]);
+  }, [activeFile]);
 
   // ⌘S — save the active file to disk.
   useEffect(() => {
     async function save() {
-      if (!selectedFile || !activeTabId) return;
+      if (!activeFile || !activeTabId) return;
       const editor = editorRef.current;
       if (!editor) return;
-      if (fileContent?.truncated) {
-        setSaveError('Cannot save: file was truncated on load');
+      const cur = fileCache[activeFile];
+      if (cur?.truncated) {
+        setFileCache((prev) =>
+          prev[activeFile]
+            ? { ...prev, [activeFile]: { ...prev[activeFile], saveError: 'Cannot save: file was truncated on load' } }
+            : prev,
+        );
         return;
       }
       const content = editor.getValue();
@@ -457,39 +631,67 @@ export function FileBrowserPanel({
         const res = await fetch(`${API_BASE}/file/content`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ tabId: activeTabId, path: selectedFile, content }),
+          body: JSON.stringify({ tabId: activeTabId, path: activeFile, content }),
         });
         const json = await res.json();
         if (!json.ok) {
-          setSaveError(json.error || 'Save failed');
+          setFileCache((prev) =>
+            prev[activeFile]
+              ? { ...prev, [activeFile]: { ...prev[activeFile], saveError: json.error || 'Save failed' } }
+              : prev,
+          );
           return;
         }
-        setSaveError(null);
         editor.markClean();
-        // Refresh local size/mtime so the status bar's truncated indicator
-        // stays accurate after a save.
-        setFileContent((prev) =>
-          prev ? { ...prev, content, size: json.size ?? prev.size } : prev,
+        setFileCache((prev) =>
+          prev[activeFile]
+            ? {
+                ...prev,
+                [activeFile]: {
+                  ...prev[activeFile],
+                  content,
+                  size: json.size ?? prev[activeFile].size,
+                  draft: undefined,
+                  dirty: false,
+                  saveError: null,
+                },
+              }
+            : prev,
         );
       } catch (err) {
-        setSaveError(String((err as Error).message || err));
+        const msg = String((err as Error).message || err);
+        setFileCache((prev) =>
+          prev[activeFile]
+            ? { ...prev, [activeFile]: { ...prev[activeFile], saveError: msg } }
+            : prev,
+        );
       }
     }
     function onKey(e: KeyboardEvent) {
       const isCmdS = (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 's';
       if (!isCmdS) return;
-      if (!selectedFile) return;
+      if (!activeFile) return;
       e.preventDefault();
       void save();
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedFile, activeTabId, fileContent?.truncated]);
+  }, [activeFile, activeTabId, fileCache]);
+
+  // Editor dirty bit → mark the active file dirty in the cache.
+  function onEditorDirtyChange(d: boolean) {
+    if (!activeFile) return;
+    setFileCache((prev) =>
+      prev[activeFile] && prev[activeFile].dirty !== d
+        ? { ...prev, [activeFile]: { ...prev[activeFile], dirty: d } }
+        : prev,
+    );
+  }
 
   // Editor → assistant: ⌘↵ in CodeMirror calls this. We replace any existing
   // session (D7: one active prompt bar at a time).
   function onAssistantRequest(req: AssistantRequest) {
-    if (!selectedFile) return;
+    if (!activeFile) return;
     assistantAbortRef.current?.abort();
     assistantAbortRef.current = null;
     editorRef.current?.clearAiOverlay();
@@ -512,14 +714,14 @@ export function FileBrowserPanel({
 
   async function submitAssistant() {
     const cur = assistant;
-    if (!cur || !selectedFile || !activeTabId) return;
+    if (!cur || !activeFile || !activeTabId) return;
     if (!cur.prompt.trim()) return;
     const ctrl = new AbortController();
     assistantAbortRef.current = ctrl;
     setAssistant({ ...cur, status: 'streaming', streamingText: '', response: '', errorMessage: '' });
 
     try {
-      const lang = detectCmLanguage(selectedFile).label;
+      const lang = detectCmLanguage(activeFile).label;
       const res = await fetch(`${API_BASE}/assistant/run`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -528,7 +730,7 @@ export function FileBrowserPanel({
           tabId: activeTabId,
           prompt: cur.prompt,
           context: {
-            filePath: selectedFile,
+            filePath: activeFile,
             language: lang,
             selectedText: cur.request.selectedText,
             surroundingLines: cur.request.surroundingLines,
@@ -699,10 +901,10 @@ export function FileBrowserPanel({
           truncate
           minW="0"
           flex="1"
-          title={selectedFile || dir?.cwd}
+          title={activeFile || dir?.cwd}
         >
-          {selectedFile
-            ? `${relativeToBase(selectedFile, dir?.cwd ?? '')}${fileContent?.truncated ? ' · truncated' : ''}`
+          {activeFile
+            ? `${relativeToBase(activeFile, dir?.cwd ?? '')}${fileContent?.truncated ? ' · truncated' : ''}`
             : (dir?.shortCwd ?? '…')}
         </Text>
         <Flex gap="1" flexShrink={0} align="center">
@@ -715,6 +917,7 @@ export function FileBrowserPanel({
               if (!next) {
                 setQuery('');
                 setSearchResults(null);
+                setGrepResults(null);
               }
             }}
           >
@@ -754,9 +957,13 @@ export function FileBrowserPanel({
               {query.trim() ? (
                 <SearchResults
                   results={searchResults}
+                  grepResults={grepResults}
+                  grepAvailable={grepAvailable}
                   searching={searching}
-                  selectedFile={selectedFile}
-                  onPick={selectFile}
+                  query={query.trim()}
+                  selectedFile={activeFile}
+                  onPick={openOrActivateFile}
+                  onPickHit={openFileAt}
                 />
               ) : (
                 <>
@@ -785,12 +992,12 @@ export function FileBrowserPanel({
                           <FileRow
                             entry={r.entry}
                             selected={
-                              r.kind === 'entry' && !r.entry.isDir && selectedFile === r.entry.path
+                              r.kind === 'entry' && !r.entry.isDir && activeFile === r.entry.path
                             }
                             onClick={
                               r.entry.isDir
                                 ? () => setPath(r.entry.path)
-                                : () => selectFile(r.entry.path)
+                                : () => openOrActivateFile(r.entry.path)
                             }
                           />
                         );
@@ -805,22 +1012,28 @@ export function FileBrowserPanel({
 
         {showPreview && (
           <Flex flex="1" direction="column" minW="0" overflow="hidden" position="relative">
+            <FileTabBar
+              tabs={openFiles.map((p) => ({ path: p, dirty: !!fileCache[p]?.dirty }))}
+              activePath={activeFile}
+              onActivate={(p) => setActiveFile(p)}
+              onClose={closeFile}
+            />
             <Box flex="1" minH="0" minW="0" position="relative">
               <PreviewSurface
-                file={selectedFile}
+                file={activeFile}
                 content={fileContent}
                 loading={fileLoading}
                 editorRef={editorRef}
                 onCursorChange={setCursorPos}
                 onLanguageChange={setLanguageLabel}
-                onDirtyChange={setDirty}
+                onDirtyChange={onEditorDirtyChange}
                 onAssistantRequest={onAssistantRequest}
               />
-              {assistant && selectedFile && (
+              {assistant && activeFile && (
                 <InlineAssistantBar
                   anchorTop={assistant.request.anchorTop}
                   context={{
-                    filePath: selectedFile,
+                    filePath: activeFile,
                     language: languageLabel,
                     selectedText: assistant.request.selectedText,
                     surroundingLines: assistant.request.surroundingLines,
@@ -842,7 +1055,7 @@ export function FileBrowserPanel({
                 />
               )}
             </Box>
-            {selectedFile && (
+            {activeFile && (
               <StatusBar
                 language={languageLabel}
                 cursor={cursorPos}
@@ -957,41 +1170,51 @@ function SearchInput({
 
 function SearchResults({
   results,
+  grepResults,
+  grepAvailable,
   searching,
+  query,
   selectedFile,
   onPick,
+  onPickHit,
 }: {
   results: SearchHit[] | null;
+  grepResults: GrepFile[] | null;
+  grepAvailable: boolean;
   searching: boolean;
+  query: string;
   selectedFile: string | null;
   onPick: (abs: string) => void;
+  onPickHit: (abs: string, line: number, col: number) => void;
 }) {
-  if (results === null && searching) {
+  if (results === null && grepResults === null && searching) {
     return (
       <Flex h="100%" align="center" justify="center">
         <SquareLoader />
       </Flex>
     );
   }
-  if (results !== null && results.length === 0) {
+  const pathCount = results?.length ?? 0;
+  const grepCount = grepResults?.reduce((n, f) => n + f.hits.length, 0) ?? 0;
+  if (pathCount === 0 && grepCount === 0 && !searching) {
     return (
       <Text px="3" py="2" fontSize="12px" color="#7d8590">
         No matches.
       </Text>
     );
   }
-  if (!results) return null;
   return (
-    <Virtuoso
-      style={{ height: '100%' }}
-      totalCount={results.length}
-      itemContent={(idx) => {
-        const r = results[idx];
+    <Box h="100%" overflowY="auto" overflowX="hidden">
+      {pathCount > 0 && (
+        <SectionHeader label="Files" count={pathCount} />
+      )}
+      {results?.map((r) => {
         const slash = r.path.lastIndexOf('/');
         const name = slash >= 0 ? r.path.slice(slash + 1) : r.path;
         const dir = slash >= 0 ? r.path.slice(0, slash) : '';
         return (
           <Flex
+            key={`f:${r.abs}`}
             align="center"
             px="2"
             h="32px"
@@ -1002,29 +1225,16 @@ function SearchResults({
             _hover={{ bg: selectedFile === r.abs ? '#1f6feb44' : '#161b22' }}
             onClick={() => onPick(r.abs)}
           >
-            <Box
-              w="14px"
-              h="14px"
-              flexShrink={0}
-              display="inline-flex"
-              alignItems="center"
-              justifyContent="center"
-            >
+            <Box w="14px" h="14px" flexShrink={0} display="inline-flex" alignItems="center" justifyContent="center">
               <Icon
-                icon={iconNameForFile(r.path.split('/').pop() || r.path)}
+                icon={iconNameForFile(name)}
                 width="14"
                 height="14"
                 style={{ display: 'block' }}
               />
             </Box>
             <Box flex="1" minW="0">
-              <Text
-                fontFamily="var(--grove-mono)"
-                fontSize="12px"
-                color="#c9d1d9"
-                truncate
-                title={r.path}
-              >
+              <Text fontFamily="var(--grove-mono)" fontSize="12px" color="#c9d1d9" truncate title={r.path}>
                 {name}
               </Text>
               {dir && (
@@ -1035,8 +1245,138 @@ function SearchResults({
             </Box>
           </Flex>
         );
-      }}
-    />
+      })}
+      {grepCount > 0 && (
+        <SectionHeader
+          label="Matches"
+          count={grepCount}
+          subtitle={`in ${grepResults!.length} file${grepResults!.length === 1 ? '' : 's'}`}
+        />
+      )}
+      {grepResults?.map((file) => (
+        <Box key={`g:${file.abs}`} pb="1">
+          <Flex
+            align="center"
+            gap="1.5"
+            px="2"
+            h="22px"
+            color="#c9d1d9"
+            cursor="pointer"
+            _hover={{ bg: '#161b22' }}
+            onClick={() => onPick(file.abs)}
+          >
+            <Box w="14px" h="14px" flexShrink={0} display="inline-flex" alignItems="center" justifyContent="center">
+              <Icon
+                icon={iconNameForFile(file.path.split('/').pop() || file.path)}
+                width="14"
+                height="14"
+                style={{ display: 'block' }}
+              />
+            </Box>
+            <Text fontFamily="var(--grove-mono)" fontSize="11px" truncate title={file.path}>
+              {file.path}
+            </Text>
+          </Flex>
+          {file.hits.map((hit, i) => (
+            <Flex
+              key={i}
+              align="center"
+              gap="2"
+              pl="6"
+              pr="2"
+              h="20px"
+              fontFamily="var(--grove-mono)"
+              fontSize="11px"
+              cursor="pointer"
+              color="#7d8590"
+              _hover={{ bg: '#161b22', color: '#c9d1d9' }}
+              onClick={() => onPickHit(file.abs, hit.line, hit.col)}
+              title={hit.preview}
+            >
+              <Text color="#6e7681" flexShrink={0}>
+                {hit.line}
+              </Text>
+              <HighlightedPreview text={hit.preview} query={query} />
+            </Flex>
+          ))}
+        </Box>
+      ))}
+      {!grepAvailable && grepCount === 0 && (
+        <Text px="3" py="2" fontSize="11px" color="#7d8590">
+          Install ripgrep (`rg`) to search file contents.
+        </Text>
+      )}
+    </Box>
+  );
+}
+
+function SectionHeader({
+  label,
+  count,
+  subtitle,
+}: {
+  label: string;
+  count: number;
+  subtitle?: string;
+}) {
+  return (
+    <Flex
+      align="center"
+      gap="2"
+      px="2"
+      h="22px"
+      fontSize="10px"
+      color="#7d8590"
+      fontFamily="var(--grove-mono)"
+      textTransform="uppercase"
+      letterSpacing="0.05em"
+      bg="#0d1117"
+      borderTop="1px solid #21262d"
+      borderBottom="1px solid #21262d"
+    >
+      <Text>{label}</Text>
+      <Text color="#6e7681">{count}</Text>
+      {subtitle && <Text color="#6e7681">· {subtitle}</Text>}
+    </Flex>
+  );
+}
+
+function HighlightedPreview({ text, query }: { text: string; query: string }) {
+  if (!query) {
+    return (
+      <Text truncate minW="0" flex="1">
+        {text}
+      </Text>
+    );
+  }
+  const lower = text.toLowerCase();
+  const needle = query.toLowerCase();
+  const parts: Array<{ text: string; hit: boolean }> = [];
+  let i = 0;
+  while (i < text.length) {
+    const idx = lower.indexOf(needle, i);
+    if (idx === -1) {
+      parts.push({ text: text.slice(i), hit: false });
+      break;
+    }
+    if (idx > i) parts.push({ text: text.slice(i, idx), hit: false });
+    parts.push({ text: text.slice(idx, idx + needle.length), hit: true });
+    i = idx + needle.length;
+  }
+  return (
+    <Text truncate minW="0" flex="1" as="span">
+      {parts.map((p, idx) =>
+        p.hit ? (
+          <Text as="span" key={idx} color="#f0f6fc" bg="rgba(255,210,80,0.18)">
+            {p.text}
+          </Text>
+        ) : (
+          <Text as="span" key={idx}>
+            {p.text}
+          </Text>
+        ),
+      )}
+    </Text>
   );
 }
 

@@ -179,6 +179,90 @@ export function registerFileRoutes(app: FastifyInstance) {
     },
   );
 
+  // Content search via ripgrep. Returns matches grouped by file with a short
+  // preview of the matching line. Falls back to empty results (with a flag)
+  // when `rg` isn't on PATH so the UI can surface that gracefully.
+  app.get<{
+    Querystring: { tabId?: string; q: string; limit?: string; max?: string };
+  }>('/files/grep', async (req) => {
+    const sessCwd = req.query.tabId ? sessionCwd(req.query.tabId) : null;
+    if (!sessCwd) return { cwdReady: false, root: '', files: [], rgAvailable: true };
+    const q = (req.query.q ?? '').trim();
+    if (!q) return { cwdReady: true, root: shortPath(sessCwd), files: [], rgAvailable: true };
+    const fileLimit = Math.min(
+      parseInt(req.query.limit ?? '40', 10) || 40,
+      200,
+    );
+    const perFileLimit = Math.min(
+      parseInt(req.query.max ?? '5', 10) || 5,
+      50,
+    );
+    const repoRoot = findRepoRoot(sessCwd);
+    const searchRoot = repoRoot ?? sessCwd;
+    const r = spawnSync(
+      'rg',
+      [
+        '--json',
+        '--smart-case',
+        '--fixed-strings',
+        '--hidden',
+        '-g',
+        '!.git',
+        '-g',
+        '!node_modules',
+        '--max-columns=400',
+        '--max-count=' + perFileLimit,
+        '--',
+        q,
+        searchRoot,
+      ],
+      { encoding: 'utf8', timeout: 5000, maxBuffer: 32 * 1024 * 1024 },
+    );
+    if (r.error && (r.error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { cwdReady: true, root: shortPath(searchRoot), files: [], rgAvailable: false };
+    }
+    interface GrepHit { line: number; col: number; preview: string }
+    interface GrepFile { path: string; abs: string; hits: GrepHit[] }
+    const filesMap = new Map<string, GrepFile>();
+    let fileCount = 0;
+    for (const raw of r.stdout.split('\n')) {
+      if (!raw) continue;
+      let evt: { type: string; data: unknown };
+      try {
+        evt = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+      if (evt.type !== 'match') continue;
+      const data = evt.data as {
+        path: { text?: string };
+        lines: { text?: string };
+        line_number: number;
+        submatches: { start: number }[];
+      };
+      const abs = data.path.text ?? '';
+      if (!abs) continue;
+      const rel = path.relative(searchRoot, abs);
+      let file = filesMap.get(abs);
+      if (!file) {
+        if (fileCount >= fileLimit) continue;
+        fileCount++;
+        file = { path: rel, abs, hits: [] };
+        filesMap.set(abs, file);
+      }
+      if (file.hits.length >= perFileLimit) continue;
+      const preview = (data.lines.text ?? '').replace(/\r?\n$/, '').slice(0, 400);
+      const col = (data.submatches[0]?.start ?? 0) + 1;
+      file.hits.push({ line: data.line_number, col, preview });
+    }
+    return {
+      cwdReady: true,
+      root: shortPath(searchRoot),
+      files: [...filesMap.values()],
+      rgAvailable: true,
+    };
+  });
+
   app.get<{ Querystring: { tabId?: string; path: string; cwd?: string } }>(
     '/file/resolve',
     async (req) => {
