@@ -95,6 +95,9 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function Cod
     onAssistantRequest,
   );
   const dirtyRef = useRef(false);
+  // True while openFile/clear are swapping the document — doc changes from
+  // that swap must not be counted as user edits.
+  const loadingRef = useRef(false);
   cursorListenerRef.current = onCursorChange;
   langListenerRef.current = onLanguageChange;
   dirtyListenerRef.current = onDirtyChange;
@@ -105,6 +108,8 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function Cod
     dirtyRef.current = next;
     dirtyListenerRef.current?.(next);
   }
+
+  const extensionsRef = useRef<Extension[] | null>(null);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -151,9 +156,10 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function Cod
             col: head - line.from + 1,
           });
         }
-        if (v.docChanged) setDirty(true);
+        if (v.docChanged && !loadingRef.current) setDirty(true);
       }),
     ];
+    extensionsRef.current = baseExtensions;
     const view = new EditorView({
       state: EditorState.create({ doc: '', extensions: baseExtensions }),
       parent: hostRef.current,
@@ -178,17 +184,21 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function Cod
         const lineCount = countLines(opts.content);
         const langExtension = lineCount > limit ? [] : langInfo.extension;
 
+        // Rebuild the EditorState from scratch so each file gets a fresh
+        // history stack — otherwise Cmd+Z can undo past the file-load
+        // transaction and land the user in an empty buffer.
+        const extensions = extensionsRef.current ?? [];
+        loadingRef.current = true;
+        view.setState(EditorState.create({ doc: opts.content, extensions }));
         view.dispatch({
-          changes: { from: 0, to: view.state.doc.length, insert: opts.content },
           effects: [
             langCompartmentRef.current.reconfigure(langExtension),
             setTargetLine.of(null),
             setClaudeEdit.of(null),
           ],
-          // Reset selection to top so the cursor doesn't dangle past the new
-          // doc's end if it was further than the new length.
           selection: { anchor: 0 },
         });
+        loadingRef.current = false;
         setDirty(false);
 
         langListenerRef.current?.(
@@ -234,14 +244,17 @@ export const CodeMirrorEditor = forwardRef<CodeMirrorHandle, Props>(function Cod
       clear() {
         const view = viewRef.current;
         if (!view) return;
+        const extensions = extensionsRef.current ?? [];
+        loadingRef.current = true;
+        view.setState(EditorState.create({ doc: '', extensions }));
         view.dispatch({
-          changes: { from: 0, to: view.state.doc.length, insert: '' },
           effects: [
             langCompartmentRef.current.reconfigure([]),
             setTargetLine.of(null),
             setClaudeEdit.of(null),
           ],
         });
+        loadingRef.current = false;
         langListenerRef.current?.('Plain Text');
         setDirty(false);
       },
