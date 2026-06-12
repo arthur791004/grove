@@ -236,6 +236,50 @@ function useCmdHeld(): boolean {
 // the renderer can replace git's wall-of-text with a workspace-aware hint.
 const FORK_LOCK_RE = /fatal: '([^']+)' is already (?:checked out|used by worktree) at/;
 
+// Strip OSC 8 hyperlink framing (\x1b]8;params;url\x07 or …\x1b\) from raw PTY
+// output, keeping the link's visible text. xterm.js consults the link range
+// before the wordSeparator config when deciding what to select on double-click,
+// so an emitter that wraps multi-segment names (e.g. `git br` showing
+// `feature/foo-bar` as a single OSC 8 link) forces double-click to use the
+// link's word boundary instead of ours. The carry object holds an unterminated
+// sequence so a link that straddles WS chunks still gets stripped cleanly.
+function stripOsc8(input: string, carry: { tail: string }): string {
+  let s = carry.tail + input;
+  carry.tail = '';
+  let out = '';
+  let i = 0;
+  while (i < s.length) {
+    const start = s.indexOf('\x1b]8;', i);
+    if (start === -1) {
+      out += s.slice(i);
+      break;
+    }
+    out += s.slice(i, start);
+    let end = -1;
+    let termLen = 1;
+    for (let j = start + 4; j < s.length; j++) {
+      const c = s.charCodeAt(j);
+      if (c === 0x07) {
+        end = j;
+        termLen = 1;
+        break;
+      }
+      if (c === 0x1b && j + 1 < s.length && s.charCodeAt(j + 1) === 0x5c) {
+        end = j;
+        termLen = 2;
+        break;
+      }
+    }
+    if (end === -1) {
+      // Unterminated — carry the partial sequence to the next chunk.
+      carry.tail = s.slice(start);
+      break;
+    }
+    i = end + termLen;
+  }
+  return out;
+}
+
 
 function applyCarriageReturns(prev: string, incoming: string): string {
   if (
@@ -408,6 +452,9 @@ export function TerminalView({ tabId, active }: Props) {
   const fitRef = useRef<FitAddon | null>(null);
   const serializeRef = useRef<SerializeAddon | null>(null);
   const altCarryRef = useRef<string>('');
+  // Stateful carry for OSC 8 strip — a hyperlink sequence can straddle WS
+  // chunks, so we hold any unterminated suffix until the next chunk arrives.
+  const osc8CarryRef = useRef<{ tail: string }>({ tail: '' });
   const pendingOutputRef = useRef<Map<number, string>>(new Map());
   const flushRafRef = useRef<number | null>(null);
 
@@ -595,7 +642,10 @@ export function TerminalView({ tabId, active }: Props) {
               // `\e[2J\e[H` (clear screen + cursor home) so the new write lands
               // on a guaranteed-blank frame.
               xtermRef.current?.reset();
-              xtermRef.current?.write('\x1b[2J\x1b[H' + sliceFromRawEnter(msg.data));
+              xtermRef.current?.write(
+                '\x1b[2J\x1b[H' +
+                  stripOsc8(sliceFromRawEnter(msg.data), osc8CarryRef.current),
+              );
               // Flip the ref synchronously so a block-start arriving in the
               // next WS message (before React re-renders rawMode → useEffect →
               // ref) sees raw mode as already active and skips its own reset.
@@ -606,7 +656,7 @@ export function TerminalView({ tabId, active }: Props) {
               // and wheel-down can't reach the bottom row.
               xtermRef.current?.scrollToBottom();
             } else {
-              xtermRef.current?.write(msg.data);
+              xtermRef.current?.write(stripOsc8(msg.data, osc8CarryRef.current));
             }
 
             if (snapshot) {
@@ -729,6 +779,7 @@ export function TerminalView({ tabId, active }: Props) {
             setCursorHide(false);
             setTtyRaw(false);
             altCarryRef.current = '';
+            osc8CarryRef.current.tail = '';
             rawModeRef.current = false;
             useStore.getState().setRunningCmd(tabId, null);
           } else if (msg.type === 'tty-mode') {
