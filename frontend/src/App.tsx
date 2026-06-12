@@ -420,6 +420,9 @@ function LayoutContent({ contentW }: { contentW: number }) {
     for (const gid of lastRenderedRef.current.keys()) {
       if (!live.has(gid)) lastRenderedRef.current.delete(gid);
     }
+    for (const gid of mountedChildrenRef.current.keys()) {
+      if (!live.has(gid)) mountedChildrenRef.current.delete(gid);
+    }
   }, [groupOrder]);
 
   // Per-group last-rendered top-level entry id. focusedId only belongs to
@@ -427,6 +430,11 @@ function LayoutContent({ contentW }: { contentW: number }) {
   // back to its first top-level entry on every render and unmount whatever
   // entry the user had open there.
   const lastRenderedRef = useRef(new Map<string, string>());
+  // Per-group set of top-level entry ids that have ever been focused. We
+  // mount each one and hide inactive entries with display:none, so switching
+  // focus between a terminal entry and a panel entry doesn't drop the
+  // terminal's PTY WebSocket / xterm buffer.
+  const mountedChildrenRef = useRef(new Map<string, Set<string>>());
 
   const activeTree = activeGroupId ? layoutTreeByGroup[activeGroupId] : null;
   const activeEmpty =
@@ -468,18 +476,53 @@ function LayoutContent({ contentW }: { contentW: number }) {
         if (tree.type === 'leaf' && tree.panes.length === 0) return null;
         const isActive = gid === activeGroupId;
 
-        let renderedTree = tree;
-        if (tree.type === 'split') {
-          if (isActive && focusedId) {
-            const containing = tree.children.find((c) => nodeContains(c, focusedId));
-            renderedTree = containing ?? tree.children[0];
-          } else {
-            const lastId = lastRenderedRef.current.get(gid);
-            const cached = lastId ? tree.children.find((c) => c.id === lastId) : undefined;
-            renderedTree = cached ?? tree.children[0];
-          }
+        // Non-split root: pass the whole tree (single leaf) to one LayoutHost.
+        if (tree.type !== 'split') {
+          return (
+            <Box
+              key={gid}
+              position="absolute"
+              inset="0"
+              display={isActive ? 'block' : 'none'}
+            >
+              <LayoutHost
+                tree={tree}
+                groupId={gid}
+                forcedFullscreen={false}
+                panelWidth={contentW}
+                visible={isActive}
+                onSplitResize={(splitId, sizes) => resizeLayoutSplit(gid, splitId, sizes)}
+              />
+            </Box>
+          );
         }
-        lastRenderedRef.current.set(gid, renderedTree.id);
+
+        // Tabs root: pick the top-level entry to show, then mount-and-hide
+        // every other entry the user has previously focused so their state
+        // (terminals, panel scroll, AI overlay, …) survives the switch.
+        let activeChildId: string | undefined;
+        if (isActive && focusedId) {
+          const containing = tree.children.find((c) => nodeContains(c, focusedId));
+          activeChildId = containing?.id;
+        }
+        if (!activeChildId) {
+          const lastId = lastRenderedRef.current.get(gid);
+          if (lastId && tree.children.some((c) => c.id === lastId)) activeChildId = lastId;
+        }
+        if (!activeChildId) activeChildId = tree.children[0]?.id;
+        if (!activeChildId) return null;
+        lastRenderedRef.current.set(gid, activeChildId);
+
+        let mountedSet = mountedChildrenRef.current.get(gid);
+        if (!mountedSet) {
+          mountedSet = new Set();
+          mountedChildrenRef.current.set(gid, mountedSet);
+        }
+        mountedSet.add(activeChildId);
+        // Drop entries for top-level children that no longer exist.
+        for (const childId of [...mountedSet]) {
+          if (!tree.children.some((c) => c.id === childId)) mountedSet.delete(childId);
+        }
 
         return (
           <Box
@@ -488,14 +531,30 @@ function LayoutContent({ contentW }: { contentW: number }) {
             inset="0"
             display={isActive ? 'block' : 'none'}
           >
-            <LayoutHost
-              tree={renderedTree}
-              groupId={gid}
-              forcedFullscreen={false}
-              panelWidth={contentW}
-              visible={isActive}
-              onSplitResize={(splitId, sizes) => resizeLayoutSplit(gid, splitId, sizes)}
-            />
+            {tree.children
+              .filter((c) => mountedSet!.has(c.id))
+              .map((child) => {
+                const childVisible = isActive && child.id === activeChildId;
+                return (
+                  <Box
+                    key={child.id}
+                    position="absolute"
+                    inset="0"
+                    display={child.id === activeChildId ? 'block' : 'none'}
+                  >
+                    <LayoutHost
+                      tree={child}
+                      groupId={gid}
+                      forcedFullscreen={false}
+                      panelWidth={contentW}
+                      visible={childVisible}
+                      onSplitResize={(splitId, sizes) =>
+                        resizeLayoutSplit(gid, splitId, sizes)
+                      }
+                    />
+                  </Box>
+                );
+              })}
           </Box>
         );
       })}
