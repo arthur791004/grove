@@ -151,6 +151,7 @@ export function Sidebar() {
     if (!over || active.id === over.id) return;
     const activeId = String(active.id);
     const overId = String(over.id);
+    const store = useStore.getState();
 
     if (activeId.startsWith('group:') && overId.startsWith('group:')) {
       const a = activeId.slice(6);
@@ -163,63 +164,102 @@ export function Sidebar() {
 
     // Workspace drag stays prefixed since groups are a different drop space.
     if (activeId.startsWith('group:')) return;
-    // Cross-workspace tab drop on a workspace header — find the tab inside
-    // the dragged top-level leaf and call the legacy moveTab.
+
+    const from = resolveRow(activeId);
+    if (!from) return;
+
+    // Cross-workspace tab drop on a workspace header — move the dragged tab
+    // into that workspace via the legacy moveTab.
     if (overId.startsWith('group:')) {
       const gid = overId.slice(6);
-      const tabId = tabIdInsideTopLevelNode(activeId);
-      if (tabId) moveTab(tabId, gid, (tabOrderByGroup[gid] ?? []).length);
+      const tabId = from.paneId ?? tabIdInsideTopLevelNode(from.topNodeId);
+      if (tabId && store.tabs.some((t) => t.id === tabId)) {
+        moveTab(tabId, gid, (tabOrderByGroup[gid] ?? []).length);
+      }
       return;
     }
-    // Within-workspace reorder — both ids are direct children of the active
-    // workspace's tree root.
-    const fromGroup = groupIdForTreeNode(activeId);
-    if (fromGroup) {
-      useStore.getState().moveTopLevelInTree(fromGroup, activeId, overId);
+
+    const to = resolveRow(overId);
+    if (!to) return;
+
+    // Cross-workspace drop onto another workspace's row — relocate the tab to
+    // the target's position in that workspace.
+    if (from.groupId !== to.groupId) {
+      const tabId = from.paneId;
+      if (tabId && store.tabs.some((t) => t.id === tabId)) {
+        const targetOrder = tabOrderByGroup[to.groupId] ?? [];
+        const at = to.paneId ? targetOrder.indexOf(to.paneId) : -1;
+        moveTab(tabId, to.groupId, at < 0 ? targetOrder.length : at);
+      }
+      return;
+    }
+
+    // Same workspace, both panes living in the same leaf → reorder within it.
+    if (from.leaf && to.leaf && from.leaf.id === to.leaf.id && from.paneId && to.paneId) {
+      const ids = from.leaf.panes.map((p) => p.id);
+      const a = ids.indexOf(from.paneId);
+      const b = ids.indexOf(to.paneId);
+      if (a < 0 || b < 0) return;
+      store.reorderLeafPanesInTree(from.groupId, from.leaf.id, arrayMove(ids, a, b));
+      syncTabOrderFromTree(from.groupId);
+      return;
+    }
+
+    // Legacy treeless fallback — both rows are bare tab ids (no backing tree).
+    // Reorder the group's tabOrderByGroup directly.
+    if (!from.leaf && !to.leaf && from.paneId && to.paneId) {
+      const order = tabOrderByGroup[from.groupId] ?? [];
+      const a = order.indexOf(from.paneId);
+      const b = order.indexOf(to.paneId);
+      if (a >= 0 && b >= 0) {
+        useStore.setState((prev) => ({
+          tabOrderByGroup: { ...prev.tabOrderByGroup, [from.groupId]: arrayMove(order, a, b) },
+        }));
+      }
+      return;
+    }
+
+    // Otherwise the rows belong to different top-level nodes — reorder the
+    // workspace's top-level children. (A multi-pane leaf moves as a unit.)
+    if (from.topNodeId !== to.topNodeId) {
+      store.moveTopLevelInTree(from.groupId, from.topNodeId, to.topNodeId);
       // Keep the legacy tabOrderByGroup in sync so any consumer that hasn't
       // moved to the tree (CommandPalette, etc.) sees the same ordering.
-      syncTabOrderFromTree(fromGroup);
-      return;
+      syncTabOrderFromTree(from.groupId);
     }
-    // Fallback: the active item isn't a tree node — it's a pane (tab) id from
-    // a single-top-level-leaf workspace. Reorder panes inside that leaf.
-    const leafCtx = findLeafContainingPane(activeId);
-    if (!leafCtx) return;
-    const { groupId, leaf } = leafCtx;
-    const ids = leaf.panes.map((p) => p.id);
-    const from = ids.indexOf(activeId);
-    const to = ids.indexOf(overId);
-    if (from < 0 || to < 0) return;
-    useStore.getState().reorderLeafPanesInTree(groupId, leaf.id, arrayMove(ids, from, to));
-    syncTabOrderFromTree(groupId);
   }
 
-  function findLeafContainingPane(paneId: string): { groupId: string; leaf: LeafNode } | null {
+  // Resolve a sortable row id back to its place in the layout. A row id is a
+  // pane id (terminal tab / panel row), a top-level sub-split node id (merged
+  // group row), or — in the treeless legacy render — a bare tab id. Returns
+  // the owning workspace, the root-level node the row sits under, and the leaf
+  // + pane when the row represents a single pane.
+  function resolveRow(id: string): {
+    groupId: string;
+    topNodeId: string;
+    leaf: LeafNode | null;
+    paneId: string | null;
+  } | null {
     const state = useStore.getState();
     for (const [gid, tree] of Object.entries(state.layoutTreeByGroup)) {
-      const found = (function walk(n: LayoutNode): LeafNode | null {
-        if (n.type === 'leaf') return n.panes.some((p) => p.id === paneId) ? n : null;
-        for (const c of n.children) {
-          const r = walk(c);
-          if (r) return r;
+      const topNodes = tree.type === 'split' ? tree.children : [tree];
+      for (const node of topNodes) {
+        if (node.type === 'leaf') {
+          if (node.panes.some((p) => p.id === id)) {
+            return { groupId: gid, topNodeId: node.id, leaf: node, paneId: id };
+          }
+        } else if (node.id === id) {
+          // Sub-split rendered as a single merged row.
+          return { groupId: gid, topNodeId: node.id, leaf: null, paneId: null };
         }
-        return null;
-      })(tree);
-      if (found) return { groupId: gid, leaf: found };
+      }
     }
+    // Treeless fallback: a group whose tabs aren't backed by a tree.
+    const tab = state.tabs.find((t) => t.id === id);
+    if (tab) return { groupId: tab.groupId, topNodeId: id, leaf: null, paneId: id };
     return null;
   }
 
-  // Helpers: every sidebar row's sortable id IS the top-level tree node id.
-  // These look the node up to resolve cross-row moves cleanly.
-  function groupIdForTreeNode(nodeId: string): string | null {
-    const state = useStore.getState();
-    for (const [gid, t] of Object.entries(state.layoutTreeByGroup)) {
-      if (t.type === 'leaf' && t.id === nodeId) return gid;
-      if (t.type === 'split' && t.children.some((c) => c.id === nodeId)) return gid;
-    }
-    return null;
-  }
   function tabIdInsideTopLevelNode(nodeId: string): string | null {
     const state = useStore.getState();
     for (const t of Object.values(state.layoutTreeByGroup)) {
@@ -1008,10 +1048,15 @@ function LeafGroupedList({
   // sub-split renders as a single merged "group" row, because its panes are
   // visible simultaneously on the main screen and belong to one screen area.
   const topLevelNodes: LayoutNode[] = tree.type === 'split' ? tree.children : [tree];
-  // Every sidebar row is sortable under its top-level tree node id — single
-  // tabs, panel rows, and split groups all share the same item type. The
-  // sidebar dnd handler resolves these ids back into tree-children moves.
-  const sortableItems = topLevelNodes.map((n) => n.id);
+  // Each sidebar row gets a UNIQUE sortable id: a single pane uses its own
+  // pane id, a merged sub-split row uses the split node id. (Using the leaf
+  // id for every pane in a multi-pane leaf collided — duplicate dnd-kit ids
+  // dropped rows mid-drag and made single-leaf reorders a no-op.) The order
+  // here must match the rendered row order exactly. The dnd handler resolves
+  // each id back to its leaf/pane via resolveRow.
+  const sortableItems = topLevelNodes.flatMap((n) =>
+    n.type === 'leaf' ? n.panes.map((p) => p.id) : [n.id],
+  );
 
   return (
     <SortableContext items={sortableItems} strategy={verticalListSortingStrategy}>
@@ -1026,11 +1071,11 @@ function LeafGroupedList({
                     key={p.id}
                     tab={tab}
                     workspaceBranch={workspaceBranch}
-                    sortId={node.id}
+                    sortId={p.id}
                   />
                 ) : null;
               }
-              return <PanelRow key={p.id} pane={p} groupId={groupId} sortId={node.id} />;
+              return <PanelRow key={p.id} pane={p} groupId={groupId} sortId={p.id} />;
             });
           }
           // Sub-split → one merged row covering every pane within.
@@ -1232,53 +1277,8 @@ function DragPreview({ id }: { id: string }) {
       </Flex>
     );
   }
-  // Raw node ids — look up the matching top-level node in any workspace's
-  // tree. A leaf with a terminal pane renders the tab card preview; a leaf
-  // with a panel renders a minimal panel preview; a sub-split renders a
-  // merged group preview.
-  const state = useStore.getState();
-  let foundNode: import('./layout/types').LayoutNode | null = null;
-  for (const t of Object.values(state.layoutTreeByGroup)) {
-    if (t.id === id) {
-      foundNode = t;
-      break;
-    }
-    if (t.type === 'split') {
-      const child = t.children.find((c) => c.id === id);
-      if (child) {
-        foundNode = child;
-        break;
-      }
-    }
-  }
-  if (foundNode?.type === 'split') {
-    const allPanes = (function walk(n: import('./layout/types').LayoutNode): Pane[] {
-      return n.type === 'leaf' ? n.panes : n.children.flatMap(walk);
-    })(foundNode);
-    const titleText = allPanes.map((p) => p.title).join(' · ');
-    return (
-      <Flex
-        align="center"
-        gap="1.5"
-        px="1.5"
-        h="32px"
-        borderRadius="6px"
-        bg="#21262d"
-        border="1px solid #30363d"
-        boxShadow="0 8px 24px rgba(0,0,0,0.4)"
-        opacity={0.9}
-      >
-        <Box w="10px" />
-        <Text fontSize="12px" color="#c9d1d9" fontWeight={500} truncate>
-          {titleText}
-        </Text>
-      </Flex>
-    );
-  }
-  // Single-pane leaf — pull the wrapped tab/pane out for the preview.
-  const leafPaneId =
-    foundNode?.type === 'leaf' ? foundNode.panes[0]?.id : null;
-  const t = leafPaneId ? tabs.find((tt) => tt.id === leafPaneId) : null;
+  // Terminal/claude tab rows drag under their pane id — preview the tab card.
+  const t = tabs.find((tt) => tt.id === id);
   if (t) {
     const isDefault = t.color === 'default';
     return (
@@ -1315,6 +1315,78 @@ function DragPreview({ id }: { id: string }) {
           lineHeight="1.4"
         >
           {t.title}
+        </Text>
+      </Flex>
+    );
+  }
+  // Otherwise the id is either a top-level sub-split node (merged group row)
+  // or a panel pane id. Resolve both in one walk over the trees.
+  const state = useStore.getState();
+  let foundNode: LayoutNode | null = null;
+  let foundPane: Pane | null = null;
+  for (const tree of Object.values(state.layoutTreeByGroup)) {
+    const topNodes = tree.type === 'split' ? tree.children : [tree];
+    for (const node of topNodes) {
+      if (node.id === id) foundNode = node;
+      if (node.type === 'leaf') {
+        const p = node.panes.find((pp) => pp.id === id);
+        if (p) foundPane = p;
+      }
+    }
+  }
+  if (foundNode?.type === 'split') {
+    const allPanes = (function walk(n: LayoutNode): Pane[] {
+      return n.type === 'leaf' ? n.panes : n.children.flatMap(walk);
+    })(foundNode);
+    const titleText = allPanes.map((p) => p.title).join(' · ');
+    return (
+      <Flex
+        align="center"
+        gap="1.5"
+        px="1.5"
+        h="32px"
+        borderRadius="6px"
+        bg="#21262d"
+        border="1px solid #30363d"
+        boxShadow="0 8px 24px rgba(0,0,0,0.4)"
+        opacity={0.9}
+      >
+        <Box w="10px" />
+        <Text fontSize="12px" color="#c9d1d9" fontWeight={500} truncate>
+          {titleText}
+        </Text>
+      </Flex>
+    );
+  }
+  if (foundPane) {
+    return (
+      <Flex
+        align="center"
+        gap="1.5"
+        px="1.5"
+        h="32px"
+        borderRadius="6px"
+        bg="#21262d"
+        border="1px solid #30363d"
+        boxShadow="0 8px 24px rgba(0,0,0,0.4)"
+        opacity={0.9}
+      >
+        <Box w="10px" />
+        <Box
+          w="20px"
+          h="20px"
+          borderRadius="4px"
+          bg="#0d1117"
+          border="1px solid #30363d"
+          display="flex"
+          alignItems="center"
+          justifyContent="center"
+          color="#7d8590"
+        >
+          <PaneIcon kind={foundPane.kind} size={12} />
+        </Box>
+        <Text fontSize="12px" color="#c9d1d9" truncate lineHeight="1.4">
+          {foundPane.title}
         </Text>
       </Flex>
     );
