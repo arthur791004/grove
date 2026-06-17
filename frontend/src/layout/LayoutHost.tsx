@@ -141,7 +141,7 @@ export function LayoutHost(props: LayoutHostProps) {
     [props.tree, props.groupId, reorderLeafPanesInTree, movePaneAcrossLeaves],
   );
   const activePane = activeId
-    ? getAllPanes(props.tree).find((p) => p.id === activeId) ?? null
+    ? (getAllPanes(props.tree).find((p) => p.id === activeId) ?? null)
     : null;
   // For a "swap:<leafId>" drag, surface the active pane of the dragged leaf
   // so the DragOverlay can show a card resembling the whole pane.
@@ -396,7 +396,27 @@ function Leaf({
           </Box>
         )}
         {active.kind !== 'shell' && active.kind !== 'claude' && (
-          <PaneContent pane={active} forcedFullscreen={forcedFullscreen} panelWidth={panelWidth} />
+          // Clicking anywhere in a panel body focuses its pane. Panel kinds
+          // have no native focus signal like a terminal's xterm, so without
+          // this the panel-scoped shortcuts (⌘F/⌘G/⌘S) couldn't tell which
+          // pane is active. Capture-phase + an equality guard so it costs
+          // nothing once the pane is already focused.
+          <Box
+            w="100%"
+            h="100%"
+            onMouseDownCapture={() => {
+              const s = useStore.getState();
+              if (s.activePanelId === active.id) return;
+              s.setActivePaneInTree(groupId, active.id);
+              useStore.setState({ activePanelId: active.id });
+            }}
+          >
+            <PaneContent
+              pane={active}
+              forcedFullscreen={forcedFullscreen}
+              panelWidth={panelWidth}
+            />
+          </Box>
         )}
         {!showTabBar && <PaneOverlay leaf={leaf} groupId={groupId} />}
       </Box>

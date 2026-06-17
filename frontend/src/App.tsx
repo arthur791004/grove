@@ -179,7 +179,10 @@ export function App() {
   // typing into it would be ignored or appended to the in-flight prompt.
   useEffect(() => {
     return useStore.subscribe((s, prev) => {
-      if (s.agentStates === prev.agentStates && s.pendingFirstMessages === prev.pendingFirstMessages) {
+      if (
+        s.agentStates === prev.agentStates &&
+        s.pendingFirstMessages === prev.pendingFirstMessages
+      ) {
         return;
       }
       for (const tabId of Object.keys(s.pendingFirstMessages)) {
@@ -214,8 +217,7 @@ export function App() {
               // Clear the notch at the top; clear the keyboard + home
               // indicator at the bottom so the composer is never covered.
               paddingTop: 'env(safe-area-inset-top, 0px)',
-              paddingBottom:
-                'calc(var(--keyboard-height, 0px) + env(safe-area-inset-bottom, 0px))',
+              paddingBottom: 'calc(var(--keyboard-height, 0px) + env(safe-area-inset-bottom, 0px))',
               boxSizing: 'border-box',
             }
           : undefined
@@ -297,8 +299,7 @@ export function App() {
             borderRight={sidebarOpen ? '1px solid #21262d' : '1px solid transparent'}
             overflow="hidden"
             style={{
-              transition:
-                'width 220ms cubic-bezier(0.22, 0.61, 0.36, 1), border-color 220ms ease',
+              transition: 'width 220ms cubic-bezier(0.22, 0.61, 0.36, 1), border-color 220ms ease',
             }}
           >
             <Box w={`${SIDEBAR_WIDTH}px`} h="100%">
@@ -437,8 +438,7 @@ function LayoutContent({ contentW }: { contentW: number }) {
   const mountedChildrenRef = useRef(new Map<string, Set<string>>());
 
   const activeTree = activeGroupId ? layoutTreeByGroup[activeGroupId] : null;
-  const activeEmpty =
-    !activeTree || (activeTree.type === 'leaf' && activeTree.panes.length === 0);
+  const activeEmpty = !activeTree || (activeTree.type === 'leaf' && activeTree.panes.length === 0);
 
   // Render every mounted group; only the active one is visible. Preserve
   // groupOrder so React reconciliation stays stable as groups come and go.
@@ -446,25 +446,14 @@ function LayoutContent({ contentW }: { contentW: number }) {
   for (const gid of groupOrder) {
     if (mounted.has(gid) && layoutTreeByGroup[gid]) renderGroups.push(gid);
   }
-  if (
-    activeGroupId &&
-    layoutTreeByGroup[activeGroupId] &&
-    !renderGroups.includes(activeGroupId)
-  ) {
+  if (activeGroupId && layoutTreeByGroup[activeGroupId] && !renderGroups.includes(activeGroupId)) {
     renderGroups.push(activeGroupId);
   }
 
   return (
     <Box position="relative" w="100%" h="100%">
       {activeEmpty && (
-        <Flex
-          position="absolute"
-          inset="0"
-          align="center"
-          justify="center"
-          bg="#010409"
-          zIndex={1}
-        >
+        <Flex position="absolute" inset="0" align="center" justify="center" bg="#010409" zIndex={1}>
           <Text color="#7d8590" fontSize="sm">
             No tabs. Press ⌘T to create one.
           </Text>
@@ -479,12 +468,7 @@ function LayoutContent({ contentW }: { contentW: number }) {
         // Non-split root: pass the whole tree (single leaf) to one LayoutHost.
         if (tree.type !== 'split') {
           return (
-            <Box
-              key={gid}
-              position="absolute"
-              inset="0"
-              display={isActive ? 'block' : 'none'}
-            >
+            <Box key={gid} position="absolute" inset="0" display={isActive ? 'block' : 'none'}>
               <LayoutHost
                 tree={tree}
                 groupId={gid}
@@ -525,12 +509,7 @@ function LayoutContent({ contentW }: { contentW: number }) {
         }
 
         return (
-          <Box
-            key={gid}
-            position="absolute"
-            inset="0"
-            display={isActive ? 'block' : 'none'}
-          >
+          <Box key={gid} position="absolute" inset="0" display={isActive ? 'block' : 'none'}>
             {tree.children
               .filter((c) => mountedSet!.has(c.id))
               .map((child) => {
@@ -548,9 +527,7 @@ function LayoutContent({ contentW }: { contentW: number }) {
                       forcedFullscreen={false}
                       panelWidth={contentW}
                       visible={childVisible}
-                      onSplitResize={(splitId, sizes) =>
-                        resizeLayoutSplit(gid, splitId, sizes)
-                      }
+                      onSplitResize={(splitId, sizes) => resizeLayoutSplit(gid, splitId, sizes)}
                     />
                   </Box>
                 );
@@ -920,8 +897,8 @@ function RemoteAccessSection() {
         </Switch.Root>
       </Flex>
       <Text fontSize="11px" color="#7d8590" mb="2">
-        Reach this Grove from your phone over Tailscale. Connections are limited to your
-        tailnet and require the one-time access token below.
+        Reach this Grove from your phone over Tailscale. Connections are limited to your tailnet and
+        require the one-time access token below.
       </Text>
       {busy && (
         <Text fontSize="12px" color="#7d8590">
@@ -976,8 +953,8 @@ function RemoteAccessSection() {
       )}
       {!busy && status?.enabled && !status.url && (
         <Text fontSize="12px" color="#d29922">
-          Tailscale isn't running, so there's no address to connect to yet. Remote mode is on
-          — start Tailscale and reopen Settings to get the connect URL.
+          Tailscale isn't running, so there's no address to connect to yet. Remote mode is on —
+          start Tailscale and reopen Settings to get the connect URL.
         </Text>
       )}
     </>
@@ -1083,8 +1060,8 @@ function TabsSection() {
           />
         </SegmentGroup.Root>
         <Text fontSize="11px" color="#7d8590" mt="1.5">
-          Claude mode auto-runs <code>claude</code> in new tabs. Requires Claude Code installed
-          and authenticated.
+          Claude mode auto-runs <code>claude</code> in new tabs. Requires Claude Code installed and
+          authenticated.
         </Text>
       </Box>
       <Text fontSize="12px" color="#7d8590">
@@ -1107,8 +1084,8 @@ function TabsSection() {
           />
         </SegmentGroup.Root>
         <Text fontSize="11px" color="#7d8590" mt="1.5">
-          Sidebar: tabs listed under each workspace (today's layout). Top: tabs render as a
-          strip above each pane, browser-style.
+          Sidebar: tabs listed under each workspace (today's layout). Top: tabs render as a strip
+          above each pane, browser-style.
         </Text>
       </Box>
     </Grid>
@@ -1147,6 +1124,16 @@ const SHORTCUT_GROUPS: Array<{ title: string; rows: Array<{ keys: string[]; labe
       { keys: ['⌘', 'K'], label: 'Open command palette (alias)' },
       { keys: ['⌘', '\\'], label: 'Toggle sidebar' },
       { keys: ['⌘', '⇧', '1'], label: '… ⌘⇧9 — fire pin N from the pin bar' },
+    ],
+  },
+  {
+    // Panel-scoped: these fire only when a Files panel is the focused pane
+    // (see useScopedShortcut). Click a panel to focus it.
+    title: 'Files panel',
+    rows: [
+      { keys: ['⌘', 'F'], label: 'Focus the file search bar (Esc clears & blurs)' },
+      { keys: ['⌘', 'G'], label: 'Go to line in the active file' },
+      { keys: ['⌘', 'S'], label: 'Save the active file' },
     ],
   },
 ];

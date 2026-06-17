@@ -13,6 +13,7 @@ import {
 import { InlineAssistantBar, type AssistantStatus } from './InlineAssistantBar';
 import { FileTabBar } from './FileTabBar';
 import { detectCmLanguage } from './codemirror/language-detect';
+import { useScopedShortcut } from './useScopedShortcut';
 import { diffLines } from 'diff';
 
 // Module-level home-dir cache. Filled by the first /env/home call; lets the
@@ -207,7 +208,8 @@ export function FileBrowserPanel({
   } | null>(null);
   const assistantAbortRef = useRef<AbortController | null>(null);
   const [query, setQuery] = useState('');
-  const [searchOpen, setSearchOpen] = useState(false);
+  // The persistent header search input; ⌘F focuses it.
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [searchResults, setSearchResults] = useState<SearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [grepResults, setGrepResults] = useState<GrepFile[] | null>(null);
@@ -254,7 +256,6 @@ export function FileBrowserPanel({
     setDir(null);
     setDirError(null);
     setQuery('');
-    setSearchOpen(false);
     setSearchResults(null);
     setGrepResults(null);
     dirCache.current.clear();
@@ -311,8 +312,12 @@ export function FileBrowserPanel({
       try {
         const params = new URLSearchParams({ tabId: activeTabId, q });
         const [pathRes, grepRes] = await Promise.all([
-          fetch(`${API_BASE}/files/search?${params.toString()}`).then((r) => r.json()) as Promise<SearchResponse>,
-          fetch(`${API_BASE}/files/grep?${params.toString()}`).then((r) => r.json()) as Promise<GrepResponse>,
+          fetch(`${API_BASE}/files/search?${params.toString()}`).then((r) =>
+            r.json(),
+          ) as Promise<SearchResponse>,
+          fetch(`${API_BASE}/files/grep?${params.toString()}`).then((r) =>
+            r.json(),
+          ) as Promise<GrepResponse>,
         ]);
         if (cancelled) return;
         setSearchResults(pathRes.results ?? []);
@@ -431,9 +436,13 @@ export function FileBrowserPanel({
   }, [dir, workspaceCwd]);
 
   // In narrow mode, only one pane is visible; in wide mode both are visible
-  // when listOpen is true, otherwise just the preview takes over.
-  const showList = isNarrow ? narrowView === 'list' : listOpen;
-  const showPreview = isNarrow ? narrowView === 'preview' : true;
+  // when listOpen is true, otherwise just the preview takes over. An active
+  // search query always forces the list/results pane open (and, when narrow,
+  // takes over the single visible pane) so header-search results are reachable
+  // even with the file list collapsed.
+  const hasQuery = query.trim().length > 0;
+  const showList = hasQuery || (isNarrow ? narrowView === 'list' : listOpen);
+  const showPreview = isNarrow ? !hasQuery && narrowView === 'preview' : true;
 
   function openOrActivateFile(p: string) {
     setOpenFiles((prev) => (prev.includes(p) ? prev : [...prev, p]));
@@ -596,87 +605,92 @@ export function FileBrowserPanel({
   const dirtyOfFileRef = useRef<Record<string, boolean>>({});
   for (const [p, e] of Object.entries(fileCache)) dirtyOfFileRef.current[p] = e.dirty;
 
-  // ⌘G — prompt for a line number and jump. Only fires when the Files panel
-  // is the active panel (the listener is mounted on the panel root, which
-  // only renders when this panel is active in its pane).
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (!activeFile) return;
-      const isCmdG = (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'g';
-      if (!isCmdG) return;
-      e.preventDefault();
-      editorRef.current?.promptGotoLine();
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [activeFile]);
+  // ⌘F — focus the header search input (scoped to the focused Files panel so
+  // it never shadows the browser find in an unfocused pane).
+  useScopedShortcut(paneId, { key: 'f' }, (e) => {
+    e.preventDefault();
+    const input = searchInputRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+  });
+
+  // ⌘G — go to line in the active file.
+  useScopedShortcut(paneId, { key: 'g' }, (e) => {
+    if (!activeFile) return;
+    e.preventDefault();
+    editorRef.current?.promptGotoLine();
+  });
 
   // ⌘S — save the active file to disk.
-  useEffect(() => {
-    async function save() {
-      if (!activeFile || !activeTabId) return;
-      const editor = editorRef.current;
-      if (!editor) return;
-      const cur = fileCache[activeFile];
-      if (cur?.truncated) {
-        setFileCache((prev) =>
-          prev[activeFile]
-            ? { ...prev, [activeFile]: { ...prev[activeFile], saveError: 'Cannot save: file was truncated on load' } }
-            : prev,
-        );
-        return;
-      }
-      const content = editor.getValue();
-      try {
-        const res = await fetch(`${API_BASE}/file/content`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ tabId: activeTabId, path: activeFile, content }),
-        });
-        const json = await res.json();
-        if (!json.ok) {
-          setFileCache((prev) =>
-            prev[activeFile]
-              ? { ...prev, [activeFile]: { ...prev[activeFile], saveError: json.error || 'Save failed' } }
-              : prev,
-          );
-          return;
-        }
-        editor.markClean();
+  const save = async () => {
+    if (!activeFile || !activeTabId) return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    const cur = fileCache[activeFile];
+    if (cur?.truncated) {
+      setFileCache((prev) =>
+        prev[activeFile]
+          ? {
+              ...prev,
+              [activeFile]: {
+                ...prev[activeFile],
+                saveError: 'Cannot save: file was truncated on load',
+              },
+            }
+          : prev,
+      );
+      return;
+    }
+    const content = editor.getValue();
+    try {
+      const res = await fetch(`${API_BASE}/file/content`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tabId: activeTabId, path: activeFile, content }),
+      });
+      const json = await res.json();
+      if (!json.ok) {
         setFileCache((prev) =>
           prev[activeFile]
             ? {
                 ...prev,
-                [activeFile]: {
-                  ...prev[activeFile],
-                  content,
-                  size: json.size ?? prev[activeFile].size,
-                  draft: undefined,
-                  dirty: false,
-                  saveError: null,
-                },
+                [activeFile]: { ...prev[activeFile], saveError: json.error || 'Save failed' },
               }
             : prev,
         );
-      } catch (err) {
-        const msg = String((err as Error).message || err);
-        setFileCache((prev) =>
-          prev[activeFile]
-            ? { ...prev, [activeFile]: { ...prev[activeFile], saveError: msg } }
-            : prev,
-        );
+        return;
       }
+      editor.markClean();
+      setFileCache((prev) =>
+        prev[activeFile]
+          ? {
+              ...prev,
+              [activeFile]: {
+                ...prev[activeFile],
+                content,
+                size: json.size ?? prev[activeFile].size,
+                draft: undefined,
+                dirty: false,
+                saveError: null,
+              },
+            }
+          : prev,
+      );
+    } catch (err) {
+      const msg = String((err as Error).message || err);
+      setFileCache((prev) =>
+        prev[activeFile]
+          ? { ...prev, [activeFile]: { ...prev[activeFile], saveError: msg } }
+          : prev,
+      );
     }
-    function onKey(e: KeyboardEvent) {
-      const isCmdS = (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 's';
-      if (!isCmdS) return;
-      if (!activeFile) return;
-      e.preventDefault();
-      void save();
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [activeFile, activeTabId, fileCache]);
+  };
+  useScopedShortcut(paneId, { key: 's' }, (e) => {
+    if (!activeFile) return;
+    e.preventDefault();
+    void save();
+  });
 
   // Editor dirty bit → mark the active file dirty in the cache.
   function onEditorDirtyChange(d: boolean) {
@@ -718,7 +732,13 @@ export function FileBrowserPanel({
     if (!cur.prompt.trim()) return;
     const ctrl = new AbortController();
     assistantAbortRef.current = ctrl;
-    setAssistant({ ...cur, status: 'streaming', streamingText: '', response: '', errorMessage: '' });
+    setAssistant({
+      ...cur,
+      status: 'streaming',
+      streamingText: '',
+      response: '',
+      errorMessage: '',
+    });
 
     try {
       const lang = detectCmLanguage(activeFile).label;
@@ -760,9 +780,7 @@ export function FileBrowserPanel({
               const evt = JSON.parse(line.slice(5).trim());
               if (evt.type === 'delta') {
                 accumulated += evt.content as string;
-                setAssistant((s) =>
-                  s ? { ...s, streamingText: accumulated } : s,
-                );
+                setAssistant((s) => (s ? { ...s, streamingText: accumulated } : s));
               } else if (evt.type === 'done') {
                 finalizeAssistantResponse(accumulated);
                 return;
@@ -829,9 +847,7 @@ export function FileBrowserPanel({
     });
     // Trigger the same ⌘S save path. We synthesise the event so we don't have
     // to refactor the save closure out of its useEffect.
-    window.dispatchEvent(
-      new KeyboardEvent('keydown', { key: 's', metaKey: true, bubbles: true }),
-    );
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 's', metaKey: true, bubbles: true }));
     setAssistant(null);
   }
 
@@ -900,33 +916,25 @@ export function FileBrowserPanel({
           color="#7d8590"
           truncate
           minW="0"
-          flex="1"
+          flexShrink={1}
+          maxW="42%"
           title={activeFile || dir?.cwd}
         >
           {activeFile
             ? `${relativeToBase(activeFile, dir?.cwd ?? '')}${fileContent?.truncated ? ' · truncated' : ''}`
             : (dir?.shortCwd ?? '…')}
         </Text>
-        <Flex gap="1" flexShrink={0} align="center">
-          <HeaderIconButton
-            title={searchOpen ? 'Hide search' : 'Search files'}
-            active={searchOpen}
-            onClick={() => {
-              const next = !searchOpen;
-              setSearchOpen(next);
-              if (!next) {
-                setQuery('');
-                setSearchResults(null);
-                setGrepResults(null);
-              }
-            }}
-          >
-            <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor">
-              <circle cx="6" cy="6" r="3.5" strokeWidth="1.3" />
-              <path d="M9 9l3 3" strokeWidth="1.3" strokeLinecap="round" />
-            </svg>
-          </HeaderIconButton>
-        </Flex>
+        <HeaderSearch
+          inputRef={searchInputRef}
+          value={query}
+          onChange={setQuery}
+          searching={searching}
+          onClear={() => {
+            setQuery('');
+            setSearchResults(null);
+            setGrepResults(null);
+          }}
+        />
       </Flex>
 
       <Flex flex="1" minH="0" minW="0">
@@ -941,18 +949,6 @@ export function FileBrowserPanel({
             display="flex"
             flexDirection="column"
           >
-            {searchOpen && (
-              <SearchInput
-                value={query}
-                onChange={setQuery}
-                searching={searching}
-                onClose={() => {
-                  setSearchOpen(false);
-                  setQuery('');
-                  setSearchResults(null);
-                }}
-              />
-            )}
             <Box flex="1" minH="0" overflow="hidden">
               {query.trim() ? (
                 <SearchResults
@@ -1042,9 +1038,7 @@ export function FileBrowserPanel({
                   }}
                   status={assistant.status}
                   prompt={assistant.prompt}
-                  onPromptChange={(next) =>
-                    setAssistant((s) => (s ? { ...s, prompt: next } : s))
-                  }
+                  onPromptChange={(next) => setAssistant((s) => (s ? { ...s, prompt: next } : s))}
                   onSubmit={submitAssistant}
                   onDismiss={dismissAssistant}
                   streamingText={assistant.streamingText}
@@ -1076,30 +1070,35 @@ interface ListRow {
   entry: FileEntry;
 }
 
-function SearchInput({
+// Persistent search bar that lives in the centre of the panel header. ⌘F (see
+// the scoped shortcut in FileBrowserPanel) focuses it; Escape clears and blurs.
+function HeaderSearch({
+  inputRef,
   value,
   onChange,
   searching,
-  onClose,
+  onClear,
 }: {
+  inputRef: React.RefObject<HTMLInputElement>;
   value: string;
   onChange: (v: string) => void;
   searching: boolean;
-  onClose: () => void;
+  onClear: () => void;
 }) {
-  const ref = useRef<HTMLInputElement | null>(null);
-  useEffect(() => {
-    ref.current?.focus();
-  }, []);
+  const [focused, setFocused] = useState(false);
   return (
     <Flex
       align="center"
-      h="28px"
-      flexShrink={0}
-      px="2"
+      flex="1"
+      minW="0"
+      h="24px"
+      px="1.5"
       gap="1.5"
-      borderBottom="1px solid #21262d"
-      bg="#0d1117"
+      borderRadius="5px"
+      bg="#010409"
+      border="1px solid"
+      borderColor={focused ? '#1f6feb' : '#30363d'}
+      transition="border-color 120ms ease"
     >
       <Box
         w="12px"
@@ -1120,11 +1119,17 @@ function SearchInput({
         )}
       </Box>
       <input
-        ref={ref}
+        ref={inputRef}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         onKeyDown={(e) => {
-          if (e.key === 'Escape') onClose();
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            if (value) onClear();
+            inputRef.current?.blur();
+          }
         }}
         placeholder="Search files…"
         spellCheck={false}
@@ -1142,7 +1147,7 @@ function SearchInput({
       />
       {value && (
         <button
-          onClick={() => onChange('')}
+          onClick={onClear}
           title="Clear"
           style={{
             background: 'transparent',
@@ -1205,9 +1210,7 @@ function SearchResults({
   }
   return (
     <Box h="100%" overflowY="auto" overflowX="hidden">
-      {pathCount > 0 && (
-        <SectionHeader label="Files" count={pathCount} />
-      )}
+      {pathCount > 0 && <SectionHeader label="Files" count={pathCount} />}
       {results?.map((r) => {
         const slash = r.path.lastIndexOf('/');
         const name = slash >= 0 ? r.path.slice(slash + 1) : r.path;
@@ -1225,7 +1228,14 @@ function SearchResults({
             _hover={{ bg: selectedFile === r.abs ? '#1f6feb44' : '#161b22' }}
             onClick={() => onPick(r.abs)}
           >
-            <Box w="14px" h="14px" flexShrink={0} display="inline-flex" alignItems="center" justifyContent="center">
+            <Box
+              w="14px"
+              h="14px"
+              flexShrink={0}
+              display="inline-flex"
+              alignItems="center"
+              justifyContent="center"
+            >
               <Icon
                 icon={iconNameForFile(name)}
                 width="14"
@@ -1234,7 +1244,13 @@ function SearchResults({
               />
             </Box>
             <Box flex="1" minW="0">
-              <Text fontFamily="var(--grove-mono)" fontSize="12px" color="#c9d1d9" truncate title={r.path}>
+              <Text
+                fontFamily="var(--grove-mono)"
+                fontSize="12px"
+                color="#c9d1d9"
+                truncate
+                title={r.path}
+              >
                 {name}
               </Text>
               {dir && (
@@ -1265,7 +1281,14 @@ function SearchResults({
             _hover={{ bg: '#161b22' }}
             onClick={() => onPick(file.abs)}
           >
-            <Box w="14px" h="14px" flexShrink={0} display="inline-flex" alignItems="center" justifyContent="center">
+            <Box
+              w="14px"
+              h="14px"
+              flexShrink={0}
+              display="inline-flex"
+              alignItems="center"
+              justifyContent="center"
+            >
               <Icon
                 icon={iconNameForFile(file.path.split('/').pop() || file.path)}
                 width="14"
@@ -1612,4 +1635,3 @@ function FolderIcon() {
     </svg>
   );
 }
-
