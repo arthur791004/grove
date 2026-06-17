@@ -139,9 +139,16 @@ printf '\\e]1337;grove-post;0;0\\a'
 `;
 
 export function ensureShellInitDir(): string {
-  if (cachedDir && fs.existsSync(cachedDir)) return cachedDir;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grove-zsh-'));
-  fs.writeFileSync(path.join(dir, '.zshrc'), ZSHRC, 'utf8');
-  cachedDir = dir;
-  return dir;
+  if (!cachedDir || !fs.existsSync(cachedDir)) {
+    cachedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grove-zsh-'));
+  }
+  // Rewrite the rc on every spawn rather than trusting the cached dir. The file
+  // lives under /var/folders/.../T, which macOS reaps after a few days while a
+  // long-running daemon keeps the (still-cached) directory alive — leaving
+  // ZDOTDIR pointing at a dir with no .zshrc, so zsh loads no rc and the user's
+  // ~/.zshrc (PATH, aliases) silently stops being sourced. Always writing it is
+  // cheap (a few KB), self-heals after a reap, and avoids version drift if the
+  // ZSHRC constant changes between builds.
+  fs.writeFileSync(path.join(cachedDir, '.zshrc'), ZSHRC, 'utf8');
+  return cachedDir;
 }
