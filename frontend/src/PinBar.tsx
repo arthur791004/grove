@@ -32,17 +32,9 @@ export function executePin(pin: Pin): 'ok' | 'no-tab' | 'mismatch' {
 // mounted tab renders its own PinBar, but only the visible one should react to
 // a pending "Pin this command" draft. Memoized so a TerminalView frame doesn't
 // reconcile the whole strip.
-export const PinBar = memo(function PinBar({
-  tabId,
-  active,
-}: {
-  tabId: string;
-  active: boolean;
-}) {
+export const PinBar = memo(function PinBar({ tabId, active }: { tabId: string; active: boolean }) {
   const pins = useStore((s) => s.pins);
-  const activeGroupId = useStore(
-    (s) => s.tabs.find((t) => t.id === tabId)?.groupId ?? null,
-  );
+  const activeGroupId = useStore((s) => s.tabs.find((t) => t.id === tabId)?.groupId ?? null);
   const pendingPinDraft = useStore((s) => s.pendingPinDraft);
   const setPendingPinDraft = useStore((s) => s.setPendingPinDraft);
 
@@ -268,6 +260,12 @@ function PinChip({
       cursor={disabled ? 'not-allowed' : 'pointer'}
       opacity={disabled ? 0.4 : 1}
       _hover={disabled ? undefined : { bg: '#21262d' }}
+      // Don't let the chip steal focus: a pin just writes to the active pty,
+      // so the terminal (xterm in raw mode, or the prompt textarea) should
+      // stay focused and ready for the next keystroke. preventDefault on
+      // mousedown blocks the button's default focus grab while still firing
+      // the click — same trick the composer footer uses.
+      onMouseDown={(e) => e.preventDefault()}
       onClick={() => {
         if (!disabled) onRun();
       }}
