@@ -7,6 +7,7 @@ import {
   deleteBranch,
   headSha,
   listGroveBranches,
+  pruneWorktrees,
   removeWorktree,
   resolveRepoRoot,
   worktreeStatus,
@@ -104,13 +105,26 @@ export function registerWorktreeHandlers() {
       // confirmed they're OK losing it.
       const r = removeWorktree(record.repoRoot, record.worktreePath, !!req.force);
       if (!r.ok) {
-        if (!fs.existsSync(record.worktreePath)) {
+        const stderr = r.stderr.trim();
+        // git refuses when the path is no longer a registered worktree — the
+        // dir was pruned, deleted by hand, or its .git link broke. There's no
+        // live worktree to detach, so finish the teardown ourselves rather
+        // than leaving the workspace un-closable: prune stale admin entries,
+        // remove any leftover dir, then drop the record + branch as usual.
+        const notAWorktree =
+          /not a working tree|is not a working tree|No such file/i.test(stderr);
+        if (notAWorktree || !fs.existsSync(record.worktreePath)) {
+          pruneWorktrees(record.repoRoot);
+          try {
+            fs.rmSync(record.worktreePath, { recursive: true, force: true });
+          } catch {
+            // best effort — the dir may already be gone
+          }
           registry.remove(req.workspaceId);
-          return { removed: true, branchDeleted: false };
+          const del = deleteBranch(record.repoRoot, record.branch);
+          return { removed: true, branchDeleted: del.ok };
         }
-        throw new Error(
-          `git worktree remove failed: ${r.stderr.trim() || `git exited ${r.status}`}`,
-        );
+        throw new Error(`git worktree remove failed: ${stderr || `git exited ${r.status}`}`);
       }
       registry.remove(req.workspaceId);
       const del = deleteBranch(record.repoRoot, record.branch);

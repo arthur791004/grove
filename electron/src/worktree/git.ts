@@ -123,6 +123,13 @@ export function removeWorktree(repoRoot: string, worktreePath: string, force: bo
   return runGit(args, repoRoot, FS_HEAVY_TIMEOUT_MS);
 }
 
+// Drops stale worktree admin entries (dirs that were deleted or unlinked out
+// from under git). Used as part of close recovery when `worktree remove`
+// rejects a path it no longer recognises as a working tree.
+export function pruneWorktrees(repoRoot: string): RunResult {
+  return runGit(['worktree', 'prune'], repoRoot, FS_HEAVY_TIMEOUT_MS);
+}
+
 export function listGroveBranches(repoRoot: string): string[] {
   const r = runGit(['for-each-ref', '--format=%(refname:short)', 'refs/heads/grove/'], repoRoot);
   if (!r.ok) return [];
