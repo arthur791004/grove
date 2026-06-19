@@ -1067,7 +1067,7 @@ export const useStore = create<State & Actions>()(
           const targetOrder =
             oldGroup === targetGroupId ? oldOrder : [...(s.tabOrderByGroup[targetGroupId] ?? [])];
           targetOrder.splice(targetIndex, 0, tabId);
-          return {
+          const update: Partial<State> = {
             tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, groupId: targetGroupId } : t)),
             tabOrderByGroup: {
               ...s.tabOrderByGroup,
@@ -1075,6 +1075,34 @@ export const useStore = create<State & Actions>()(
               [targetGroupId]: targetOrder,
             },
           };
+          // Move the pane across layout trees too. The sidebar renders rows
+          // from the *tree*, not from tabOrderByGroup — so a cross-workspace
+          // move that only touched the tab bookkeeping would leave the tab
+          // invisible in the target (its pane never arrived) and orphaned in
+          // the source tree. Relocate the pane node so both views agree.
+          if (oldGroup !== targetGroupId) {
+            const sourceTree = s.layoutTreeByGroup[oldGroup];
+            const targetTree = s.layoutTreeByGroup[targetGroupId];
+            const sourceLeaf = sourceTree ? findLeafContaining(sourceTree, tabId) : null;
+            const pane = sourceLeaf?.panes.find((p) => p.id === tabId) ?? null;
+            if (sourceTree && targetTree && pane) {
+              // removePane collapses an emptied leaf/split; fall back to an
+              // empty leaf so the source workspace never goes tree-less.
+              const trimmedSource = removePane(sourceTree, tabId) ?? makeLeaf([]);
+              // Land it as its own top-level leaf (its own sidebar row).
+              const newLeaf = makeLeaf([pane]);
+              const nextTarget =
+                targetTree.type === 'leaf' && targetTree.panes.length === 0
+                  ? newLeaf
+                  : splitRight(targetTree, newLeaf, 50);
+              update.layoutTreeByGroup = {
+                ...s.layoutTreeByGroup,
+                [oldGroup]: trimmedSource,
+                [targetGroupId]: nextTarget,
+              };
+            }
+          }
+          return update;
         });
       },
 
