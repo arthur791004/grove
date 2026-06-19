@@ -25,6 +25,10 @@
     "daemon:status": "node backend/dist/daemon.js status",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,css,html}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,css,html}\"",
+    "test": "npm run test:frontend && npm run test:electron && npm run test:backend",
+    "test:frontend": "npm --workspace frontend run test",
+    "test:electron": "npm --workspace grove-app run test",
+    "test:backend": "npm --workspace backend run test",
     "postinstall": "node scripts/patch-node-pty.mjs && (chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true) && node scripts/build-grove-termios.mjs"
   },
   "devDependencies": {
