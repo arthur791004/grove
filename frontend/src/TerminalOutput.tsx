@@ -346,24 +346,50 @@ async function openLink(rawTarget: string, blockCwd: string) {
   }
 }
 
+// Double-click a detected link/path token to select the WHOLE token. Native
+// double-click stops at `/` and `-` word boundaries, so a path like
+// update/opt-in-welcome-rollout-cohort would only select one segment. A single
+// logical token may render as several sibling spans (one per SGR slice); they
+// share a `data-link-group` id so we can span the full run in one selection.
+function selectLinkToken(e: React.MouseEvent) {
+  const el = e.currentTarget as HTMLElement;
+  const group = el.dataset.linkGroup;
+  const parent = el.parentElement;
+  if (group == null || !parent) return;
+  const pieces = parent.querySelectorAll(`[data-link-group="${CSS.escape(group)}"]`);
+  if (pieces.length === 0) return;
+  const sel = window.getSelection();
+  if (!sel) return;
+  const range = document.createRange();
+  range.setStartBefore(pieces[0]);
+  range.setEndAfter(pieces[pieces.length - 1]);
+  sel.removeAllRanges();
+  sel.addRange(range);
+  // Replace native word-boundary selection with our whole-token one.
+  e.preventDefault();
+}
+
 // Detected-as-path tokens: always-on dotted underline so they read as links.
 function PathLink({
   href,
   cls,
   style,
   cwd,
+  group,
   children,
 }: {
   href: string;
   cls: string;
   style?: React.CSSProperties;
   cwd: string;
+  group?: number;
   children: React.ReactNode;
 }) {
   return (
     <span
       className={`${cls} grove-output-link`}
       title={`${href} — ⌘-click to open`}
+      data-link-group={group}
       style={{
         ...style,
         cursor: 'pointer',
@@ -372,6 +398,7 @@ function PathLink({
         textDecorationColor: '#3d4147',
       }}
       onClick={(e) => onLinkClick(e, href, cwd)}
+      onDoubleClick={selectLinkToken}
     >
       {children}
     </span>
@@ -385,19 +412,23 @@ function WordCandidate({
   cls,
   style,
   cwd,
+  group,
   children,
 }: {
   word: string;
   cls: string;
   style?: React.CSSProperties;
   cwd: string;
+  group?: number;
   children: React.ReactNode;
 }) {
   return (
     <span
       className={`${cls} grove-output-word`}
       style={style}
+      data-link-group={group}
       onClick={(e) => onLinkClick(e, word, cwd)}
+      onDoubleClick={selectLinkToken}
     >
       {children}
     </span>
@@ -430,14 +461,25 @@ export function TerminalOutput({ text, cwd }: { text: string; cwd: string }) {
     // can't classify them as URL/path/word until we hit whitespace and know
     // the full token.
     let wordPieces: Piece[] = [];
+    // Per-token id shared across a token's SGR slices so a double-click can
+    // select the whole run (see selectLinkToken).
+    let wordGroup = 0;
     const flushWord = () => {
       if (wordPieces.length === 0) return;
       const joined = wordPieces.map((p) => p.text).join('');
       const stripped = cleanToken(joined);
+      const group = wordGroup++;
       if (stripped && (PATH_LIKE_WORD.test(stripped) || HTTP_URL_WORD.test(stripped))) {
         for (const p of wordPieces) {
           out.push(
-            <PathLink key={key++} href={stripped} cls={p.cls} style={p.style} cwd={cwd}>
+            <PathLink
+              key={key++}
+              href={stripped}
+              cls={p.cls}
+              style={p.style}
+              cwd={cwd}
+              group={group}
+            >
               {p.text}
             </PathLink>,
           );
@@ -445,7 +487,14 @@ export function TerminalOutput({ text, cwd }: { text: string; cwd: string }) {
       } else if (stripped) {
         for (const p of wordPieces) {
           out.push(
-            <WordCandidate key={key++} word={stripped} cls={p.cls} style={p.style} cwd={cwd}>
+            <WordCandidate
+              key={key++}
+              word={stripped}
+              cls={p.cls}
+              style={p.style}
+              cwd={cwd}
+              group={group}
+            >
               {p.text}
             </WordCandidate>,
           );
@@ -467,7 +516,14 @@ export function TerminalOutput({ text, cwd }: { text: string; cwd: string }) {
         // segment as one clickable span.
         flushWord();
         out.push(
-          <PathLink key={key++} href={s.url} cls={s.cls} style={s.style} cwd={cwd}>
+          <PathLink
+            key={key++}
+            href={s.url}
+            cls={s.cls}
+            style={s.style}
+            cwd={cwd}
+            group={wordGroup++}
+          >
             {s.text}
           </PathLink>,
         );
