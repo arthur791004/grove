@@ -873,68 +873,79 @@ export function FileBrowserPanel({
         gap="1.5"
         borderBottom="1px solid #21262d"
       >
-        {isNarrow && narrowView === 'preview' ? (
-          <HeaderIconButton title="Back to file list" onClick={backToList}>
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
-              <path
-                d="M7.5 2.5L3 6l4.5 3.5"
-                strokeWidth="1.4"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </HeaderIconButton>
-        ) : (
-          <HeaderIconButton
-            title={
-              isNarrow
-                ? narrowView === 'list'
-                  ? 'Show file preview'
-                  : 'Show file list'
-                : listOpen
-                  ? 'Hide file list'
-                  : 'Show file list'
-            }
-            active={isNarrow ? narrowView === 'list' : listOpen}
-            onClick={() => {
-              if (isNarrow) {
-                setNarrowView((v) => (v === 'list' ? 'preview' : 'list'));
-              } else {
-                toggleList();
+        {/* Left zone: list toggle + current path. flex=1 mirrors the right
+            gutter so the search bar stays centred between equal gaps. */}
+        <Flex align="center" gap="1.5" flex="1" minW="0">
+          {isNarrow && narrowView === 'preview' ? (
+            <HeaderIconButton title="Back to file list" onClick={backToList}>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor">
+                <path
+                  d="M7.5 2.5L3 6l4.5 3.5"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </HeaderIconButton>
+          ) : (
+            <HeaderIconButton
+              title={
+                isNarrow
+                  ? narrowView === 'list'
+                    ? 'Show file preview'
+                    : 'Show file list'
+                  : listOpen
+                    ? 'Hide file list'
+                    : 'Show file list'
               }
-            }}
+              active={isNarrow ? narrowView === 'list' : listOpen}
+              onClick={() => {
+                if (isNarrow) {
+                  setNarrowView((v) => (v === 'list' ? 'preview' : 'list'));
+                } else {
+                  toggleList();
+                }
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor">
+                <rect x="2" y="3" width="12" height="10" rx="1.5" strokeWidth="1.2" />
+                <line x1="6" y1="3.5" x2="6" y2="12.5" strokeWidth="1.2" />
+              </svg>
+            </HeaderIconButton>
+          )}
+          <Text
+            fontFamily="var(--grove-mono)"
+            fontSize="12px"
+            color="#7d8590"
+            truncate
+            minW="0"
+            flexShrink={1}
+            maxW="42%"
+            title={activeFile || dir?.cwd}
           >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor">
-              <rect x="2" y="3" width="12" height="10" rx="1.5" strokeWidth="1.2" />
-              <line x1="6" y1="3.5" x2="6" y2="12.5" strokeWidth="1.2" />
-            </svg>
-          </HeaderIconButton>
-        )}
-        <Text
-          fontFamily="var(--grove-mono)"
-          fontSize="12px"
-          color="#7d8590"
-          truncate
-          minW="0"
-          flexShrink={1}
-          maxW="42%"
-          title={activeFile || dir?.cwd}
-        >
-          {activeFile
-            ? `${relativeToBase(activeFile, dir?.cwd ?? '')}${fileContent?.truncated ? ' · truncated' : ''}`
-            : (dir?.shortCwd ?? '…')}
-        </Text>
-        <HeaderSearch
-          inputRef={searchInputRef}
-          value={query}
-          onChange={setQuery}
-          searching={searching}
-          onClear={() => {
-            setQuery('');
-            setSearchResults(null);
-            setGrepResults(null);
-          }}
-        />
+            {activeFile
+              ? `${relativeToBase(activeFile, dir?.cwd ?? '')}${fileContent?.truncated ? ' · truncated' : ''}`
+              : (dir?.shortCwd ?? '…')}
+          </Text>
+        </Flex>
+        {/* Centred search — wider than the side zones, but the equal flex=1
+            gutters on either side keep it horizontally centred with matching
+            left/right gaps. */}
+        <Box flex="2" minW="0" maxW="460px" display="flex">
+          <HeaderSearch
+            inputRef={searchInputRef}
+            value={query}
+            onChange={setQuery}
+            searching={searching}
+            onClear={() => {
+              setQuery('');
+              setSearchResults(null);
+              setGrepResults(null);
+            }}
+          />
+        </Box>
+        {/* Right gutter balances the left zone so the search stays centred. */}
+        <Box flex="1" minW="0" />
       </Flex>
 
       <Flex flex="1" minH="0" minW="0">
