@@ -869,7 +869,11 @@ export function FileBrowserPanel({
         h="36px"
         flexShrink={0}
         align="center"
-        px="2"
+        pl="2"
+        // Reserve room on the right for the floating PaneOverlay (drag /
+        // split / close buttons sit at top:6px right:8px, ~96px wide) so the
+        // flex="1" search bar stops short of them instead of sliding under.
+        pr="104px"
         gap="1.5"
         borderBottom="1px solid #21262d"
       >
@@ -920,7 +924,7 @@ export function FileBrowserPanel({
             truncate
             minW="0"
             flexShrink={1}
-            maxW="42%"
+            maxW="240px"
             title={activeFile || dir?.cwd}
           >
             {activeFile
