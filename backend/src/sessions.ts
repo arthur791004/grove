@@ -44,6 +44,11 @@ interface Session {
   // line editor never sets, so it cleanly distinguishes "shell at prompt"
   // from "vim / claude / etc. running".
   ttyRaw: boolean;
+  // Termios ECHO flag. False when a foreground program has turned echo off
+  // while staying in cooked mode (ICANON on) — the signature of a password
+  // prompt (sudo / ssh / `read -s`). The frontend masks the composer's live
+  // stdin so the secret isn't shown in plaintext. Defaults true (normal tty).
+  ttyEcho: boolean;
   ttyRawTimer: NodeJS.Timeout | null;
   parseBuffer: string;
   parsedOutputBuffer: string;
@@ -699,6 +704,7 @@ export function getOrCreateSession(tabId: string, cwd: string = os.homedir()): S
     altScreen: false,
     cursorHide: false,
     ttyRaw: false,
+    ttyEcho: true,
     ttyRawTimer: null,
     parseBuffer: '',
     parsedOutputBuffer: '',
@@ -755,20 +761,26 @@ function startTtyRawPoll(session: Session): void {
   const fd = fdHolder._fd;
   if (typeof fd !== 'number') return;
   // First sample synchronously so reattach sees the right state immediately.
-  session.ttyRaw = sampleTtyRaw(fd);
+  const first = sampleTty(fd);
+  session.ttyRaw = first.raw;
+  session.ttyEcho = first.echo;
   session.ttyRawTimer = setInterval(() => {
-    const next = sampleTtyRaw(fd);
-    if (next === session.ttyRaw) return;
-    session.ttyRaw = next;
-    broadcast(session, { type: 'tty-mode', raw: next });
+    const next = sampleTty(fd);
+    if (next.raw === session.ttyRaw && next.echo === session.ttyEcho) return;
+    session.ttyRaw = next.raw;
+    session.ttyEcho = next.echo;
+    broadcast(session, { type: 'tty-mode', raw: next.raw, echo: next.echo });
   }, TTY_POLL_MS);
   session.ttyRawTimer.unref();
 }
 
-function sampleTtyRaw(fd: number): boolean {
+// Sample the pty's line discipline. `raw` = full TUI (ICANON + ISIG both off).
+// `echo` = whether typed input is echoed; a password prompt keeps ICANON on
+// but clears ECHO. Missing addon → assume a normal cooked, echoing tty.
+function sampleTty(fd: number): { raw: boolean; echo: boolean } {
   const t = getTermios(fd);
-  if (!t) return false;
-  return !t.icanon && !t.isig;
+  if (!t) return { raw: false, echo: true };
+  return { raw: !t.icanon && !t.isig, echo: t.echo };
 }
 
 function stopTtyRawPoll(session: Session): void {
@@ -863,7 +875,7 @@ export function subscribe(tabId: string, ws: WSLike, cwd?: string): () => void {
       send(ws, { type: 'block-end', exit: b.exit, durationMs: b.durationMs ?? 0 });
   }
   if (s.rawBuffer) send(ws, { type: 'raw', data: s.rawBuffer });
-  send(ws, { type: 'tty-mode', raw: s.ttyRaw });
+  send(ws, { type: 'tty-mode', raw: s.ttyRaw, echo: s.ttyEcho });
   send(ws, { type: 'replay-end' });
   // Send the current ctx (if any) so the new subscriber's chips populate
   // immediately instead of waiting for the next OSC 7 / env / block-end tick.

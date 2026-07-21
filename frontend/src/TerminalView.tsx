@@ -417,6 +417,11 @@ export function TerminalView({ tabId, active }: Props) {
   // block-end like the other raw flags so a TUI that exits without emitting
   // ?1049l / ?25h doesn't leave the overlay stuck.
   const [ttyRaw, setTtyRaw] = useState(false);
+  // Mirrors the backend termios ECHO flag. False when a running command has
+  // turned echo off while staying in cooked mode — a password prompt (sudo,
+  // ssh, `read -s`). We mask the composer so the secret the user types into
+  // our line-buffered stdin isn't shown in plaintext. Defaults true.
+  const [ttyEcho, setTtyEcho] = useState(true);
   // Pre-mounts the xterm overlay during subscribe replay when the backend
   // tells us the session is currently in raw mode (long-running TUI like
   // claude). Cleared on `replay-end` once the live raw stream has taken
@@ -778,6 +783,7 @@ export function TerminalView({ tabId, active }: Props) {
             setAltScreen(false);
             setCursorHide(false);
             setTtyRaw(false);
+            setTtyEcho(true);
             altCarryRef.current = '';
             osc8CarryRef.current.tail = '';
             rawModeRef.current = false;
@@ -796,6 +802,11 @@ export function TerminalView({ tabId, active }: Props) {
               xtermRef.current?.scrollToBottom();
             }
             setTtyRaw(nextRaw && currentBlockRef.current !== null);
+            // Track echo separately from raw: a password prompt keeps ICANON
+            // on (so it's not raw) but clears ECHO. Older daemons omit `echo`
+            // from tty-mode — treat missing as echo-on so we never mask a
+            // normal prompt. Reset to echo-on when no command is running.
+            setTtyEcho(msg.echo === undefined ? true : !!msg.echo);
           } else if (msg.type === 'agent-state') {
             const prev = useStore.getState().agentStates[tabId];
             const next: AgentState | null = msg.state ?? null;
@@ -1304,6 +1315,10 @@ export function TerminalView({ tabId, active }: Props) {
 
   const lastBlock = blocks.length > 0 ? blocks[blocks.length - 1] : null;
   const runningBlock = lastBlock && lastBlock.exit === null && !rawMode ? lastBlock : null;
+  // A running command has echo off (sudo/ssh/`read -s` password prompt). The
+  // composer feeds line-buffered stdin, so mask what the user types — real
+  // terminals show nothing at all for these prompts.
+  const maskInput = !!runningBlock && !ttyEcho;
 
   // 250ms grace period before showing the running badge so fast commands
   // (even chatty ones like `ls`) never flash a spinner that immediately
@@ -1805,6 +1820,42 @@ export function TerminalView({ tabId, active }: Props) {
                 )}
               </Box>
             )}
+            {runningBlock && !input && (
+              // Faint placeholder while a command waits on stdin — signals the
+              // composer is live (type a reply → Enter feeds it to the running
+              // process) instead of looking like a locked, busy field.
+              <Box
+                position="absolute"
+                left="10px"
+                top="0"
+                pointerEvents="none"
+                fontFamily="var(--grove-mono)"
+                fontSize="var(--grove-mono-size)"
+                lineHeight="22px"
+                color="#484f58"
+                style={{ whiteSpace: 'pre' }}
+              >
+                {maskInput ? 'password — type, then ↵' : 'type a response, then ↵'}
+              </Box>
+            )}
+            {maskInput && input.length > 0 && (
+              // Mask overlay for password prompts: the real textarea text is
+              // rendered transparent (see `color` below) and we paint dots on
+              // top. Monospace guarantees one dot per char lines up with the
+              // caret, which is measured from the real (untouched) input.
+              <Box
+                position="absolute"
+                inset="0"
+                pointerEvents="none"
+                fontFamily="var(--grove-mono)"
+                fontSize="var(--grove-mono-size)"
+                lineHeight="22px"
+                color="#c9d1d9"
+                style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+              >
+                {'•'.repeat(input.length)}
+              </Box>
+            )}
             <textarea
               ref={inputRef}
               value={input}
@@ -1874,7 +1925,7 @@ export function TerminalView({ tabId, active }: Props) {
                 fontFamily: 'var(--grove-mono)',
                 fontSize: 'var(--grove-mono-size)',
                 lineHeight: '22px',
-                color: '#c9d1d9',
+                color: maskInput ? 'transparent' : '#c9d1d9',
                 caretColor: 'transparent',
                 position: 'relative',
                 zIndex: 1,
@@ -1910,7 +1961,13 @@ export function TerminalView({ tabId, active }: Props) {
                 textRendering: 'geometricPrecision',
               }}
             />
-            {caretVisible && !runningBlock && (
+            {/* Keep the caret visible while a command is running. In cooked
+                mode the composer doubles as line-buffered stdin (see the
+                runningBlock branch in onKeyDown), so the user must be able to
+                see they can type a response to a `read -p` / y-n / password /
+                "press ENTER" prompt. Hiding it made a running command look
+                like a locked, un-interactable field. */}
+            {caretVisible && (
               <Box
                 className="grove-caret"
                 position="absolute"
