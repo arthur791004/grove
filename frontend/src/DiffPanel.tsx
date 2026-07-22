@@ -18,9 +18,13 @@ interface DiffFile {
   binary: boolean;
 }
 
+type DiffMode = 'working' | 'branch';
+
 interface DiffResponse {
   repoRoot: string | null;
   branch: string | null;
+  base: string | null;
+  mode: DiffMode;
   files: DiffFile[];
   total: { added: number; removed: number; files: number };
 }
@@ -124,6 +128,8 @@ export function DiffPanel({
 }) {
   const activeTabId = useStore((s) => s.activeTabId);
   const setPaneState = useStore((s) => s.setPaneState);
+  const diffMode = useStore((s) => s.diffMode);
+  const setDiffMode = useStore((s) => s.setDiffMode);
   // Per-pane file-list-open. Falls back to the legacy global so panes that
   // pre-date the v3 migration (no pane-scoped state yet) still respect the
   // user's existing toggle.
@@ -177,8 +183,8 @@ export function DiffPanel({
   // Latest values referenced from stable callbacks. Keeps the toggle / gap
   // callbacks identity-stable so memo'd children don't re-render on every
   // parent change.
-  const latest = useRef({ fullPatches, activeTabId });
-  latest.current = { fullPatches, activeTabId };
+  const latest = useRef({ fullPatches, activeTabId, diffMode });
+  latest.current = { fullPatches, activeTabId, diffMode };
   const ensureFullPatch = useCallback(
     async (path: string, signature: string): Promise<string | null> => {
       const { fullPatches: cur, activeTabId: tabId } = latest.current;
@@ -190,7 +196,7 @@ export function DiffPanel({
       const promise = (async () => {
         try {
           const res = await fetch(
-            `${API_BASE}/diff/file?tabId=${encodeURIComponent(tabId)}&path=${encodeURIComponent(path)}`,
+            `${API_BASE}/diff/file?tabId=${encodeURIComponent(tabId)}&path=${encodeURIComponent(path)}&mode=${latest.current.diffMode}`,
           );
           const json = await res.json();
           const patch: string | undefined = json?.file?.patch;
@@ -275,7 +281,9 @@ export function DiffPanel({
     async function refresh() {
       setLoading(true);
       try {
-        const res = await fetch(`${API_BASE}/diff?tabId=${encodeURIComponent(activeTabId!)}`);
+        const res = await fetch(
+          `${API_BASE}/diff?tabId=${encodeURIComponent(activeTabId!)}&mode=${diffMode}`,
+        );
         const json: DiffResponse = await res.json();
         if (!cancelled) setData(json);
       } catch {
@@ -289,7 +297,7 @@ export function DiffPanel({
       cancelled = true;
       clearInterval(id);
     };
-  }, [activeTabId]);
+  }, [activeTabId, diffMode]);
 
   function scrollToFile(path: string) {
     const root = scrollRef.current;
@@ -312,16 +320,29 @@ export function DiffPanel({
           Code review
         </Text>
         {data?.branch && (
-          <Text
-            fontSize="12px"
-            color="#7ee787"
-            fontFamily="var(--grove-mono)"
-            truncate
-            minW="0"
-            title={data.branch}
-          >
-            {data.branch}
-          </Text>
+          <HStack gap="1" minW="0" flexShrink={1}>
+            {diffMode === 'branch' && data.base && (
+              <Text
+                fontSize="12px"
+                color="#7d8590"
+                fontFamily="var(--grove-mono)"
+                flexShrink={0}
+                title={`Diffing against ${data.base}`}
+              >
+                {data.base}…
+              </Text>
+            )}
+            <Text
+              fontSize="12px"
+              color="#7ee787"
+              fontFamily="var(--grove-mono)"
+              truncate
+              minW="0"
+              title={data.branch}
+            >
+              {data.branch}
+            </Text>
+          </HStack>
         )}
         {data && data.total.files > 0 && (
           <HStack gap="1.5" fontSize="12px" fontFamily="var(--grove-mono)" flexShrink={0}>
@@ -331,6 +352,7 @@ export function DiffPanel({
           </HStack>
         )}
         <Box flex="1" minW="0" />
+        <ModeToggle mode={diffMode} onChange={setDiffMode} />
       </HeaderRow>
 
       <Flex flex="1" minH="0" minW="0" position="relative" overflow="hidden">
@@ -375,7 +397,9 @@ export function DiffPanel({
           )}
           {data && data.repoRoot && data.files.length === 0 && (
             <Text px="3" py="3" fontSize="12px" color="#7d8590">
-              No uncommitted changes.
+              {diffMode === 'branch' && data.base
+                ? `No changes on this branch vs ${data.base}.`
+                : 'No uncommitted changes.'}
             </Text>
           )}
           {data?.files.map((f) => {
@@ -475,12 +499,7 @@ function FileRow({ file, onClick }: { file: DiffFile; onClick: () => void }) {
     >
       <Box flex="1" minW="0">
         <Flex align="center" gap="1.5" minW="0">
-          <Box
-            flexShrink={0}
-            display="flex"
-            alignItems="center"
-            title={statusLabel(file.status)}
-          >
+          <Box flexShrink={0} display="flex" alignItems="center" title={statusLabel(file.status)}>
             <Icon
               icon={iconNameForFile(name)}
               width="14"
@@ -1048,7 +1067,7 @@ function LineNumberGutter({ value }: { value: number | null }) {
 }
 
 function HighlightedCode({ code, language }: { code: string; language: Language }) {
-  if (!code) return <>{' '}</>;
+  if (!code) return <> </>;
   return (
     <Highlight code={code} language={language} theme={themes.vsDark}>
       {({ tokens, getTokenProps }) => (
@@ -1104,6 +1123,54 @@ function HeaderIconButton({
     >
       {children}
     </button>
+  );
+}
+
+function ModeToggle({ mode, onChange }: { mode: DiffMode; onChange: (m: DiffMode) => void }) {
+  const segments: { key: DiffMode; label: string; title: string }[] = [
+    {
+      key: 'branch',
+      label: 'Branch',
+      title: 'All changes on this branch vs its base (incl. uncommitted)',
+    },
+    { key: 'working', label: 'Working', title: 'Uncommitted changes only (vs HEAD)' },
+  ];
+  return (
+    <Flex
+      flexShrink={0}
+      align="center"
+      bg="#010409"
+      border="1px solid #21262d"
+      borderRadius="6px"
+      p="1px"
+      gap="1px"
+    >
+      {segments.map((seg) => {
+        const active = mode === seg.key;
+        return (
+          <button
+            key={seg.key}
+            onClick={() => onChange(seg.key)}
+            title={seg.title}
+            style={{
+              background: active ? '#30363d' : 'transparent',
+              border: 'none',
+              color: active ? '#c9d1d9' : '#7d8590',
+              cursor: 'pointer',
+              padding: '2px 8px',
+              height: '20px',
+              borderRadius: 5,
+              fontSize: 11,
+              fontWeight: active ? 600 : 500,
+              lineHeight: 1,
+              transition: 'background 120ms ease, color 120ms ease',
+            }}
+          >
+            {seg.label}
+          </button>
+        );
+      })}
+    </Flex>
   );
 }
 

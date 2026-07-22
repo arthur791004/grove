@@ -201,6 +201,9 @@ interface State {
   // Per-panel fullscreen pref, keyed by panel id. Survives panel switches.
   panelFullscreen: Record<string, boolean>;
   diffFileListOpen: boolean;
+  // 'branch' diffs against the base branch's merge-base (branch commits +
+  // uncommitted work); 'working' diffs against HEAD (uncommitted only).
+  diffMode: DiffMode;
   fileBrowserListOpen: boolean;
   fileBrowserRequest: {
     path: string;
@@ -318,6 +321,8 @@ interface State {
 // Per-pane state for panel kinds. Each instance of a Diff / Files / Browser
 // pane gets its own slice — opening a second Diff in the same workspace
 // keeps independent selection and search state.
+export type DiffMode = 'working' | 'branch';
+
 export interface DiffPaneState {
   fileListOpen?: boolean;
   selectedFile?: string | null;
@@ -381,6 +386,7 @@ interface Actions {
   togglePanel(id: string): void;
   togglePanelFullscreen(id: string): void;
   toggleDiffFileList(): void;
+  setDiffMode(mode: DiffMode): void;
   toggleFileBrowserList(): void;
   openFileInBrowser(
     path: string,
@@ -432,17 +438,18 @@ interface Actions {
   // it doesn't exist yet — caller supplies `kind` once on the first write
   // (omitted on subsequent writes, copied from existing slice).
   setPaneState(paneId: string, patch: Partial<PaneState> & { kind?: PaneState['kind'] }): void;
-  splitLeafInTree(groupId: string, leafId: string, dir: 'h' | 'v', pane: Pane, after: boolean): void;
+  splitLeafInTree(
+    groupId: string,
+    leafId: string,
+    dir: 'h' | 'v',
+    pane: Pane,
+    after: boolean,
+  ): void;
   addPaneToLeafInTree(groupId: string, leafId: string, pane: Pane): void;
   // Create a new terminal-backed tab AND place it as its own leaf splitting
   // off `leafId`. Wraps the tab-creation half of `newTab` so the new pane
   // lands in a sibling leaf instead of the workspace leaf.
-  splitLeafWithNewTab(
-    groupId: string,
-    leafId: string,
-    dir: 'h' | 'v',
-    mode: NewTabMode,
-  ): string;
+  splitLeafWithNewTab(groupId: string, leafId: string, dir: 'h' | 'v', mode: NewTabMode): string;
   reorderLeafPanesInTree(groupId: string, leafId: string, paneIds: string[]): void;
   // Move a pane from whatever leaf it currently lives in to `destLeafId` at
   // `destIndex`. No-op if source leaf is the destination — within-leaf
@@ -456,12 +463,7 @@ interface Actions {
   // Pop an existing pane out of its current leaf and into a fresh sibling
   // leaf. No-op if the pane is already alone in its leaf (nothing would
   // change). Used by the sidebar's "Open in split" affordance.
-  splitOffPaneInTree(
-    groupId: string,
-    paneId: string,
-    dir: 'h' | 'v',
-    after: boolean,
-  ): void;
+  splitOffPaneInTree(groupId: string, paneId: string, dir: 'h' | 'v', after: boolean): void;
   removePaneFromTree(groupId: string, paneId: string): void;
   setActivePaneInTree(groupId: string, paneId: string): void;
   setAgentLabel(tabId: string, label: string): void;
@@ -677,7 +679,12 @@ function withPanelFocusOrOpen(
   panelKind: 'diff' | 'files' | 'browser',
 ): Pick<State, 'activePanelId' | 'layoutTreeByGroup' | 'paneState'> {
   const gid = activeGroupId(s);
-  if (!gid) return { activePanelId: s.activePanelId, layoutTreeByGroup: s.layoutTreeByGroup, paneState: s.paneState };
+  if (!gid)
+    return {
+      activePanelId: s.activePanelId,
+      layoutTreeByGroup: s.layoutTreeByGroup,
+      paneState: s.paneState,
+    };
   const tree = s.layoutTreeByGroup[gid];
   if (!tree) return withPanelOpen(s, panelKind);
   const panes = getAllPanes(tree);
@@ -711,6 +718,7 @@ export const useStore = create<State & Actions>()(
       activePanelId: null,
       panelFullscreen: {},
       diffFileListOpen: true,
+      diffMode: 'branch',
       fileBrowserListOpen: true,
       fileBrowserRequest: null,
       browserPanelListOpen: true,
@@ -817,9 +825,7 @@ export const useStore = create<State & Actions>()(
 
       markForkContextConsumed(groupId) {
         set((s) => ({
-          groups: s.groups.map((g) =>
-            g.id === groupId ? { ...g, forkContextConsumed: true } : g,
-          ),
+          groups: s.groups.map((g) => (g.id === groupId ? { ...g, forkContextConsumed: true } : g)),
         }));
       },
 
@@ -1140,6 +1146,9 @@ export const useStore = create<State & Actions>()(
 
       toggleDiffFileList() {
         set((s) => ({ diffFileListOpen: !s.diffFileListOpen }));
+      },
+      setDiffMode(mode) {
+        set({ diffMode: mode });
       },
 
       toggleFileBrowserList() {
@@ -1508,7 +1517,7 @@ export const useStore = create<State & Actions>()(
             if (leaf.id !== sourceLeaf.id) return leaf;
             const remaining = leaf.panes.filter((p) => p.id !== paneId);
             const stillActive =
-              leaf.activePaneId === paneId ? remaining[0]?.id ?? null : leaf.activePaneId;
+              leaf.activePaneId === paneId ? (remaining[0]?.id ?? null) : leaf.activePaneId;
             return { ...leaf, panes: remaining, activePaneId: stillActive };
           });
           if (!trimmed) return s;
@@ -1739,6 +1748,7 @@ export const useStore = create<State & Actions>()(
         activePanelId: s.activePanelId,
         panelFullscreen: s.panelFullscreen,
         diffFileListOpen: s.diffFileListOpen,
+        diffMode: s.diffMode,
         fileBrowserListOpen: s.fileBrowserListOpen,
         browserPanelListOpen: s.browserPanelListOpen,
         browserPanelUrl: s.browserPanelUrl,
@@ -1866,8 +1876,7 @@ export const useStore = create<State & Actions>()(
           // detecting the legacy `tabs-*` id prefix. Pre-v4 the convention
           // was id-prefix-only; v4 promotes it to a typed field so id
           // collisions can't accidentally affect collapse behavior.
-          const trees =
-            (s.layoutTreeByGroup as Record<string, LayoutNode> | undefined) ?? {};
+          const trees = (s.layoutTreeByGroup as Record<string, LayoutNode> | undefined) ?? {};
           const tagTabs = (node: LayoutNode): LayoutNode => {
             if (node.type === 'leaf') return node;
             const tagged: SplitNode = {

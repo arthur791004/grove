@@ -2,7 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import { sessionCwd } from './sessions.js';
-import { expandHome, findRepoRoot } from './gitUtil.js';
+import { expandHome, findRepoRoot, safeRun } from './gitUtil.js';
+
+export type DiffMode = 'working' | 'branch';
 
 const FULL_FILE_CONTEXT = 99999;
 const DEFAULT_FILE_CONTEXT = FULL_FILE_CONTEXT;
@@ -65,11 +67,52 @@ function parseDiff(raw: string): DiffFile[] {
 export interface DiffResponse {
   repoRoot: string | null;
   branch: string | null;
+  // In 'branch' mode, the base branch the diff is computed against (e.g.
+  // 'main'). null in 'working' mode, or when no base branch could be found.
+  base: string | null;
+  mode: DiffMode;
   files: DiffFile[];
   total: { added: number; removed: number; files: number };
 }
 
-function runGitDiff(repoRoot: string, extraArgs: string[] = []): string {
+// The default branch of the repo, best-effort: origin's HEAD symbolic ref
+// first (survives non-standard default names), then common local fallbacks.
+function detectBaseBranch(repoRoot: string): string | null {
+  const originHead = safeRun(
+    'git',
+    ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'],
+    repoRoot,
+  );
+  if (originHead) {
+    const name = originHead.replace(/^origin\//, '');
+    if (name) return name;
+  }
+  for (const cand of ['main', 'master', 'develop']) {
+    if (safeRun('git', ['rev-parse', '--verify', '--quiet', cand], repoRoot)) return cand;
+  }
+  return null;
+}
+
+// Resolve the ref to diff the working tree against. 'working' mode diffs
+// against HEAD (uncommitted changes only). 'branch' mode diffs against the
+// merge-base with the base branch, so the result covers every commit made on
+// this branch *plus* any uncommitted work. Returns diffBase='HEAD' whenever a
+// base branch or merge-base can't be resolved, degrading to working-tree.
+function resolveDiffBase(
+  repoRoot: string,
+  mode: DiffMode,
+  branch: string | null,
+): { base: string | null; diffBase: string } {
+  if (mode !== 'branch') return { base: null, diffBase: 'HEAD' };
+  const base = detectBaseBranch(repoRoot);
+  // On the base branch itself there's nothing to compare to — behave like
+  // working-tree mode and drop the (misleading) base label.
+  if (!base || base === branch) return { base: null, diffBase: 'HEAD' };
+  const mergeBase = safeRun('git', ['merge-base', base, 'HEAD'], repoRoot);
+  return { base, diffBase: mergeBase ?? 'HEAD' };
+}
+
+function runGitDiff(repoRoot: string, base: string, extraArgs: string[] = []): string {
   try {
     const r = spawnSync(
       'git',
@@ -79,7 +122,7 @@ function runGitDiff(repoRoot: string, extraArgs: string[] = []): string {
         '--no-ext-diff',
         '--src-prefix=a/',
         '--dst-prefix=b/',
-        'HEAD',
+        base,
         ...extraArgs,
       ],
       { cwd: repoRoot, encoding: 'utf8', timeout: 4000, maxBuffer: 16 * 1024 * 1024 },
@@ -94,11 +137,18 @@ function resolveCwd(reqCwd: string | undefined, tabId: string | undefined): stri
   return sessCwd || reqCwd || os.homedir();
 }
 
-export function getDiffFor(cwdRaw: string): DiffResponse {
+export function getDiffFor(cwdRaw: string, mode: DiffMode = 'branch'): DiffResponse {
   const cwd = expandHome(cwdRaw);
   const repoRoot = findRepoRoot(cwd);
   if (!repoRoot) {
-    return { repoRoot: null, branch: null, files: [], total: { added: 0, removed: 0, files: 0 } };
+    return {
+      repoRoot: null,
+      branch: null,
+      base: null,
+      mode,
+      files: [],
+      total: { added: 0, removed: 0, files: 0 },
+    };
   }
   let branch: string | null = null;
   try {
@@ -110,7 +160,8 @@ export function getDiffFor(cwdRaw: string): DiffResponse {
     if (r.status === 0) branch = r.stdout.trim() || null;
   } catch {}
 
-  const files = parseDiff(runGitDiff(repoRoot));
+  const { base, diffBase } = resolveDiffBase(repoRoot, mode, branch);
+  const files = parseDiff(runGitDiff(repoRoot, diffBase));
   const total = files.reduce(
     (acc, f) => ({
       added: acc.added + f.added,
@@ -119,31 +170,46 @@ export function getDiffFor(cwdRaw: string): DiffResponse {
     }),
     { added: 0, removed: 0, files: 0 },
   );
-  return { repoRoot, branch, files, total };
+  return { repoRoot, branch, base, mode, files, total };
 }
 
-export function getFileDiffFor(cwdRaw: string, path: string, context: number): DiffFile | null {
+export function getFileDiffFor(
+  cwdRaw: string,
+  path: string,
+  context: number,
+  mode: DiffMode = 'branch',
+): DiffFile | null {
   const cwd = expandHome(cwdRaw);
   const repoRoot = findRepoRoot(cwd);
   if (!repoRoot) return null;
-  const raw = runGitDiff(repoRoot, [`--unified=${context}`, '--', path]);
+  const branch = safeRun('git', ['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot);
+  const { diffBase } = resolveDiffBase(repoRoot, mode, branch);
+  const raw = runGitDiff(repoRoot, diffBase, [`--unified=${context}`, '--', path]);
   return parseDiff(raw)[0] ?? null;
 }
 
+function resolveMode(raw: string | undefined): DiffMode {
+  return raw === 'working' ? 'working' : 'branch';
+}
+
 export function registerDiffRoutes(app: FastifyInstance) {
-  app.get<{ Querystring: { tabId?: string; cwd?: string } }>('/diff', async (req) =>
-    getDiffFor(resolveCwd(req.query.cwd, req.query.tabId)),
+  app.get<{ Querystring: { tabId?: string; cwd?: string; mode?: string } }>('/diff', async (req) =>
+    getDiffFor(resolveCwd(req.query.cwd, req.query.tabId), resolveMode(req.query.mode)),
   );
 
-  app.get<{ Querystring: { tabId?: string; cwd?: string; path: string; context?: string } }>(
-    '/diff/file',
-    async (req) => {
-      const ctx = Math.max(
-        0,
-        parseInt(req.query.context ?? String(DEFAULT_FILE_CONTEXT), 10) || DEFAULT_FILE_CONTEXT,
-      );
-      const file = getFileDiffFor(resolveCwd(req.query.cwd, req.query.tabId), req.query.path, ctx);
-      return { file };
-    },
-  );
+  app.get<{
+    Querystring: { tabId?: string; cwd?: string; path: string; context?: string; mode?: string };
+  }>('/diff/file', async (req) => {
+    const ctx = Math.max(
+      0,
+      parseInt(req.query.context ?? String(DEFAULT_FILE_CONTEXT), 10) || DEFAULT_FILE_CONTEXT,
+    );
+    const file = getFileDiffFor(
+      resolveCwd(req.query.cwd, req.query.tabId),
+      req.query.path,
+      ctx,
+      resolveMode(req.query.mode),
+    );
+    return { file };
+  });
 }
